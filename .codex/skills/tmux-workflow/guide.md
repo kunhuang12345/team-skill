@@ -1,19 +1,19 @@
-<``!--
-本文件是“方案/设计文档”，用于把 ccb-tmux-workflow 这个 skill 改造成“可单独搬运即能用”的通用方案。
+<!--
+本文件是“方案/设计文档”，用于把 tmux-workflow 这个 skill 改造成“可单独搬运即能用”的通用方案。
 
 实现状态：
 - ✅ 阶段 1（Claude → Codex）：已实现（见 scripts/）。
 - ⏳ 阶段 2/3：仍为规划（未实现）。
 -->
 
-# ccb-tmux-workflow（可移植 Skill）方案
+# tmux-workflow（可移植 Skill）方案
 
 ## 0.5 当前实现（阶段 1：Claude → Codex）
 
 目录（可直接复制到任意项目的 `.codex/skills/` 或 `~/.codex/skills/`）：
 
 ```text
-ccb-tmux-workflow/
+tmux-workflow/
 ├── SKILL.md
 ├── guide.md
 └── scripts/
@@ -22,30 +22,46 @@ ccb-tmux-workflow/
     ├── codex_ask.py
     ├── codex_pend.py
     ├── codex_ping.py
+    ├── sync_codex_home.py
+    ├── twf
     └── install_claude_cmds.sh (可选)
 ```
 
-最小使用（在目标项目根目录）：
+最小使用（推荐：支持多 worker，名字更短）：
 
 ```bash
 bash .codex/skills/tmux-workflow/scripts/check_deps.sh
-bash .codex/skills/tmux-workflow/scripts/codex_up_tmux.sh
-python3 .codex/skills/tmux-workflow/scripts/codex_ask.py "你好"
+bash .codex/skills/tmux-workflow/scripts/twf codex-a
+bash .codex/skills/tmux-workflow/scripts/twf codex-a "你好"
 ```
 
-会话文件：
-- 默认写入当前目录 `./.ccb-codex-session.json`（JSON），记录 `tmux_session/tmux_target/codex_session_path` 等绑定信息。
-- 可用 `CCB_CODEX_SESSION_FILE` 覆盖路径。
+补充：查看/选择与清理 worker：
+
+```bash
+# 查看某个 base name 下有哪些 worker（按最新优先）
+ls -t .twf/codex-a-*.json
+
+# remove 必须使用“全名”（带时间戳），会停止 tmux session 并删除 worker CODEX_HOME + state json
+bash .codex/skills/tmux-workflow/scripts/twf remove codex-a-YYYYmmdd-HHMMSS-<pid>
+```
+
+会话与状态文件：
+- `twf` 默认把 session 文件放在 `./.twf/` 下（可用 `TWF_STATE_DIR` 覆盖），命名形如：`codex-a-YYYYmmdd-HHMMSS-<pid>.json`；使用 `codex-a` 时会自动选择最新的那个。
+- 低阶脚本 `codex_up_tmux.sh` 默认写 `./.codex-tmux-session.json`（可用 `TWF_SESSION_FILE` 覆盖）。
+- worker 的隔离 `CODEX_HOME` 默认在 `~/.codex-workers/<worker_id>`（可用 `TWF_WORKERS_DIR` 覆盖）；`twf` 场景下 `worker_id` 默认就是该 worker 的 tmux session 全名。
+- `twf` = `tmux-workflow`（该 skill 的推荐入口脚本名）。
 
 ## 0. 目标与边界
 
 ### 目标（阶段 1：只做 Claude → Codex）
 
-把 `ccb-tmux-workflow` 设计成 **“只拷贝 skill 目录到新环境/新项目就能用”** 的工具包（不依赖本仓库的 `ccb/cask/*` 代码），在 **tmux** 模式下实现：
+把 `tmux-workflow` 设计成 **“只拷贝 skill 目录到新环境/新项目就能用”** 的工具包（不依赖本仓库的 `bin/*` / `lib/*` 等代码），在 **tmux** 模式下实现：
 
 1. 一键启动/复用一个 tmux pane 里的 `codex` 会话（worker）。
 2. 从 **Claude CLI** 侧把任务发给 Codex（注入输入）。
-3. 自动从 Codex 的本地日志 `~/.codex/sessions/**/*.jsonl` 读取 Codex 回复并回传给 Claude（stdout）。
+3. 自动从 Codex 的本地日志读取 Codex 回复并回传给 Claude（stdout）。
+   - 多 worker 模式默认使用每个 worker 独立的 `CODEX_HOME`：`~/.codex-workers/<worker_id>/sessions/**/*.jsonl`
+   - 也可通过 session 文件里的 `codex_session_root` 或环境变量覆盖扫描路径
 
 ### 非目标（阶段 1 不做）
 
@@ -64,7 +80,7 @@ python3 .codex/skills/tmux-workflow/scripts/codex_ask.py "你好"
 
 你的诉求是“只拷贝这个 skill 目录到任何新环境都可用”，因此 **skill 必须自包含**：
 
-- 不能依赖本仓库的 `ccb` / `bin/*` / `lib/*`。
+- 不能依赖本仓库的 `bin/*` / `lib/*` 等代码。
 - 不能引用仓库根目录的 `README/LEARN/CLAUDE.md` 才能理解（可以引用，但必须把关键步骤复制进本 skill 的文档里）。
 - 必须把可执行工具脚本放在 skill 自己的 `scripts/` 里。
 
@@ -81,9 +97,9 @@ python3 .codex/skills/tmux-workflow/scripts/codex_ask.py "你好"
 2. **发送器（injector）**
    - 通过 `tmux send-keys` / `tmux load-buffer + paste-buffer` 把文字注入到 Codex pane，并发送 Enter。
 3. **接收器（log reader）**
-   - 轮询读取 `~/.codex/sessions/**/*.jsonl`，从“发送前的 offset”起等待下一条 assistant 回复出现。
+   - 轮询读取该 worker 的 `sessions_root/**/*.jsonl`，从“发送前的 offset”起等待下一条 assistant 回复出现。
 4. **会话绑定（session file）**
-   - 在“当前工作目录”保存一个简短的 session 文件（默认建议 `.ccb-codex-session.json`；也可用 `.codex-session`），记录：
+   - 在“当前工作目录”保存一个简短的 session 文件（默认建议 `.codex-tmux-session.json`；也可用 `.codex-session`），记录：
      - tmux session name（定位目标 pane）
      - 已绑定的 codex log_path（可选，减少扫描）
      - 工作目录标识（防串项目）
@@ -102,7 +118,7 @@ python3 .codex/skills/tmux-workflow/scripts/codex_ask.py "你好"
 建议 skill 目录最终形态如下（可直接复制到任意项目的 `.codex/skills/` 或 `~/.codex/skills/`）：
 
 ```text
-ccb-tmux-workflow/
+tmux-workflow/
 ├── SKILL.md                  # 触发条件 + 高层用法（给 Codex 读）
 ├── guide.md                  # 本文件：设计/使用/验收说明
 └── scripts/
@@ -111,6 +127,8 @@ ccb-tmux-workflow/
     ├── codex_ask.py          # 发给 codex + 等回复（核心：inject + log poll）
     ├── codex_pend.py         # 只取最新回复/最近 N 轮（读 jsonl）
     ├── codex_ping.py         # 检查 tmux session 存活 + 日志可读性
+    ├── sync_codex_home.py    # 同步 ~/.codex → worker CODEX_HOME（排除 sessions/log/history）
+    ├── twf                   # 推荐入口：短名字 up/ask/pend/ping（自动选最新）
     └── install_claude_cmds.sh (可选) 安装 Claude 自定义命令（/cask 等）
 ```
 
@@ -129,7 +147,7 @@ ccb-tmux-workflow/
 建议策略：
 - Session 名：`codex-<hash(cwd)>`（避免多个项目冲突）
 - 启动命令：
-  - `tmux new-session -d -s "$SESSION" -c "$PWD" "codex -c disable_paste_burst=true"`
+  - `tmux new-session -d -s "$SESSION" -c "$PWD" "env CODEX_HOME=<worker_home> codex -c disable_paste_burst=true"`
 - 写 session 文件（在 `$PWD`）：
   - `terminal=tmux`
   - `tmux_session=$SESSION`
@@ -149,7 +167,7 @@ ccb-tmux-workflow/
 
 1. 选择日志文件：
    - 优先用 session 文件里已绑定的 `codex_session_path`
-   - 否则扫描 `~/.codex/sessions/**/*.jsonl` 找最新修改的（mtime 最大）
+   - 否则扫描该 worker 的 `sessions_root/**/*.jsonl` 找最新修改的（mtime 最大）
 2. 基线捕获：
    - `offset = filesize(log_path)`（发送前）
 3. 轮询读取：
@@ -172,7 +190,7 @@ ccb-tmux-workflow/
 **A. 不安装 Claude 自定义命令（最可移植）**
 
 在 Claude 中直接执行脚本路径，例如：
-- `Bash(.codex/skills/ccb-tmux-workflow/scripts/codex_ask.py "xxx", run_in_background=true)`
+- `Bash(python3 .codex/skills/tmux-workflow/scripts/codex_ask.py "xxx", run_in_background=true)`
 
 优点：不用写入 `~/.claude/commands`，复制 skill 到任意项目就能用。  
 缺点：输入命令更长。
@@ -194,15 +212,15 @@ ccb-tmux-workflow/
 在一台“新环境”里只做以下操作就应可用：
 
 1. 安装依赖：`tmux`、`python3`、`codex`（可选 `claude`）
-2. 把整个 `ccb-tmux-workflow/` 复制到目标项目：`<project>/.codex/skills/ccb-tmux-workflow/`
+2. 把整个 `tmux-workflow/` 复制到目标项目：`<project>/.codex/skills/tmux-workflow/`
 3. 在目标项目根目录：
-   - `.codex/skills/ccb-tmux-workflow/scripts/check_deps.sh`
-   - `.codex/skills/ccb-tmux-workflow/scripts/codex_up_tmux.sh`
-   - `.codex/skills/ccb-tmux-workflow/scripts/codex_ask.py "你好"`
+   - `.codex/skills/tmux-workflow/scripts/check_deps.sh`
+   - `.codex/skills/tmux-workflow/scripts/codex_up_tmux.sh`
+   - `.codex/skills/tmux-workflow/scripts/codex_ask.py "你好"`
 4. 期望：
    - Codex pane 收到“你好”
    - `codex_ask.py` 返回 Codex 回复（stdout）
-   - `.ccb-codex-session.json`（或你定义的 session 文件）被写入且内容正确
+   - `.codex-tmux-session.json`（或你定义的 session 文件）被写入且内容正确
 
 ---
 
@@ -214,7 +232,7 @@ ccb-tmux-workflow/
 
 建议实现：
 - 用 `codex exec` 做非交互 worker（每任务一个进程），天然并发
-- 每个任务写入 `.ccb/tasks/<id>/...`：
+- 每个任务写入 `.twf/tasks/<id>/...`：
   - `meta.json`（prompt、cwd、started_at、status）
   - `result.txt`（`--output-last-message`）
   - `events.jsonl`（可选 `--json`）

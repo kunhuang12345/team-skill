@@ -24,13 +24,25 @@ def _realpath(path: Path) -> str:
 
 
 def _sessions_root() -> Path:
-    if os.environ.get("CCB_CODEX_SESSION_ROOT"):
-        return Path(os.environ["CCB_CODEX_SESSION_ROOT"]).expanduser()
+    if os.environ.get("TWF_CODEX_SESSION_ROOT"):
+        return Path(os.environ["TWF_CODEX_SESSION_ROOT"]).expanduser()
     if os.environ.get("CODEX_SESSION_ROOT"):
         return Path(os.environ["CODEX_SESSION_ROOT"]).expanduser()
     if os.environ.get("CODEX_HOME"):
         return Path(os.environ["CODEX_HOME"]).expanduser() / "sessions"
     return Path.home() / ".codex" / "sessions"
+
+
+def _sessions_root_for_session(session: Dict[str, Any]) -> Path:
+    value = session.get("codex_session_root")
+    if isinstance(value, str) and value.strip():
+        return Path(value).expanduser()
+
+    codex_home = session.get("codex_home")
+    if isinstance(codex_home, str) and codex_home.strip():
+        return Path(codex_home).expanduser() / "sessions"
+
+    return _sessions_root()
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
@@ -110,6 +122,27 @@ def _find_log_for_cwd(expected_cwd_norm: str) -> Optional[Path]:
         best_mtime = mtime
 
     return best
+
+
+def _scan_latest_log(root: Path) -> Optional[Path]:
+    if not root.exists():
+        return None
+
+    latest: Optional[Path] = None
+    latest_mtime = -1.0
+
+    for path in root.glob("**/*.jsonl"):
+        if not path.is_file():
+            continue
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime >= latest_mtime:
+            latest = path
+            latest_mtime = mtime
+
+    return latest
 
 
 def _extract_user_text(entry: Dict[str, Any]) -> Optional[str]:
@@ -203,7 +236,7 @@ def _latest_conversations(log_path: Path, n: int) -> list[Tuple[str, str]]:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Print latest Codex replies from session logs.")
     parser.add_argument("n", nargs="?", default="1", help="Number of Q/A rounds to show (default: 1).")
-    parser.add_argument("--session-file", default=os.environ.get("CCB_CODEX_SESSION_FILE", ".ccb-codex-session.json"))
+    parser.add_argument("--session-file", default=os.environ.get("TWF_SESSION_FILE", ".codex-tmux-session.json"))
     parser.add_argument("--log", default=None, help="Force a specific Codex session .jsonl log file.")
     args = parser.parse_args(argv[1:])
 
@@ -217,6 +250,8 @@ def main(argv: list[str]) -> int:
     session = _load_json(session_file) if session_file.exists() else {}
 
     expected_cwd_norm = _realpath(Path.cwd())
+    per_worker_root = bool(session.get("codex_home") or session.get("codex_session_root"))
+    sessions_root = _sessions_root_for_session(session)
 
     log_path: Optional[Path]
     if args.log:
@@ -226,13 +261,22 @@ def main(argv: list[str]) -> int:
         log_path = Path(bound).expanduser() if isinstance(bound, str) and bound else None
 
     if not log_path or not log_path.exists():
-        log_path = _find_log_for_cwd(expected_cwd_norm)
+        if per_worker_root:
+            log_path = _scan_latest_log(sessions_root)
+        else:
+            log_path = _find_log_for_cwd(expected_cwd_norm) or _scan_latest_log(sessions_root)
 
     if not log_path or not log_path.exists():
-        eprint(f"❌ Codex session log not found under {_sessions_root()}.")
+        eprint(f"❌ Codex session log not found under {sessions_root}.")
         return EXIT_ERROR
 
     conversations = _latest_conversations(log_path, n=n)
+    # If a bound log exists but yields no reply, try the latest log under the same root (rotation / new session).
+    if not conversations and not args.log:
+        latest = _scan_latest_log(sessions_root)
+        if latest and latest != log_path:
+            log_path = latest
+            conversations = _latest_conversations(log_path, n=n)
     if not conversations:
         eprint("No reply available.")
         return EXIT_NO_REPLY

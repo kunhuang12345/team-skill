@@ -1,0 +1,272 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+usage() {
+  cat <<'USAGE' >&2
+tmux-workflow helper: manage multiple Codex tmux workers with short names.
+
+Usage:
+  twf <name>                       # start a new worker: <name>-<timestamp>
+  twf <name> "<message>"           # ask the latest worker for <name> (auto-up if missing)
+  twf up <name> [up-args...]        # explicit start (forwards args to codex_up_tmux.sh)
+  twf ask <name> [message]          # explicit ask (reads stdin if message omitted)
+  twf pend <name> [N]               # show latest reply / last N Q&A
+  twf ping <name>                   # health check
+  twf remove <full-name>            # stop tmux session and delete worker home + state json (requires full name)
+
+State:
+  session files live under: ./.twf/ (override with TWF_STATE_DIR)
+  file names:
+    - timestamped: <name>-<YYYYmmdd-HHMMSS>-<pid>.json
+    - exact:       <name>.json (used if no timestamped file exists)
+
+Env:
+  TWF_STATE_DIR       Default: ./.twf
+  TWF_WORKERS_DIR     Default: ~/.codex-workers     (forwarded to codex_up_tmux.sh)
+  TWF_CODEX_HOME_SRC  Default: ~/.codex             (forwarded to codex_up_tmux.sh)
+  TWF_CODEX_CMD       Default: codex -c disable_paste_burst=true (forwarded to codex_up_tmux.sh)
+USAGE
+}
+
+is_ts_name() {
+  # <base>-YYYYmmdd-HHMMSS(-suffix)?
+  [[ "$1" =~ -[0-9]{8}-[0-9]{6}(-[0-9]+)?$ ]]
+}
+
+state_dir="${TWF_STATE_DIR:-$PWD/.twf}"
+mkdir -p "$state_dir"
+
+latest_session_file() {
+  local name="$1"
+  local candidates=()
+  shopt -s nullglob
+  candidates=("$state_dir/${name}-"*.json)
+  shopt -u nullglob
+  if [[ ${#candidates[@]} -gt 0 ]]; then
+    ls -t "${candidates[@]}" 2>/dev/null | head -n 1
+    return 0
+  fi
+  if [[ -f "$state_dir/$name.json" ]]; then
+    echo "$state_dir/$name.json"
+    return 0
+  fi
+  return 1
+}
+
+start_worker() {
+  local base="$1"
+  shift || true
+
+  local worker="$base"
+  if ! is_ts_name "$base"; then
+    local ts
+    ts="$(date +%Y%m%d-%H%M%S)"
+    worker="${base}-${ts}-$$"
+  fi
+
+  local session_file="$state_dir/$worker.json"
+  bash "$script_dir/codex_up_tmux.sh" --session "$worker" --session-file "$session_file" "$@" 1>&2
+  echo "$session_file"
+}
+
+ask_worker() {
+  local name="$1"
+  shift || true
+
+  local session_file=""
+  if is_ts_name "$name"; then
+    session_file="$state_dir/$name.json"
+    if [[ ! -f "$session_file" ]]; then
+      echo "❌ session not found: $session_file" >&2
+      exit 1
+    fi
+  else
+    session_file="$(latest_session_file "$name" 2>/dev/null || true)"
+    if [[ -z "$session_file" ]]; then
+      session_file="$(start_worker "$name")"
+    fi
+  fi
+
+  if [[ $# -gt 0 ]]; then
+    local msg
+    msg="$*"
+    python3 "$script_dir/codex_ask.py" --session-file "$session_file" "$msg"
+  else
+    python3 "$script_dir/codex_ask.py" --session-file "$session_file"
+  fi
+}
+
+pend_worker() {
+  local name="$1"
+  shift || true
+
+  local session_file=""
+  if is_ts_name "$name"; then
+    session_file="$state_dir/$name.json"
+  else
+    session_file="$(latest_session_file "$name" 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$session_file" || ! -f "$session_file" ]]; then
+    echo "❌ no session for: $name (run: twf $name)" >&2
+    exit 1
+  fi
+
+  python3 "$script_dir/codex_pend.py" --session-file "$session_file" "$@"
+}
+
+ping_worker() {
+  local name="$1"
+  shift || true
+
+  local session_file=""
+  if is_ts_name "$name"; then
+    session_file="$state_dir/$name.json"
+  else
+    session_file="$(latest_session_file "$name" 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$session_file" || ! -f "$session_file" ]]; then
+    echo "❌ no session for: $name (run: twf $name)" >&2
+    exit 1
+  fi
+
+  python3 "$script_dir/codex_ping.py" --session-file "$session_file" "$@"
+}
+
+remove_worker() {
+  local full="$1"
+  shift || true
+
+  if ! is_ts_name "$full"; then
+    echo "❌ remove requires a full worker name like: <base>-YYYYmmdd-HHMMSS-<pid>" >&2
+    echo "   provided: $full" >&2
+    echo "   hint: list candidates via: ls -t \"$state_dir/${full}-\"*.json" >&2
+    exit 1
+  fi
+
+  local session_file="$state_dir/$full.json"
+  if [[ ! -f "$session_file" ]]; then
+    echo "❌ session file not found: $session_file" >&2
+    exit 1
+  fi
+
+  local tmux_session=""
+  local codex_home=""
+  tmux_session="$(
+    python3 - "$session_file" <<'PY'
+import json
+import sys
+
+p = sys.argv[1]
+with open(p, "r", encoding="utf-8") as f:
+    data = json.load(f)
+print(data.get("tmux_session") or "")
+PY
+  )"
+  codex_home="$(
+    python3 - "$session_file" <<'PY'
+import json
+import sys
+
+p = sys.argv[1]
+with open(p, "r", encoding="utf-8") as f:
+    data = json.load(f)
+print(data.get("codex_home") or "")
+PY
+  )"
+
+  if [[ -z "$tmux_session" ]]; then
+    tmux_session="$full"
+  fi
+
+  if tmux has-session -t "$tmux_session" >/dev/null 2>&1; then
+    tmux kill-session -t "$tmux_session" >/dev/null 2>&1 || true
+    echo "🛑 stopped tmux session: $tmux_session" >&2
+  else
+    echo "ℹ️  tmux session not running: $tmux_session" >&2
+  fi
+
+  if [[ -n "$codex_home" ]]; then
+    local base_default="$HOME/.codex-workers"
+    local base_env="${TWF_WORKERS_DIR:-$base_default}"
+    local ok="false"
+    ok="$(
+      python3 - "$codex_home" "$base_env" "$base_default" <<'PY'
+import sys
+from pathlib import Path
+
+home = Path(sys.argv[1]).expanduser().resolve()
+bases = [Path(sys.argv[2]).expanduser().resolve(), Path(sys.argv[3]).expanduser().resolve()]
+
+def is_strict_child(path: Path, base: Path) -> bool:
+    try:
+        path.relative_to(base)
+        return path != base
+    except Exception:
+        return False
+
+for base in bases:
+    if is_strict_child(home, base):
+        print("true")
+        raise SystemExit(0)
+
+print("false")
+PY
+    )"
+    if [[ "$ok" == "true" ]]; then
+      rm -rf -- "$codex_home"
+      echo "🧹 removed worker CODEX_HOME: $codex_home" >&2
+    else
+      echo "⚠️  refused to delete codex_home outside workers dir: $codex_home" >&2
+      echo "   (set TWF_WORKERS_DIR appropriately or delete manually)" >&2
+    fi
+  fi
+
+  rm -f -- "$session_file"
+  echo "🗑️  removed session file: $session_file" >&2
+}
+
+cmd="${1:-}"
+case "$cmd" in
+  ""|-h|--help|help)
+    usage
+    exit 0
+    ;;
+  up)
+    [[ $# -ge 2 ]] || { echo "❌ missing name" >&2; usage; exit 1; }
+    shift
+    start_worker "$@"
+    ;;
+  ask)
+    [[ $# -ge 2 ]] || { echo "❌ missing name" >&2; usage; exit 1; }
+    shift
+    ask_worker "$@"
+    ;;
+  pend)
+    [[ $# -ge 2 ]] || { echo "❌ missing name" >&2; usage; exit 1; }
+    shift
+    pend_worker "$@"
+    ;;
+  ping)
+    [[ $# -ge 2 ]] || { echo "❌ missing name" >&2; usage; exit 1; }
+    shift
+    ping_worker "$@"
+    ;;
+  remove|rm)
+    [[ $# -ge 2 ]] || { echo "❌ missing full name" >&2; usage; exit 1; }
+    shift
+    remove_worker "$@"
+    ;;
+  *)
+    name="$cmd"
+    shift || true
+    if [[ $# -gt 0 ]]; then
+      ask_worker "$name" "$@"
+    else
+      start_worker "$name"
+    fi
+    ;;
+esac

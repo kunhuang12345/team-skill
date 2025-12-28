@@ -68,12 +68,12 @@ Designed for Claude Code: run with `run_in_background=true` so Claude can contin
 
 Execution:
 - Run:
-  - `Bash(python3 "$(git rev-parse --show-toplevel)/.codex/skills/ccb-tmux-workflow/scripts/codex_ask.py" "<content>", run_in_background=true)`
+  - `Bash(python3 "$(git rev-parse --show-toplevel)/.codex/skills/tmux-workflow/scripts/codex_ask.py" "<content>", run_in_background=true)`
 
 Parameters:
 - `<content>` required
-- `--timeout SECONDS` optional (default from `CCB_TIMEOUT`, fallback 3600)
-- `--session-file PATH` optional (default `./.ccb-codex-session.json`, override via `CCB_CODEX_SESSION_FILE`)
+- `--timeout SECONDS` optional (default from `TWF_TIMEOUT`, fallback 3600)
+- `--session-file PATH` optional (default `./.codex-tmux-session.json`, override via `TWF_SESSION_FILE`)
 
 Output contract:
 - stdout: reply text only
@@ -85,21 +85,21 @@ cat >"$cmd_dir/cpend.md" <<'MD'
 View latest Codex reply from official Codex JSONL logs.
 
 Execution:
-- Run `Bash(python3 "$(git rev-parse --show-toplevel)/.codex/skills/ccb-tmux-workflow/scripts/codex_pend.py" [N])`
+- Run `Bash(python3 "$(git rev-parse --show-toplevel)/.codex/skills/tmux-workflow/scripts/codex_pend.py" [N])`
 
 Parameters:
 - `N` optional: number of Q/A rounds (default 1). When N=1, prints reply only.
-- `--session-file PATH` optional (default `./.ccb-codex-session.json`, override via `CCB_CODEX_SESSION_FILE`)
+- `--session-file PATH` optional (default `./.codex-tmux-session.json`, override via `TWF_SESSION_FILE`)
 MD
 
 cat >"$cmd_dir/cping.md" <<'MD'
 Check if tmux Codex worker is alive and whether session file is bound to a log file.
 
 Execution:
-- Run `Bash(python3 "$(git rev-parse --show-toplevel)/.codex/skills/ccb-tmux-workflow/scripts/codex_ping.py")`
+- Run `Bash(python3 "$(git rev-parse --show-toplevel)/.codex/skills/tmux-workflow/scripts/codex_ping.py")`
 
 Notes:
-- Default session file: `./.ccb-codex-session.json` (override via `CCB_CODEX_SESSION_FILE`)
+- Default session file: `./.codex-tmux-session.json` (override via `TWF_SESSION_FILE`)
 MD
 
 echo "✅ Installed Claude commands into: $cmd_dir" >&2
