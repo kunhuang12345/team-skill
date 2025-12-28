@@ -22,13 +22,13 @@ Usage:
   twf list [--running|--stopped|--orphans] # list all workers (flat)
 
 State:
-  session files live under: ./.twf/ (override with TWF_STATE_DIR)
+  session files live under: ~/.twf/ (override with TWF_STATE_DIR)
   file names:
     - timestamped: <name>-<YYYYmmdd-HHMMSS>-<pid>.json
     - exact:       <name>.json (used if no timestamped file exists)
 
 Env:
-  TWF_STATE_DIR       Default: ./.twf
+  TWF_STATE_DIR       Default: ~/.twf
   TWF_WORKERS_DIR     Default: ~/.codex-workers     (forwarded to codex_up_tmux.sh)
   TWF_CODEX_HOME_SRC  Default: ~/.codex             (forwarded to codex_up_tmux.sh)
   TWF_CODEX_CMD       Default: codex -c disable_paste_burst=true (forwarded to codex_up_tmux.sh)
@@ -40,7 +40,7 @@ is_ts_name() {
   [[ "$1" =~ -[0-9]{8}-[0-9]{6}(-[0-9]+)?$ ]]
 }
 
-state_dir="${TWF_STATE_DIR:-$PWD/.twf}"
+state_dir="${TWF_STATE_DIR:-$HOME/.twf}"
 mkdir -p "$state_dir"
 lock_file="$state_dir/.lock"
 

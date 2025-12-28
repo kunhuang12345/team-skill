@@ -36,7 +36,7 @@ This skill is a self-contained toolkit under `scripts/` (copy this whole folder 
 - `remove` always requires **full name** to avoid deleting the wrong worker.
 
 State directory:
-- default: `./.twf/`
+- default: `~/.twf/`
 - override: `TWF_STATE_DIR=/some/path`
 
 ### Core commands
@@ -99,4 +99,4 @@ Safety:
 - `TWF_CODEX_HOME_SRC`: source `CODEX_HOME` to copy from (default: `~/.codex`).
 - `TWF_CODEX_SESSION_ROOT` / `CODEX_SESSION_ROOT` / `CODEX_HOME`: where to scan logs (default: `~/.codex/sessions`).
 - `TWF_POLL_INTERVAL` (seconds, default `0.05`), `TWF_TIMEOUT` (seconds, default `3600`).
-- `TWF_STATE_DIR`: twf wrapper state dir (default: `./.twf`).
+- `TWF_STATE_DIR`: twf wrapper state dir (default: `~/.twf`).
