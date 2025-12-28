@@ -113,6 +113,34 @@ def _extract_assistant_text(entry: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _extract_user_text(entry: Dict[str, Any]) -> Optional[str]:
+    entry_type = entry.get("type")
+    payload = entry.get("payload") or {}
+    if not isinstance(payload, dict):
+        return None
+
+    if entry_type == "event_msg" and payload.get("type") == "user_message":
+        msg = payload.get("message")
+        if isinstance(msg, str) and msg.strip():
+            return msg.strip()
+        return None
+
+    if entry_type == "response_item" and payload.get("type") == "message" and payload.get("role") == "user":
+        content = payload.get("content") or []
+        if isinstance(content, list):
+            texts = []
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "input_text":
+                    text = item.get("text")
+                    if isinstance(text, str) and text:
+                        texts.append(text)
+            if texts:
+                return "\n".join(texts).strip()
+    return None
+
+
 def _extract_session_meta(entry: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
     if entry.get("type") != "session_meta":
         return None, None
@@ -216,12 +244,13 @@ def _inject_text(tmux_target: str, text: str) -> None:
         buf = f"twf-ask-{os.getpid()}"
         _tmux_cmd(["load-buffer", "-b", buf, "-"], input_text=text)
         try:
-            _tmux_cmd(["paste-buffer", "-t", tmux_target, "-b", buf])
+            # -p: wrap in bracketed paste (if supported by app); -r: keep LF as-is.
+            _tmux_cmd(["paste-buffer", "-t", tmux_target, "-b", buf, "-p", "-r"])
         finally:
             subprocess.run(["tmux", "delete-buffer", "-b", buf], check=False)
     else:
         _tmux_cmd(["send-keys", "-t", tmux_target, "-l", text])
-    _tmux_cmd(["send-keys", "-t", tmux_target, "Enter"])
+    _tmux_cmd(["send-keys", "-t", tmux_target, "C-m"])
 
 
 def _poll_for_reply(
@@ -235,12 +264,18 @@ def _poll_for_reply(
     sent_after_utc: datetime,
     timeout_s: float,
     poll_s: float,
+    tmux_target: Optional[str],
+    submit_nudge_after_s: float,
+    submit_nudge_max: int,
 ) -> Tuple[Optional[str], Path, int]:
     deadline = time.time() + timeout_s
     current_path = log_path
     current_offset = offset
     last_rescan = time.time()
     rescan_interval = min(2.0, max(0.2, timeout_s / 2.0 if timeout_s > 0 else 0.2))
+    saw_user = False
+    submit_nudges = 0
+    inject_started = time.time()
 
     while True:
         if time.time() >= deadline:
@@ -284,6 +319,9 @@ def _poll_for_reply(
                     if ts is not None and ts < sent_after_utc:
                         continue
 
+                    if not saw_user and _extract_user_text(entry) is not None:
+                        saw_user = True
+
                     msg = _extract_assistant_text(entry)
                     if msg is not None:
                         return msg, current_path, current_offset
@@ -300,6 +338,19 @@ def _poll_for_reply(
                 current_path = candidate
                 current_offset = 0
             last_rescan = now
+
+        if (
+            tmux_target
+            and not saw_user
+            and submit_nudges < submit_nudge_max
+            and time.time() - inject_started >= submit_nudge_after_s * (submit_nudges + 1)
+        ):
+            try:
+                # Some Codex TUI states (startup/paste-burst) may require an extra submit keypress.
+                _tmux_cmd(["send-keys", "-t", tmux_target, "C-m"])
+                submit_nudges += 1
+            except Exception:
+                pass
 
         time.sleep(poll_s)
 
@@ -381,6 +432,12 @@ def main(argv: list[str]) -> int:
         eprint(f"❌ tmux injection failed: {exc}")
         return EXIT_ERROR
 
+    submit_nudge_after = float(os.environ.get("TWF_SUBMIT_NUDGE_AFTER", "0.7"))
+    submit_nudge_max = int(os.environ.get("TWF_SUBMIT_NUDGE_MAX", "2"))
+    if submit_nudge_after < 0:
+        submit_nudge_after = 0.0
+    submit_nudge_max = max(0, submit_nudge_max)
+
     reply, used_log_path, _new_offset = _poll_for_reply(
         log_path,
         offset,
@@ -391,6 +448,9 @@ def main(argv: list[str]) -> int:
         sent_after_utc=sent_after,
         timeout_s=max(0.0, args.timeout),
         poll_s=min(0.5, max(0.01, args.poll)),
+        tmux_target=str(tmux_target) if tmux_target else None,
+        submit_nudge_after_s=min(submit_nudge_after, max(0.0, args.timeout)),
+        submit_nudge_max=submit_nudge_max,
     )
 
     if reply is None:
