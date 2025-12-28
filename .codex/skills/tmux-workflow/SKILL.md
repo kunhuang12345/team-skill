@@ -21,9 +21,76 @@ This skill is a self-contained toolkit under `scripts/` (copy this whole folder 
 - `scripts/codex_ask.py`: inject text into the tmux pane and poll Codex `sessions/*.jsonl` until the next assistant reply appears.
 - `scripts/codex_pend.py`: print the latest reply (or last N Q/A pairs) from the bound or auto-detected Codex log.
 - `scripts/codex_ping.py`: health check for tmux worker and log binding.
-- `scripts/twf`: helper wrapper for `up/ask/pend/ping/stop/resume/spawn/tree/list/remove` with automatic session-file naming and “pick latest” behavior.
+- `scripts/sync_codex_home.py`: sync `~/.codex` into a per-worker `CODEX_HOME` (excludes `sessions/`, `log/`, `history.jsonl`).
+- `scripts/twf`: recommended wrapper for managing many workers: `up/ask/pend/ping/stop/resume/spawn/tree/list/remove` with automatic naming and “pick latest” behavior.
+- `scripts/install_claude_cmds.sh` (optional): install Claude custom commands (`/cask`, `/cpend`, `/cping`) that call this skill’s scripts.
+
+## Recommended usage (`twf`)
+
+### Naming rules (base vs full name)
+
+- **Base name**: short label like `codex-a`.
+- **Full name**: auto-generated unique worker id: `<base>-YYYYmmdd-HHMMSS-<pid>` (also used as tmux session name).
+- `twf <base>` creates a new full-name worker and writes state to `./.twf/<full>.json`.
+- `twf <base> "msg"` will use the **latest** full-name worker for that base (by state-file mtime). If none exists, it auto-creates one.
+- `remove` always requires **full name** to avoid deleting the wrong worker.
+
+State directory:
+- default: `./.twf/`
+- override: `TWF_STATE_DIR=/some/path`
+
+### Core commands
+
+- Start a worker (returns the state json path on stdout):
+  - `bash .codex/skills/tmux-workflow/scripts/twf codex-a`
+  - `bash .codex/skills/tmux-workflow/scripts/twf up codex-a`
+- Ask a worker and print Codex reply to stdout:
+  - `bash .codex/skills/tmux-workflow/scripts/twf codex-a "your prompt"`
+  - `bash .codex/skills/tmux-workflow/scripts/twf ask codex-a "your prompt"`
+- Inspect:
+  - `bash .codex/skills/tmux-workflow/scripts/twf pend codex-a [N]`
+  - `bash .codex/skills/tmux-workflow/scripts/twf ping codex-a`
+
+### Stop / Resume (resume keeps logs)
+
+- `twf stop <name|full-name>`: stop tmux session, keep state + `CODEX_HOME` (so it can be resumed later).
+- `twf resume <name|full-name>`: resume a stopped worker.
+  - default: resume the worker **and its subtree** (children).
+  - `--no-tree`: resume only this node.
+
+Resume source id:
+- `twf stop` stores `codex_resume_from_id` by reading the latest `session_meta.payload.id` from that worker’s newest `*.jsonl` log.
+- `twf resume` uses `codex resume <id>` when `codex_resume_from_id` exists; otherwise falls back to a fresh `codex` session.
+
+### Parent/Child workers (“sub-codex”)
+
+Create a child worker and link it to a parent:
+- `twf spawn <parent-full> <child-base> [up-args...]`
+
+Notes:
+- parent must be **full name** (unique).
+- child is created as a new full-name worker and recorded into:
+  - child: `parent=<parent-full>`
+  - parent: `children[] += <child-full>`
+
+Show structure:
+- `twf tree [root-full]`
+- `twf list [--running|--stopped|--orphans]`
+
+### Remove (destructive)
+
+- `twf remove <full-name>`: **default recursive** delete of the node + its subtree:
+  - kills tmux sessions
+  - deletes worker `CODEX_HOME`
+  - deletes state json files
+- `twf remove <full-name> --no-recursive`: delete only the single node
+
+Safety:
+- `remove` only deletes `codex_home` if it is under `TWF_WORKERS_DIR` (or default `~/.codex-workers`); otherwise it refuses and asks you to delete manually.
 
 ## Environment knobs
+
+### Low-level (`codex_up_tmux.sh` and friends)
 
 - `TWF_SESSION_FILE`: session file path (default: `./.codex-tmux-session.json`).
 - `TWF_TMUX_SESSION`: override tmux session name (default: `codex-<hash(cwd)>`).
@@ -33,5 +100,3 @@ This skill is a self-contained toolkit under `scripts/` (copy this whole folder 
 - `TWF_CODEX_SESSION_ROOT` / `CODEX_SESSION_ROOT` / `CODEX_HOME`: where to scan logs (default: `~/.codex/sessions`).
 - `TWF_POLL_INTERVAL` (seconds, default `0.05`), `TWF_TIMEOUT` (seconds, default `3600`).
 - `TWF_STATE_DIR`: twf wrapper state dir (default: `./.twf`).
-
-See `twf-design/1.guide.md` (and `twf-design/2.muti_codex.md`, `twf-design/3.sub_codex.md`) for the design and notes.
