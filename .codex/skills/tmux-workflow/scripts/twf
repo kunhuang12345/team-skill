@@ -14,7 +14,12 @@ Usage:
   twf ask <name> [message]          # explicit ask (reads stdin if message omitted)
   twf pend <name> [N]               # show latest reply / last N Q&A
   twf ping <name>                   # health check
-  twf remove <full-name>            # stop tmux session and delete worker home + state json (requires full name)
+  twf stop <name|full-name>          # stop tmux session but keep worker home + state (resume-able)
+  twf resume <name|full-name>        # resume worker (default: resume subtree; pass --no-tree for single node)
+  twf spawn <parent-full> <child>    # start child worker and link parent/child in state
+  twf remove <full-name> [--no-recursive]  # delete worker (default: recursive subtree)
+  twf tree [root-full]               # show parent/child tree (running status)
+  twf list [--running|--stopped|--orphans] # list all workers (flat)
 
 State:
   session files live under: ./.twf/ (override with TWF_STATE_DIR)
@@ -37,6 +42,20 @@ is_ts_name() {
 
 state_dir="${TWF_STATE_DIR:-$PWD/.twf}"
 mkdir -p "$state_dir"
+lock_file="$state_dir/.lock"
+
+lock_state() {
+  exec 9>"$lock_file"
+  flock -x 9
+}
+
+unlock_state() {
+  exec 9>&- 2>/dev/null || true
+}
+
+now_human() {
+  date +"%Y-%m-%d %H:%M:%S"
+}
 
 latest_session_file() {
   local name="$1"
@@ -53,6 +72,74 @@ latest_session_file() {
     return 0
   fi
   return 1
+}
+
+resolve_session_file_or_fail() {
+  local name="$1"
+
+  local session_file=""
+  if is_ts_name "$name"; then
+    session_file="$state_dir/$name.json"
+  else
+    session_file="$(latest_session_file "$name" 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$session_file" || ! -f "$session_file" ]]; then
+    echo "❌ no session for: $name" >&2
+    exit 1
+  fi
+  echo "$session_file"
+}
+
+scan_latest_log_info() {
+  local sessions_root="$1"
+  python3 - "$sessions_root" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).expanduser()
+latest = None
+latest_mtime = -1.0
+
+for p in root.glob("**/*.jsonl"):
+    if not p.is_file():
+        continue
+    try:
+        mtime = p.stat().st_mtime
+    except OSError:
+        continue
+    if mtime >= latest_mtime:
+        latest = p
+        latest_mtime = mtime
+
+sid = None
+if latest:
+    try:
+        with latest.open("r", encoding="utf-8", errors="ignore") as f:
+            for _ in range(50):
+                line = f.readline()
+                if not line:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(entry, dict) or entry.get("type") != "session_meta":
+                    continue
+                payload = entry.get("payload") or {}
+                if isinstance(payload, dict) and isinstance(payload.get("id"), str):
+                    sid = payload["id"]
+                    break
+    except OSError:
+        pass
+
+print(str(latest) if latest else "")
+print(sid or "")
+PY
 }
 
 start_worker() {
@@ -136,50 +223,283 @@ ping_worker() {
   python3 "$script_dir/codex_ping.py" --session-file "$session_file" "$@"
 }
 
-remove_worker() {
-  local full="$1"
+list_workers() {
+  local filter="all" # all|running|stopped
+  local orphans="false"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --running) filter="running"; shift ;;
+      --stopped) filter="stopped"; shift ;;
+      --orphans) orphans="true"; shift ;;
+      *) echo "Unknown arg: $1" >&2; usage; exit 1 ;;
+    esac
+  done
+
+  python3 - "$state_dir" "$filter" "$orphans" <<'PY'
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+state_dir = Path(sys.argv[1])
+filter_mode = sys.argv[2]
+orphans_only = sys.argv[3] == "true"
+
+def tmux_running(session: str) -> bool:
+    if not session:
+        return False
+    try:
+        subprocess.run(["tmux", "has-session", "-t", session], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+items = []
+for p in state_dir.glob("*.json"):
+    name = p.stem
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+
+    tmux_session = data.get("tmux_session") if isinstance(data.get("tmux_session"), str) else name
+    running = tmux_running(tmux_session)
+
+    parent = data.get("parent") if isinstance(data.get("parent"), str) else ""
+    is_orphan = bool(parent) and not (state_dir / f"{parent}.json").exists()
+    if orphans_only and not is_orphan:
+        continue
+
+    if filter_mode == "running" and not running:
+        continue
+    if filter_mode == "stopped" and running:
+        continue
+
+    current_id = data.get("codex_current_id") if isinstance(data.get("codex_current_id"), str) else ""
+    if not current_id:
+        current_id = data.get("codex_session_id") if isinstance(data.get("codex_session_id"), str) else ""
+    resume_from = data.get("codex_resume_from_id") if isinstance(data.get("codex_resume_from_id"), str) else ""
+
+    items.append(
+        {
+            "name": name,
+            "mtime": p.stat().st_mtime if p.exists() else 0.0,
+            "running": running,
+            "parent": parent or None,
+            "is_orphan": is_orphan,
+            "current": current_id,
+            "resume_from": resume_from,
+        }
+    )
+
+items.sort(key=lambda x: x["mtime"], reverse=True)
+
+for it in items:
+    status = "running" if it["running"] else "stopped"
+    cur = it["current"][:8] if it["current"] else ""
+    res = it["resume_from"][:8] if it["resume_from"] else ""
+    extra = []
+    if it["parent"]:
+        extra.append(f"parent={it['parent']}")
+    if it["is_orphan"]:
+        extra.append("orphan")
+    if res:
+        extra.append(f"resume_from={res}")
+    if cur:
+        extra.append(f"current={cur}")
+    suffix = ("  " + "  ".join(extra)) if extra else ""
+    print(f"{it['name']}  [{status}]{suffix}")
+PY
+}
+
+tree_workers() {
+  local root="${1:-}"
+  shift || true
+  [[ $# -eq 0 ]] || { echo "Unknown arg: $1" >&2; usage; exit 1; }
+
+  if [[ -n "$root" ]] && ! is_ts_name "$root"; then
+    local sf
+    sf="$(latest_session_file "$root" 2>/dev/null || true)"
+    if [[ -n "$sf" ]]; then
+      root="$(basename "$sf" .json)"
+    fi
+  fi
+
+  python3 - "$state_dir" "$root" <<'PY'
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+state_dir = Path(sys.argv[1])
+requested_root = sys.argv[2].strip()
+
+def tmux_running(session: str) -> bool:
+    if not session:
+        return False
+    try:
+        subprocess.run(["tmux", "has-session", "-t", session], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+states: dict[str, dict] = {}
+mtimes: dict[str, float] = {}
+for p in state_dir.glob("*.json"):
+    name = p.stem
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    states[name] = data
+    try:
+        mtimes[name] = p.stat().st_mtime
+    except OSError:
+        mtimes[name] = 0.0
+
+def get_str(data: dict, key: str) -> str:
+    v = data.get(key)
+    return v.strip() if isinstance(v, str) else ""
+
+explicit_children: dict[str, list[str]] = {}
+by_parent: dict[str, list[str]] = {}
+
+for name, data in states.items():
+    children = data.get("children")
+    if isinstance(children, list):
+        explicit_children[name] = [c.strip() for c in children if isinstance(c, str) and c.strip()]
+    parent = get_str(data, "parent")
+    if parent:
+        by_parent.setdefault(parent, []).append(name)
+
+def merged_children(name: str) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for c in explicit_children.get(name, []):
+        if c in states and c not in seen:
+            out.append(c)
+            seen.add(c)
+    extras = [c for c in by_parent.get(name, []) if c in states and c not in seen]
+    extras.sort(key=lambda x: (mtimes.get(x, 0.0), x), reverse=True)
+    out.extend(extras)
+    return out
+
+def node_line(name: str) -> str:
+    data = states.get(name, {})
+    tmux_session = get_str(data, "tmux_session") or name
+    running = tmux_running(tmux_session)
+    status = "running" if running else "stopped"
+    current_id = get_str(data, "codex_current_id") or get_str(data, "codex_session_id")
+    resume_from = get_str(data, "codex_resume_from_id")
+    cur = current_id[:8] if current_id else ""
+    res = resume_from[:8] if resume_from else ""
+    parts = [f"[{status}]"]
+    if res:
+        parts.append(f"resume_from={res}")
+    if cur:
+        parts.append(f"current={cur}")
+    return f"{name}  " + "  ".join(parts)
+
+def render(root: str, prefix: str = "") -> None:
+    seen: set[str] = set([root])
+    print(prefix + node_line(root))
+    render_children(root, prefix, seen)
+
+def render_children(node: str, prefix: str, seen: set[str]) -> None:
+    kids = merged_children(node)
+    for i, c in enumerate(kids):
+        is_last = i == len(kids) - 1
+        branch = "└─ " if is_last else "├─ "
+        next_prefix = prefix + ("   " if is_last else "│  ")
+        if c in seen:
+            print(prefix + branch + node_line(c) + "  (cycle)")
+            continue
+        seen.add(c)
+        print(prefix + branch + node_line(c))
+        render_children(c, next_prefix, seen)
+
+if requested_root:
+    if requested_root not in states:
+        print(f"❌ root not found: {requested_root}", file=sys.stderr)
+        raise SystemExit(1)
+    render(requested_root)
+    raise SystemExit(0)
+
+# roots: nodes with no parent in-state
+roots = []
+for name, data in states.items():
+    parent = get_str(data, "parent")
+    if not parent or parent not in states:
+        roots.append(name)
+roots.sort(key=lambda x: (mtimes.get(x, 0.0), x), reverse=True)
+
+if not roots:
+    print("(no workers)")
+    raise SystemExit(0)
+
+for r in roots:
+    render(r)
+PY
+}
+
+stop_worker() {
+  local name="$1"
   shift || true
 
-  if ! is_ts_name "$full"; then
-    echo "❌ remove requires a full worker name like: <base>-YYYYmmdd-HHMMSS-<pid>" >&2
-    echo "   provided: $full" >&2
-    echo "   hint: list candidates via: ls -t \"$state_dir/${full}-\"*.json" >&2
-    exit 1
-  fi
+  local session_file
+  session_file="$(resolve_session_file_or_fail "$name")"
 
-  local session_file="$state_dir/$full.json"
-  if [[ ! -f "$session_file" ]]; then
-    echo "❌ session file not found: $session_file" >&2
-    exit 1
-  fi
+  lock_state
+  trap 'unlock_state' RETURN
 
-  local tmux_session=""
-  local codex_home=""
-  tmux_session="$(
+  local meta=()
+  readarray -t meta < <(
     python3 - "$session_file" <<'PY'
 import json
+import os
 import sys
+from pathlib import Path
 
-p = sys.argv[1]
-with open(p, "r", encoding="utf-8") as f:
-    data = json.load(f)
-print(data.get("tmux_session") or "")
+p = Path(sys.argv[1])
+try:
+    data = json.loads(p.read_text(encoding="utf-8"))
+except Exception:
+    data = {}
+
+def get_str(key: str) -> str:
+    v = data.get(key)
+    return v if isinstance(v, str) else ""
+
+tmux_session = get_str("tmux_session") or p.stem
+codex_home = get_str("codex_home")
+sessions_root = get_str("codex_session_root") or (str(Path(codex_home).expanduser() / "sessions") if codex_home else "")
+
+print(tmux_session)
+print(codex_home)
+print(sessions_root)
 PY
-  )"
-  codex_home="$(
-    python3 - "$session_file" <<'PY'
-import json
-import sys
+  )
 
-p = sys.argv[1]
-with open(p, "r", encoding="utf-8") as f:
-    data = json.load(f)
-print(data.get("codex_home") or "")
-PY
-  )"
-
+  local tmux_session="${meta[0]:-}"
+  local codex_home="${meta[1]:-}"
+  local sessions_root="${meta[2]:-}"
   if [[ -z "$tmux_session" ]]; then
-    tmux_session="$full"
+    tmux_session="$name"
+  fi
+
+  local log_path=""
+  local sid=""
+  if [[ -n "$sessions_root" ]]; then
+    local info=()
+    readarray -t info < <(scan_latest_log_info "$sessions_root")
+    log_path="${info[0]:-}"
+    sid="${info[1]:-}"
   fi
 
   if tmux has-session -t "$tmux_session" >/dev/null 2>&1; then
@@ -189,12 +509,464 @@ PY
     echo "ℹ️  tmux session not running: $tmux_session" >&2
   fi
 
-  if [[ -n "$codex_home" ]]; then
-    local base_default="$HOME/.codex-workers"
-    local base_env="${TWF_WORKERS_DIR:-$base_default}"
-    local ok="false"
-    ok="$(
-      python3 - "$codex_home" "$base_env" "$base_default" <<'PY'
+  local now
+  now="$(now_human)"
+  python3 - "$session_file" "$now" "$log_path" "$sid" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+now = sys.argv[2]
+log_path = sys.argv[3] or None
+sid = sys.argv[4] or None
+
+try:
+    data = json.loads(p.read_text(encoding="utf-8"))
+except Exception:
+    data = {}
+
+data["active"] = False
+data["stopped_at"] = now
+
+if log_path:
+    data["codex_session_path"] = log_path
+if sid:
+    data["codex_current_id"] = sid
+    data["codex_resume_from_id"] = sid
+    # Back-compat fields
+    data["codex_session_id"] = sid
+
+tmp = p.with_suffix(p.suffix + ".tmp")
+tmp.parent.mkdir(parents=True, exist_ok=True)
+tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+tmp.replace(p)
+PY
+}
+
+resume_worker_inner() {
+  local name="$1"
+  local tree="${2:-true}"
+
+  local session_file
+  session_file="$(resolve_session_file_or_fail "$name")"
+  local full_name
+  full_name="$(basename "$session_file" .json)"
+
+  if [[ -n "${TWF_RESUME_VISITED[$full_name]:-}" ]]; then
+    return 0
+  fi
+  TWF_RESUME_VISITED["$full_name"]=1
+
+  local meta=()
+  readarray -t meta < <(
+    python3 - "$session_file" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+try:
+    data = json.loads(p.read_text(encoding="utf-8"))
+except Exception:
+    data = {}
+
+def get_str(key: str) -> str:
+    v = data.get(key)
+    return v if isinstance(v, str) else ""
+
+tmux_session = get_str("tmux_session") or p.stem
+work_dir = get_str("work_dir") or os.getcwd()
+codex_home = get_str("codex_home")
+codex_cmd = get_str("codex_start_cmd") or os.environ.get("TWF_CODEX_CMD", "codex -c disable_paste_burst=true")
+resume_id = get_str("codex_resume_from_id") or get_str("codex_current_id") or get_str("codex_session_id")
+
+children = data.get("children")
+if not isinstance(children, list):
+    children = []
+children = [c for c in children if isinstance(c, str) and c.strip()]
+
+print(tmux_session)
+print(work_dir)
+print(codex_home)
+print(codex_cmd)
+print(resume_id)
+print("\n".join(children))
+PY
+  )
+
+  local tmux_session="${meta[0]:-}"
+  local work_dir="${meta[1]:-$PWD}"
+  local codex_home="${meta[2]:-}"
+  local codex_cmd="${meta[3]:-codex -c disable_paste_burst=true}"
+  local resume_id="${meta[4]:-}"
+
+  if [[ -z "$codex_home" ]]; then
+    echo "❌ codex_home missing in state: $session_file" >&2
+    exit 1
+  fi
+
+  if tmux has-session -t "$tmux_session" >/dev/null 2>&1; then
+    echo "ℹ️  already running: $tmux_session" >&2
+  else
+    if [[ ! -d "$codex_home" ]]; then
+      if [[ -n "$resume_id" ]]; then
+        echo "❌ codex_home missing, cannot resume with id: $codex_home" >&2
+        exit 1
+      fi
+      mkdir -p "$codex_home"
+    fi
+
+    local codex_home_src="${TWF_CODEX_HOME_SRC:-$HOME/.codex}"
+    echo "🔧 Syncing CODEX_HOME -> $codex_home (excluding sessions/log/history.jsonl)" >&2
+    python3 "$script_dir/sync_codex_home.py" --src "$codex_home_src" --dst "$codex_home" >/dev/null
+
+    local quoted_codex_home
+    quoted_codex_home="$(python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$codex_home")"
+    local cmd="$codex_cmd"
+    if [[ -n "$resume_id" ]]; then
+      local quoted_id
+      quoted_id="$(python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$resume_id")"
+      cmd="$cmd resume $quoted_id"
+    fi
+    tmux new-session -d -s "$tmux_session" -c "$work_dir" "env CODEX_HOME=$quoted_codex_home $cmd"
+    tmux set-environment -t "$tmux_session" CODEX_HOME "$codex_home" >/dev/null 2>&1 || true
+    echo "▶️  resumed tmux session: $tmux_session" >&2
+  fi
+
+  local tmux_target="${tmux_session}:0.0"
+  local pane_id
+  pane_id="$(tmux display-message -p -t "$tmux_target" '#{pane_id}' 2>/dev/null || true)"
+
+  local sessions_root="$codex_home/sessions"
+  local log_path=""
+  local sid=""
+  local deadline=$((SECONDS + 10))
+  while [[ $SECONDS -lt $deadline ]]; do
+    local info=()
+    readarray -t info < <(scan_latest_log_info "$sessions_root")
+    log_path="${info[0]:-}"
+    sid="${info[1]:-}"
+    if [[ -n "$log_path" ]]; then
+      break
+    fi
+    sleep 0.2
+  done
+
+  local now
+  now="$(now_human)"
+  python3 - "$session_file" "$now" "$tmux_session" "$tmux_target" "$pane_id" "$work_dir" "$codex_home" "$sessions_root" "$codex_cmd" "$log_path" "$sid" "$resume_id" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+now = sys.argv[2]
+tmux_session = sys.argv[3]
+tmux_target = sys.argv[4]
+pane_id = sys.argv[5] or None
+work_dir = sys.argv[6]
+codex_home = sys.argv[7]
+sessions_root = sys.argv[8]
+codex_cmd = sys.argv[9]
+log_path = sys.argv[10] or None
+sid = sys.argv[11] or None
+resume_id = sys.argv[12] or None
+
+try:
+    data = json.loads(p.read_text(encoding="utf-8"))
+except Exception:
+    data = {}
+
+data.update(
+    {
+        "terminal": "tmux",
+        "tmux_session": tmux_session,
+        "tmux_target": tmux_target,
+        "pane_id": pane_id,
+        "work_dir": work_dir,
+        "worker_id": data.get("worker_id") or tmux_session,
+        "codex_home": codex_home,
+        "codex_session_root": sessions_root,
+        "active": True,
+        "resumed_at": now,
+        "codex_start_cmd": codex_cmd,
+    }
+)
+
+if log_path:
+    data["codex_session_path"] = log_path
+if sid:
+    data["codex_current_id"] = sid
+    data["codex_session_id"] = sid  # back-compat
+
+if resume_id and codex_cmd:
+    data["codex_resume_cmd"] = f"{codex_cmd} resume {resume_id}"
+
+tmp = p.with_suffix(p.suffix + ".tmp")
+tmp.parent.mkdir(parents=True, exist_ok=True)
+tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+tmp.replace(p)
+PY
+
+  if [[ "$tree" != "true" ]]; then
+    return 0
+  fi
+
+  local child
+  for child in "${meta[@]:5}"; do
+    [[ -n "$child" ]] || continue
+    resume_worker_inner "$child" "true"
+  done
+}
+
+resume_worker() {
+  local name="$1"
+  shift || true
+
+  declare -gA TWF_RESUME_VISITED=()
+
+  local tree="true"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --tree) tree="true"; shift ;;
+      --no-tree) tree="false"; shift ;;
+      *) echo "Unknown arg: $1" >&2; usage; exit 1 ;;
+    esac
+  done
+
+  lock_state
+  trap 'unlock_state' RETURN
+
+  resume_worker_inner "$name" "$tree"
+}
+
+spawn_worker() {
+  local parent="$1"
+  local child_base="$2"
+  shift 2 || true
+
+  if ! is_ts_name "$parent"; then
+    echo "❌ spawn requires a full parent name like: <base>-YYYYmmdd-HHMMSS-<pid>" >&2
+    echo "   provided: $parent" >&2
+    exit 1
+  fi
+
+  local parent_file="$state_dir/$parent.json"
+  if [[ ! -f "$parent_file" ]]; then
+    echo "❌ parent state not found: $parent_file" >&2
+    exit 1
+  fi
+
+  local child_file
+  child_file="$(start_worker "$child_base" "$@")"
+  local child_full
+  child_full="$(basename "$child_file" .json)"
+
+  lock_state
+  trap 'unlock_state' RETURN
+
+  python3 - "$child_file" "$parent" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+parent = sys.argv[2]
+try:
+    data = json.loads(p.read_text(encoding="utf-8"))
+except Exception:
+    data = {}
+data["parent"] = parent
+tmp = p.with_suffix(p.suffix + ".tmp")
+tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+tmp.replace(p)
+PY
+
+  python3 - "$parent_file" "$child_full" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+child = sys.argv[2]
+try:
+    data = json.loads(p.read_text(encoding="utf-8"))
+except Exception:
+    data = {}
+children = data.get("children")
+if not isinstance(children, list):
+    children = []
+children = [c for c in children if isinstance(c, str) and c.strip()]
+if child not in children:
+    children.append(child)
+data["children"] = children
+tmp = p.with_suffix(p.suffix + ".tmp")
+tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+tmp.replace(p)
+PY
+
+  echo "$child_file"
+}
+
+remove_worker() {
+  local full="$1"
+  shift || true
+
+  local recursive="true"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --recursive) recursive="true"; shift ;;
+      --no-recursive) recursive="false"; shift ;;
+      *) echo "Unknown arg: $1" >&2; usage; exit 1 ;;
+    esac
+  done
+
+  if ! is_ts_name "$full"; then
+    echo "❌ remove requires a full worker name like: <base>-YYYYmmdd-HHMMSS-<pid>" >&2
+    echo "   provided: $full" >&2
+    echo "   hint: list candidates via: ls -t \"$state_dir/${full}-\"*.json" >&2
+    exit 1
+  fi
+
+  lock_state
+  trap 'unlock_state' RETURN
+
+  local rootsession="$state_dir/$full.json"
+  if [[ ! -f "$rootsession" ]]; then
+    echo "❌ session file not found: $rootsession" >&2
+    exit 1
+  fi
+
+  local nodes=()
+  if [[ "$recursive" == "true" ]]; then
+    readarray -t nodes < <(
+      python3 - "$state_dir" "$full" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+state_dir = Path(sys.argv[1])
+root = sys.argv[2]
+
+states: dict[str, dict] = {}
+for p in state_dir.glob("*.json"):
+    name = p.stem
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    if isinstance(data, dict):
+        states[name] = data
+    else:
+        states[name] = {}
+
+adj: dict[str, list[str]] = {name: [] for name in states}
+seen: dict[str, set[str]] = {name: set() for name in states}
+
+def add_edge(parent: str, child: str) -> None:
+    if not parent or not child:
+        return
+    if parent not in adj:
+        adj[parent] = []
+        seen[parent] = set()
+    if child in seen[parent]:
+        return
+    seen[parent].add(child)
+    adj[parent].append(child)
+
+# parent.children[] edges (preserve order)
+for name, data in states.items():
+    children = data.get("children")
+    if isinstance(children, list):
+        for c in children:
+            if isinstance(c, str) and c.strip():
+                add_edge(name, c.strip())
+
+# child.parent edges (append; order unspecified)
+for child, data in states.items():
+    parent = data.get("parent")
+    if isinstance(parent, str) and parent.strip():
+        add_edge(parent.strip(), child)
+
+visited: set[str] = set()
+order: list[str] = []
+
+def dfs(n: str) -> None:
+    if n in visited:
+        return
+    visited.add(n)
+    for c in adj.get(n, []):
+        if c in states:
+            dfs(c)
+    order.append(n)
+
+dfs(root)
+print("\n".join(order))
+PY
+    )
+  else
+    nodes=("$full")
+  fi
+
+  if [[ ${#nodes[@]} -eq 0 ]]; then
+    echo "❌ nothing to remove for: $full" >&2
+    exit 1
+  fi
+
+  local node
+  for node in "${nodes[@]}"; do
+    local session_file="$state_dir/$node.json"
+    if [[ ! -f "$session_file" ]]; then
+      echo "⚠️  state missing, skipping: $session_file" >&2
+      tmux kill-session -t "$node" >/dev/null 2>&1 || true
+      continue
+    fi
+
+    local meta=()
+    readarray -t meta < <(
+      python3 - "$session_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+try:
+    data = json.loads(p.read_text(encoding="utf-8"))
+except Exception:
+    data = {}
+
+def get_str(key: str) -> str:
+    v = data.get(key)
+    return v if isinstance(v, str) else ""
+
+tmux_session = get_str("tmux_session") or p.stem
+codex_home = get_str("codex_home")
+parent = get_str("parent")
+print(tmux_session)
+print(codex_home)
+print(parent)
+PY
+    )
+
+    local tmux_session="${meta[0]:-$node}"
+    local codex_home="${meta[1]:-}"
+    local parent="${meta[2]:-}"
+
+    if tmux has-session -t "$tmux_session" >/dev/null 2>&1; then
+      tmux kill-session -t "$tmux_session" >/dev/null 2>&1 || true
+      echo "🛑 stopped tmux session: $tmux_session" >&2
+    else
+      echo "ℹ️  tmux session not running: $tmux_session" >&2
+    fi
+
+    if [[ -n "$codex_home" ]]; then
+      local base_default="$HOME/.codex-workers"
+      local base_env="${TWF_WORKERS_DIR:-$base_default}"
+      local ok="false"
+      ok="$(
+        python3 - "$codex_home" "$base_env" "$base_default" <<'PY'
 import sys
 from pathlib import Path
 
@@ -215,18 +987,41 @@ for base in bases:
 
 print("false")
 PY
-    )"
-    if [[ "$ok" == "true" ]]; then
-      rm -rf -- "$codex_home"
-      echo "🧹 removed worker CODEX_HOME: $codex_home" >&2
-    else
-      echo "⚠️  refused to delete codex_home outside workers dir: $codex_home" >&2
-      echo "   (set TWF_WORKERS_DIR appropriately or delete manually)" >&2
+      )"
+      if [[ "$ok" == "true" ]]; then
+        rm -rf -- "$codex_home"
+        echo "🧹 removed worker CODEX_HOME: $codex_home" >&2
+      else
+        echo "⚠️  refused to delete codex_home outside workers dir: $codex_home" >&2
+        echo "   (set TWF_WORKERS_DIR appropriately or delete manually)" >&2
+      fi
     fi
-  fi
 
-  rm -f -- "$session_file"
-  echo "🗑️  removed session file: $session_file" >&2
+    rm -f -- "$session_file"
+    echo "🗑️  removed session file: $session_file" >&2
+
+    if [[ -n "$parent" && -f "$state_dir/$parent.json" ]]; then
+      python3 - "$state_dir/$parent.json" "$node" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+child = sys.argv[2]
+try:
+    data = json.loads(p.read_text(encoding="utf-8"))
+except Exception:
+    data = {}
+children = data.get("children")
+if isinstance(children, list):
+    children = [c for c in children if isinstance(c, str) and c.strip() and c != child]
+    data["children"] = children
+tmp = p.with_suffix(p.suffix + ".tmp")
+tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+tmp.replace(p)
+PY
+    fi
+  done
 }
 
 cmd="${1:-}"
@@ -254,6 +1049,29 @@ case "$cmd" in
     [[ $# -ge 2 ]] || { echo "❌ missing name" >&2; usage; exit 1; }
     shift
     ping_worker "$@"
+    ;;
+  stop)
+    [[ $# -ge 2 ]] || { echo "❌ missing name" >&2; usage; exit 1; }
+    shift
+    stop_worker "$@"
+    ;;
+  resume)
+    [[ $# -ge 2 ]] || { echo "❌ missing name" >&2; usage; exit 1; }
+    shift
+    resume_worker "$@"
+    ;;
+  spawn)
+    [[ $# -ge 3 ]] || { echo "❌ usage: twf spawn <parent-full> <child-base> [up-args...]" >&2; usage; exit 1; }
+    shift
+    spawn_worker "$@"
+    ;;
+  tree)
+    shift
+    tree_workers "$@"
+    ;;
+  list|ls)
+    shift
+    list_workers "$@"
     ;;
   remove|rm)
     [[ $# -ge 2 ]] || { echo "❌ missing full name" >&2; usage; exit 1; }

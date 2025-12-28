@@ -21,7 +21,7 @@ This skill is a self-contained toolkit under `scripts/` (copy this whole folder 
 - `scripts/codex_ask.py`: inject text into the tmux pane and poll Codex `sessions/*.jsonl` until the next assistant reply appears.
 - `scripts/codex_pend.py`: print the latest reply (or last N Q/A pairs) from the bound or auto-detected Codex log.
 - `scripts/codex_ping.py`: health check for tmux worker and log binding.
-- `scripts/twf`: helper wrapper for `up/ask/pend/ping/remove` with automatic session-file naming and “pick latest” behavior.
+- `scripts/twf`: helper wrapper for `up/ask/pend/ping/stop/resume/spawn/tree/list/remove` with automatic session-file naming and “pick latest” behavior.
 
 ## Environment knobs
 
@@ -34,4 +34,4 @@ This skill is a self-contained toolkit under `scripts/` (copy this whole folder 
 - `TWF_POLL_INTERVAL` (seconds, default `0.05`), `TWF_TIMEOUT` (seconds, default `3600`).
 - `TWF_STATE_DIR`: twf wrapper state dir (default: `./.twf`).
 
-See `guide.md` for the design, acceptance checklist, and notes.
+See `twf-design/1.guide.md` (and `twf-design/2.muti_codex.md`, `twf-design/3.sub_codex.md`) for the design and notes.

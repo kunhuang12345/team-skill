@@ -168,6 +168,8 @@ if latest:
     sid = read_session_id(latest)
     if sid:
         data["codex_session_id"] = sid
+        data["codex_current_id"] = sid
+        data["codex_resume_from_id"] = sid
 
 tmp = session_file.with_suffix(session_file.suffix + ".tmp")
 tmp.parent.mkdir(parents=True, exist_ok=True)

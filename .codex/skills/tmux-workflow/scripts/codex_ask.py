@@ -406,6 +406,8 @@ def main(argv: list[str]) -> int:
                 sid, cwd = _extract_session_meta(entry)
                 if sid:
                     data["codex_session_id"] = sid
+                    data["codex_current_id"] = sid
+                    data["codex_resume_from_id"] = sid
                 if cwd:
                     data["work_dir"] = cwd
                     try:
