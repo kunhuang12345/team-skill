@@ -24,13 +24,17 @@ Usage:
   twf list [--running|--stopped|--orphans] # list all workers (flat)
 
 State:
-  session files live under: ~/.twf/ (override with TWF_STATE_DIR)
+  session files directory is configurable via `scripts/twf_config.json`:
+    - auto:   <skill_root>/.twf/  (default)
+    - global: ~/.twf/
+    - manual: ./.twf/  (must run in that directory)
+  override: `TWF_STATE_DIR=/some/path` (highest priority)
   file names:
     - timestamped: <name>-<YYYYmmdd-HHMMSS>-<pid>.json
     - exact:       <name>.json (used if no timestamped file exists)
 
 Env:
-  TWF_STATE_DIR       Default: ~/.twf
+  TWF_STATE_DIR       Override twf state dir (highest priority)
   TWF_WORKERS_DIR     Default: ~/.codex-workers     (forwarded to codex_up_tmux.sh)
   TWF_CODEX_HOME_SRC  Default: ~/.codex             (forwarded to codex_up_tmux.sh)
   TWF_CODEX_CMD_CONFIG  Default: scripts/twf_config.json (model + model_reasoning_effort)
@@ -43,7 +47,43 @@ is_ts_name() {
   [[ "$1" =~ -[0-9]{8}-[0-9]{6}(-[0-9]+)?$ ]]
 }
 
-state_dir="${TWF_STATE_DIR:-$HOME/.twf}"
+config_file="${TWF_CODEX_CMD_CONFIG:-$script_dir/twf_config.json}"
+skill_dir="$(cd "$script_dir/.." && pwd)"
+
+state_dir_mode() {
+  python3 - "$config_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+cfg_path = Path(sys.argv[1]).expanduser()
+mode = "auto"
+try:
+  if cfg_path.exists():
+    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    if isinstance(data, dict) and isinstance(data.get("twf_state_dir_mode"), str):
+      mode = data["twf_state_dir_mode"].strip().lower() or "auto"
+except Exception:
+  pass
+print(mode)
+PY
+}
+
+state_dir="${TWF_STATE_DIR:-}"
+if [[ -z "$state_dir" ]]; then
+  mode="$(state_dir_mode)"
+  case "$mode" in
+    global)
+      state_dir="$HOME/.twf"
+      ;;
+    manual)
+      state_dir="$PWD/.twf"
+      ;;
+    auto|*)
+      state_dir="$skill_dir/.twf"
+      ;;
+  esac
+fi
 mkdir -p "$state_dir"
 lock_file="$state_dir/.lock"
 
