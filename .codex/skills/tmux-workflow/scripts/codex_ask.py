@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+import ctypes.util
 import json
 import os
+import select
 import subprocess
 import sys
 import time
@@ -251,6 +254,142 @@ def _tmux_cmd(args: list[str], *, input_text: Optional[str] = None) -> None:
     subprocess.run(["tmux", *args], input=data, check=True)
 
 
+class _InotifyWatcher:
+    _IN_MODIFY = 0x00000002
+    _IN_ATTRIB = 0x00000004
+    _IN_CLOSE_WRITE = 0x00000008
+    _IN_DELETE_SELF = 0x00000400
+    _IN_MOVED_SELF = 0x00000800
+
+    def __init__(self) -> None:
+        self._libc: Optional[ctypes.CDLL] = None
+        self._fd: Optional[int] = None
+        self._wd: Optional[int] = None
+        self._path: Optional[Path] = None
+
+    @classmethod
+    def maybe_create(cls) -> Optional["_InotifyWatcher"]:
+        mode = (os.environ.get("TWF_WATCH_MODE") or "auto").strip().lower()
+        if mode in {"poll", "sleep", "interval", "0", "false", "off"}:
+            return None
+        if not sys.platform.startswith("linux"):
+            return None
+
+        watcher = cls()
+        if watcher._init():
+            return watcher
+
+        if mode in {"inotify", "watch"}:
+            eprint("⚠️  inotify unavailable, falling back to polling (set TWF_WATCH_MODE=poll to silence).")
+        watcher.close()
+        return None
+
+    def _init(self) -> bool:
+        try:
+            libc_path = ctypes.util.find_library("c") or "libc.so.6"
+            libc = ctypes.CDLL(libc_path, use_errno=True)
+            self._libc = libc
+
+            fd: int
+            if hasattr(libc, "inotify_init1"):
+                libc.inotify_init1.argtypes = [ctypes.c_int]
+                libc.inotify_init1.restype = ctypes.c_int
+                fd = int(libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC))
+            else:
+                libc.inotify_init.argtypes = []
+                libc.inotify_init.restype = ctypes.c_int
+                fd = int(libc.inotify_init())
+                if fd < 0:
+                    return False
+                import fcntl
+
+                flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+                fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+                flags = fcntl.fcntl(fd, fcntl.F_GETFD)
+                fcntl.fcntl(fd, fcntl.F_SETFD, flags | fcntl.FD_CLOEXEC)
+
+            if fd < 0:
+                return False
+
+            libc.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+            libc.inotify_add_watch.restype = ctypes.c_int
+            libc.inotify_rm_watch.argtypes = [ctypes.c_int, ctypes.c_int]
+            libc.inotify_rm_watch.restype = ctypes.c_int
+
+            self._fd = fd
+            return True
+        except Exception:
+            return False
+
+    def watch_path(self, path: Path) -> None:
+        if not self._libc or self._fd is None:
+            return
+        if self._path == path and self._wd is not None:
+            return
+
+        if self._wd is not None:
+            try:
+                self._libc.inotify_rm_watch(self._fd, int(self._wd))
+            except Exception:
+                pass
+            self._wd = None
+
+        self._path = path
+        if not path.exists():
+            return
+
+        mask = (
+            self._IN_MODIFY
+            | self._IN_CLOSE_WRITE
+            | self._IN_ATTRIB
+            | self._IN_MOVED_SELF
+            | self._IN_DELETE_SELF
+        )
+        wd = int(self._libc.inotify_add_watch(self._fd, os.fsencode(str(path)), ctypes.c_uint32(mask)))
+        if wd >= 0:
+            self._wd = wd
+
+    def wait(self, timeout_s: float) -> None:
+        if self._fd is None or self._wd is None:
+            if timeout_s > 0:
+                time.sleep(timeout_s)
+            return
+        if timeout_s <= 0:
+            return
+
+        try:
+            ready, _, _ = select.select([self._fd], [], [], timeout_s)
+        except Exception:
+            return
+        if not ready:
+            return
+
+        # Drain events (we only use it as a wakeup mechanism).
+        try:
+            while True:
+                os.read(self._fd, 4096)
+        except BlockingIOError:
+            pass
+        except OSError:
+            pass
+
+    def close(self) -> None:
+        if self._libc and self._fd is not None and self._wd is not None:
+            try:
+                self._libc.inotify_rm_watch(self._fd, int(self._wd))
+            except Exception:
+                pass
+        self._wd = None
+        if self._fd is not None:
+            try:
+                os.close(self._fd)
+            except OSError:
+                pass
+        self._fd = None
+        self._path = None
+        self._libc = None
+
+
 def _inject_text(tmux_target: str, text: str, *, submit_delay_s: float) -> None:
     text = text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
     # Use buffer paste for large/multiline to avoid argv limits.
@@ -288,88 +427,107 @@ def _poll_for_reply(
     deadline = time.time() + timeout_s
     current_path = log_path
     current_offset = offset
+    watcher = _InotifyWatcher.maybe_create()
+    if watcher is not None:
+        watcher.watch_path(current_path)
     last_rescan = time.time()
     rescan_interval = min(2.0, max(0.2, timeout_s / 2.0 if timeout_s > 0 else 0.2))
     saw_user = False
     submit_nudges = 0
     inject_started = time.time()
 
-    while True:
-        if time.time() >= deadline:
-            return None, current_path, current_offset
+    try:
+        while True:
+            if time.time() >= deadline:
+                return None, current_path, current_offset
 
-        try:
-            size = current_path.stat().st_size
-            if current_offset > size:
-                current_offset = size
-        except OSError:
-            pass
-
-        try:
-            with current_path.open("rb") as f:
-                f.seek(max(0, current_offset))
-                while True:
-                    if time.time() >= deadline:
-                        return None, current_path, current_offset
-
-                    pos_before = f.tell()
-                    raw = f.readline()
-                    if not raw:
-                        break
-
-                    if not raw.endswith(b"\n"):
-                        f.seek(pos_before)
-                        break
-
-                    current_offset = f.tell()
-                    line = raw.decode("utf-8", errors="ignore").strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(entry, dict):
-                        continue
-
-                    ts = _parse_ts(entry.get("timestamp"))
-                    if ts is not None and ts < sent_after_utc:
-                        continue
-
-                    if not saw_user and _extract_user_text(entry) is not None:
-                        saw_user = True
-
-                    msg = _extract_assistant_text(entry)
-                    if msg is not None:
-                        return msg, current_path, current_offset
-        except OSError:
-            pass
-
-        now = time.time()
-        if allow_rescan and now - last_rescan >= rescan_interval:
-            if per_worker_root:
-                candidate = _scan_latest_log(sessions_root)
-            else:
-                candidate = _find_log_for_cwd(expected_cwd_norm)
-            if candidate and candidate.exists() and candidate != current_path:
-                current_path = candidate
-                current_offset = 0
-            last_rescan = now
-
-        if (
-            tmux_target
-            and not saw_user
-            and submit_nudges < submit_nudge_max
-            and time.time() - inject_started >= submit_nudge_after_s * (submit_nudges + 1)
-        ):
             try:
-                # Some Codex TUI states (startup/paste-burst) may require an extra submit keypress.
-                _tmux_cmd(["send-keys", "-t", tmux_target, "Enter"])
-                submit_nudges += 1
-            except Exception:
+                size = current_path.stat().st_size
+                if current_offset > size:
+                    current_offset = size
+            except OSError:
                 pass
 
-        time.sleep(poll_s)
+            try:
+                with current_path.open("rb") as f:
+                    f.seek(max(0, current_offset))
+                    while True:
+                        if time.time() >= deadline:
+                            return None, current_path, current_offset
+
+                        pos_before = f.tell()
+                        raw = f.readline()
+                        if not raw:
+                            break
+
+                        if not raw.endswith(b"\n"):
+                            f.seek(pos_before)
+                            break
+
+                        current_offset = f.tell()
+                        line = raw.decode("utf-8", errors="ignore").strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(entry, dict):
+                            continue
+
+                        ts = _parse_ts(entry.get("timestamp"))
+                        if ts is not None and ts < sent_after_utc:
+                            continue
+
+                        if not saw_user and _extract_user_text(entry) is not None:
+                            saw_user = True
+
+                        msg = _extract_assistant_text(entry)
+                        if msg is not None:
+                            return msg, current_path, current_offset
+            except OSError:
+                pass
+
+            now = time.time()
+            if allow_rescan and now - last_rescan >= rescan_interval:
+                if per_worker_root:
+                    candidate = _scan_latest_log(sessions_root)
+                else:
+                    candidate = _find_log_for_cwd(expected_cwd_norm)
+                if candidate and candidate.exists() and candidate != current_path:
+                    current_path = candidate
+                    current_offset = 0
+                    if watcher is not None:
+                        watcher.watch_path(current_path)
+                last_rescan = now
+
+            if (
+                tmux_target
+                and not saw_user
+                and submit_nudges < submit_nudge_max
+                and time.time() - inject_started >= submit_nudge_after_s * (submit_nudges + 1)
+            ):
+                try:
+                    # Some Codex TUI states (startup/paste-burst) may require an extra submit keypress.
+                    _tmux_cmd(["send-keys", "-t", tmux_target, "Enter"])
+                    submit_nudges += 1
+                except Exception:
+                    pass
+
+            now = time.time()
+            next_wakeup = deadline
+            if allow_rescan:
+                next_wakeup = min(next_wakeup, last_rescan + rescan_interval)
+            if tmux_target and (not saw_user) and submit_nudges < submit_nudge_max:
+                next_wakeup = min(next_wakeup, inject_started + submit_nudge_after_s * (submit_nudges + 1))
+
+            if watcher is None:
+                time.sleep(poll_s)
+            else:
+                watcher.wait(max(0.0, next_wakeup - now))
+    finally:
+        if watcher is not None:
+            watcher.close()
 
 
 def main(argv: list[str]) -> int:

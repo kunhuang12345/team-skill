@@ -101,6 +101,10 @@ Safety:
 - `TWF_WORKERS_DIR`: per-worker `CODEX_HOME` base dir (default: `~/.codex-workers`).
 - `TWF_CODEX_HOME_SRC`: source `CODEX_HOME` to copy from (default: `~/.codex`).
 - `TWF_CODEX_SESSION_ROOT` / `CODEX_SESSION_ROOT` / `CODEX_HOME`: where to scan logs (default: `~/.codex/sessions`).
+- `TWF_WATCH_MODE` (default `auto`):
+  - `auto`: on Linux/WSL use `inotify` to block until the log file changes; otherwise fall back to polling.
+  - `poll`: always polling with `TWF_POLL_INTERVAL`.
+  - `inotify`: force `inotify` (falls back to polling if unavailable).
 - `TWF_POLL_INTERVAL` (seconds, default `0.05`), `TWF_TIMEOUT` (seconds, default `3600`).
 - `TWF_STATE_DIR`: twf wrapper state dir (default: `~/.twf`).
 - `TWF_SUBMIT_DELAY` (seconds, default `0.5`): delay between injecting text and pressing Enter in tmux (workaround for Codex TUI paste-burst behavior).
