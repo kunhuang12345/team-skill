@@ -59,6 +59,10 @@ Inspect and route:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf list`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf route "login" --role dev`
 
+Disband the whole team (requires PM full name):
+- `bash .codex/skills/ai-team-workflow/scripts/atwf remove <pm-full>`
+  - find `<pm-full>` via: `bash .codex/skills/ai-team-workflow/scripts/atwf list`
+
 ## Reporting (mandatory)
 
 Completion/progress must flow upward:
@@ -100,6 +104,7 @@ All commands are wrappers around `twf` plus registry management:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf ask <name|full> ["message"]` (stdin supported)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf pend <name|full> [N]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf ping <name|full>`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf remove <pm-full>` (disband team; clears registry)
 
 ## Environment knobs
 

@@ -29,3 +29,7 @@ Reporting enforcement:
 Useful helpers:
 - List team: `bash .codex/skills/ai-team-workflow/scripts/atwf list`
 - Update scope: `bash .codex/skills/ai-team-workflow/scripts/atwf set-scope <name> "..."`.
+
+Startup behavior:
+- After reading this message, reply once with: `ACK: Coordinator ready. Standing by.`
+- Do not proactively ask the user for task scope; wait until PM/Architect/Dev/QA/Product messages you.

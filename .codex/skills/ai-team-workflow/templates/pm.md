@@ -23,6 +23,9 @@ Reporting (mandatory):
   - user-facing: `bash .codex/skills/ai-team-workflow/scripts/atwf report-to liaison "user update..."`
 - Do not message the user directly; Liaison is the only user-facing role.
 
+Team lifecycle:
+- If the user asks to dissolve the team, they will run: `bash .codex/skills/ai-team-workflow/scripts/atwf remove <pm-full>`.
+
 Commands you can use:
 - Start workers: `bash .codex/skills/ai-team-workflow/scripts/atwf up <role> [label] --scope "..."` (outside tmux)
 - Spawn child: `bash .codex/skills/ai-team-workflow/scripts/atwf spawn <parent-full> <role> [label] --scope "..."` (outside tmux)

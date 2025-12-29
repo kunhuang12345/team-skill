@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -19,6 +20,7 @@ INITIAL_TRIO = (
     ("coord", "main", "internal routing + escalation triage"),
     ("liaison", "main", "user communication + clarifications"),
 )
+FULL_NAME_RE = re.compile(r"^.+-[0-9]{8}-[0-9]{6}-[0-9]+$")
 
 
 def _now() -> str:
@@ -156,6 +158,13 @@ def _require_role(role: str) -> str:
     if r not in SUPPORTED_ROLES:
         raise SystemExit(f"❌ unsupported role: {role} (supported: {', '.join(SUPPORTED_ROLES)})")
     return r
+
+
+def _require_full_name(name: str) -> str:
+    n = name.strip()
+    if not FULL_NAME_RE.match(n):
+        raise SystemExit("❌ remove requires a full worker name like: <base>-YYYYmmdd-HHMMSS-<pid>")
+    return n
 
 
 def _base_name(role: str, label: str | None) -> str:
@@ -1026,6 +1035,73 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_remove(args: argparse.Namespace) -> int:
+    twf = _resolve_twf()
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+
+    pm_full = _require_full_name(args.pm_full)
+
+    lock = team_dir / ".lock"
+    with _locked(lock):
+        data = _load_registry(registry)
+        pm = _resolve_member(data, pm_full)
+        if not pm:
+            raise SystemExit(f"❌ pm not found in registry: {pm_full}")
+        role = str(pm.get("role", "")).strip()
+        if role != "pm":
+            raise SystemExit(f"❌ remove only supports PM. Provided worker role={role!r} full={pm_full}")
+
+        members = data.get("members", [])
+        if not isinstance(members, list) or not members:
+            _eprint("ℹ️ registry has no members; nothing to remove")
+            return 0
+
+        to_remove: list[str] = []
+        for m in members:
+            if not isinstance(m, dict):
+                continue
+            full = str(m.get("full", "")).strip()
+            if not full or not FULL_NAME_RE.match(full):
+                continue
+            to_remove.append(full)
+
+    # Remove everything recorded in the registry (team disband), with PM last.
+    uniq: list[str] = []
+    seen: set[str] = set()
+    for full in to_remove:
+        if full not in seen:
+            seen.add(full)
+            uniq.append(full)
+
+    uniq_no_pm = [n for n in uniq if n != pm_full]
+    ordered = uniq_no_pm + [pm_full] if pm_full in seen else uniq_no_pm
+
+    if args.dry_run:
+        print("\n".join(ordered))
+        return 0
+
+    failed: list[str] = []
+    for full in ordered:
+        res = _run_twf(twf, ["remove", full, "--no-recursive"])
+        if res.returncode != 0:
+            failed.append(full)
+            err = (res.stderr or "").strip()
+            _eprint(f"⚠️ twf remove failed for {full}: {err or res.stdout.strip()}")
+
+    with _locked(lock):
+        data = _load_registry(registry)
+        data["members"] = []
+        data["updated_at"] = _now()
+        _write_json_atomic(registry, data)
+
+    if failed:
+        _eprint(f"❌ team disband completed with failures: {len(failed)} workers (see stderr)")
+        return 1
+    _eprint("✅ team disbanded (registry cleared)")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="atwf", add_help=True)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1121,6 +1197,10 @@ def build_parser() -> argparse.ArgumentParser:
     boot.add_argument("name")
     boot.add_argument("role", choices=SUPPORTED_ROLES)
 
+    rm = sub.add_parser("remove", help="disband the whole team by removing the PM (and all recorded members)")
+    rm.add_argument("pm_full", help="PM full name: pm-...-YYYYmmdd-HHMMSS-<pid>")
+    rm.add_argument("--dry-run", action="store_true", help="print what would be removed")
+
     return p
 
 
@@ -1172,6 +1252,8 @@ def main(argv: list[str]) -> int:
         return cmd_ping(args)
     if args.cmd == "bootstrap":
         return cmd_bootstrap(args)
+    if args.cmd == "remove":
+        return cmd_remove(args)
 
     raise SystemExit("❌ unreachable")
 
