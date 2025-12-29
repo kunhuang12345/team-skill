@@ -376,6 +376,69 @@ def _ensure_registry_file(registry: Path, team_dir: Path) -> None:
     _eprint(f"✅ registry ready: {registry}")
 
 
+def _prune_members_by(data: dict[str, Any], *, role: str, base: str, keep_full: str | None = None) -> None:
+    members = data.get("members")
+    if not isinstance(members, list) or not members:
+        return
+
+    role = role.strip()
+    base = base.strip()
+    keep = keep_full.strip() if isinstance(keep_full, str) and keep_full.strip() else None
+
+    kept: list[Any] = []
+    for m in members:
+        if not isinstance(m, dict):
+            kept.append(m)
+            continue
+        m_role = str(m.get("role", "")).strip()
+        m_base = str(m.get("base", "")).strip()
+        m_full = str(m.get("full", "")).strip()
+        if m_role == role and m_base == base:
+            if keep and m_full == keep:
+                kept.append(m)
+            continue
+        kept.append(m)
+    data["members"] = kept
+
+
+def _member_state_file(m: dict[str, Any]) -> Path | None:
+    raw = m.get("state_file")
+    if not isinstance(raw, str):
+        return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        return _expand_path(raw)
+    except Exception:
+        return None
+
+
+def _expected_project_root() -> Path:
+    try:
+        return _git_root()
+    except SystemExit:
+        return Path.cwd().resolve()
+
+
+def _state_file_matches_project(state_file: Path, expected_root: Path) -> bool:
+    data = _read_json(state_file)
+    if not data:
+        return False
+
+    work_dir_norm = data.get("work_dir_norm")
+    if isinstance(work_dir_norm, str) and work_dir_norm.strip():
+        actual = Path(work_dir_norm.strip()).resolve()
+    else:
+        work_dir = data.get("work_dir")
+        if not isinstance(work_dir, str) or not work_dir.strip():
+            return False
+        actual = Path(work_dir.strip()).resolve()
+
+    expected = expected_root.resolve()
+    return actual == expected or expected in actual.parents
+
+
 def _write_text_atomic(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -600,6 +663,8 @@ def _init_trio(
     force_new: bool,
     no_bootstrap: bool,
 ) -> dict[str, str]:
+    expected_root = _expected_project_root()
+
     out: dict[str, str] = {}
     for role, label, scope in INITIAL_TRIO:
         base = _base_name(role, label)
@@ -609,15 +674,39 @@ def _init_trio(
             data = _load_registry(registry)
             m = _find_latest_member_by(data, role=role, base=base)
             if m:
-                existing_full = str(m.get("full", "")).strip() or None
+                candidate = str(m.get("full", "")).strip() or None
+                state_file = _member_state_file(m)
+                if (
+                    candidate
+                    and state_file
+                    and state_file.is_file()
+                    and _state_file_matches_project(state_file, expected_root)
+                ):
+                    if not _tmux_running(candidate):
+                        # Best effort: resume if the state file exists but tmux session is stopped.
+                        _run_twf(twf, ["resume", candidate, "--no-tree"])
+                    if _tmux_running(candidate):
+                        existing_full = candidate
 
         if existing_full:
+            # Keep registry clean: remove duplicates for the same role/base.
+            lock = team_dir / ".lock"
+            with _locked(lock):
+                data = _load_registry(registry)
+                _prune_members_by(data, role=role, base=base, keep_full=existing_full)
+                _write_json_atomic(registry, data)
             out[role] = existing_full
             continue
 
+        # Remove stale role/base entries before creating a new worker.
+        lock = team_dir / ".lock"
+        with _locked(lock):
+            data = _load_registry(registry)
+            _prune_members_by(data, role=role, base=base, keep_full=None)
+            _write_json_atomic(registry, data)
+
         full, session_path = _start_worker(twf, base=base, up_args=[])
 
-        lock = team_dir / ".lock"
         with _locked(lock):
             data = _load_registry(registry)
             _ensure_member(

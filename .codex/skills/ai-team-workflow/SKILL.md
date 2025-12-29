@@ -59,6 +59,10 @@ View org/dependency tree:
 If you only want to create the registry (no workers):
 - `bash .codex/skills/ai-team-workflow/scripts/atwf init --registry-only`
 
+If you copied this skill from another repo and `init` reuses stale workers:
+- Delete runtime state under this skill’s `share/` (especially `share/registry.json`) and rerun `init`, or
+- Run `bash .codex/skills/ai-team-workflow/scripts/atwf init --force-new` to start a fresh trio.
+
 Create an architect under PM:
 - preferred: PM runs inside its tmux: `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self arch user --scope "user module design + task breakdown"`
 
