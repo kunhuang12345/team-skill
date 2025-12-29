@@ -3,9 +3,11 @@ __pycache__/
 .codex-session
 .codex-tmux-session*.json
 .twf/
+.ai-team/
 .gemini-session
 .claude-session
 .claude/
+.codex/skills/ai-team-workflow/share/
 *.mp4
 tmp/
 compare_with_mcp/

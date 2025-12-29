@@ -1,0 +1,9 @@
+# ai-team-workflow config
+#
+# If `share_dir` is set (non-empty), it overrides the default shared state directory.
+# - Recommended: absolute path
+# - Relative paths are resolved from the skill root (`.codex/skills/ai-team-workflow/`)
+#
+# Default when unset/empty: <skill_root>/share
+share_dir: ""
+
