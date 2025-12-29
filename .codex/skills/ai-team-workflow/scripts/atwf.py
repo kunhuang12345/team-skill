@@ -1498,6 +1498,135 @@ def _subtree_fulls(data: dict[str, Any], root_full: str) -> list[str]:
     return out
 
 
+def _all_member_fulls(data: dict[str, Any]) -> list[str]:
+    members = data.get("members", [])
+    if not isinstance(members, list):
+        return []
+    out: list[str] = []
+    for m in members:
+        if not isinstance(m, dict):
+            continue
+        full = str(m.get("full", "")).strip()
+        if full:
+            out.append(full)
+    uniq: list[str] = []
+    seen: set[str] = set()
+    for full in out:
+        if full not in seen:
+            seen.add(full)
+            uniq.append(full)
+    return uniq
+
+
+def _select_targets_for_team_op(
+    data: dict[str, Any],
+    *,
+    targets: list[str] | None,
+    role: str | None,
+    subtree: str | None,
+) -> list[str]:
+    if role:
+        return _members_by_role(data, role)
+
+    if subtree:
+        root = _resolve_target_full(data, subtree)
+        if not root:
+            raise SystemExit(f"❌ subtree root not found in registry: {subtree}")
+        return _subtree_fulls(data, root)
+
+    raw_targets = targets or []
+    if raw_targets:
+        resolved: list[str] = []
+        for t in raw_targets:
+            full = _resolve_target_full(data, str(t))
+            if not full:
+                raise SystemExit(f"❌ target not found in registry: {t}")
+            resolved.append(full)
+        uniq: list[str] = []
+        seen: set[str] = set()
+        for full in resolved:
+            if full not in seen:
+                seen.add(full)
+                uniq.append(full)
+        return uniq
+
+    return _all_member_fulls(data)
+
+
+def cmd_stop(args: argparse.Namespace) -> int:
+    twf = _resolve_twf()
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    targets = _select_targets_for_team_op(
+        data,
+        targets=getattr(args, "targets", None),
+        role=getattr(args, "role", None),
+        subtree=getattr(args, "subtree", None),
+    )
+    if not targets:
+        print("(no targets)")
+        return 0
+
+    # Prefer stopping leaves first if a subtree is selected.
+    if getattr(args, "subtree", None):
+        targets = list(reversed(targets))
+
+    if getattr(args, "dry_run", False):
+        print("\n".join(targets))
+        return 0
+
+    failures: list[str] = []
+    for full in targets:
+        sys.stdout.write(f"--- stop {full} ---\n")
+        res = _run_twf(twf, ["stop", full])
+        sys.stdout.write(res.stdout)
+        sys.stderr.write(res.stderr)
+        if res.returncode != 0:
+            failures.append(full)
+
+    if failures:
+        _eprint(f"❌ stop failures: {len(failures)} targets")
+        return 1
+    return 0
+
+
+def cmd_resume(args: argparse.Namespace) -> int:
+    twf = _resolve_twf()
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    targets = _select_targets_for_team_op(
+        data,
+        targets=getattr(args, "targets", None),
+        role=getattr(args, "role", None),
+        subtree=getattr(args, "subtree", None),
+    )
+    if not targets:
+        print("(no targets)")
+        return 0
+
+    if getattr(args, "dry_run", False):
+        print("\n".join(targets))
+        return 0
+
+    failures: list[str] = []
+    for full in targets:
+        sys.stdout.write(f"--- resume {full} ---\n")
+        res = _run_twf(twf, ["resume", full, "--no-tree"])
+        sys.stdout.write(res.stdout)
+        sys.stderr.write(res.stderr)
+        if res.returncode != 0:
+            failures.append(full)
+
+    if failures:
+        _eprint(f"❌ resume failures: {len(failures)} targets")
+        return 1
+    return 0
+
+
 def cmd_broadcast(args: argparse.Namespace) -> int:
     twf = _resolve_twf()
     team_dir = _default_team_dir()
@@ -1911,6 +2040,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("worktree-check-self", help="ensure you are working inside your dedicated worktree (inside tmux)")
 
+    stop = sub.add_parser("stop", help="stop Codex tmux workers (default: whole team)")
+    stop.add_argument("targets", nargs="*", help="optional targets (full|base|role)")
+    stop.add_argument("--role", choices=SUPPORTED_ROLES, help="stop all members of a role")
+    stop.add_argument("--subtree", help="stop all members under a root (full|base|role)")
+    stop.add_argument("--dry-run", action="store_true", help="print what would be stopped")
+
+    resume = sub.add_parser("resume", help="resume Codex tmux workers (default: whole team)")
+    resume.add_argument("targets", nargs="*", help="optional targets (full|base|role)")
+    resume.add_argument("--role", choices=SUPPORTED_ROLES, help="resume all members of a role")
+    resume.add_argument("--subtree", help="resume all members under a root (full|base|role)")
+    resume.add_argument("--dry-run", action="store_true", help="print what would be resumed")
+
     bc = sub.add_parser("broadcast", help="send the same message to multiple workers (sequential)")
     bc.add_argument("targets", nargs="*", help="targets (full|base|role). Ignored when --role/--subtree is used.")
     bc.add_argument("--role", choices=SUPPORTED_ROLES, help="broadcast to all members of a role")
@@ -2004,6 +2145,10 @@ def main(argv: list[str]) -> int:
         return cmd_worktree_create_self(args)
     if args.cmd == "worktree-check-self":
         return cmd_worktree_check_self(args)
+    if args.cmd == "stop":
+        return cmd_stop(args)
+    if args.cmd == "resume":
+        return cmd_resume(args)
     if args.cmd == "broadcast":
         return cmd_broadcast(args)
     if args.cmd == "resolve":

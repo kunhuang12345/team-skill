@@ -148,6 +148,8 @@ All commands are wrappers around `twf` plus registry management:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create <full|base|role> [--base REF] [--branch BR]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self [--base REF] [--branch BR]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-check-self`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf stop [--role ROLE|--subtree ROOT|targets...]`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf resume [--role ROLE|--subtree ROOT|targets...]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf broadcast [--role ROLE|--subtree ROOT|targets...] --message "..."` (or stdin)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf resolve <full|base|role>`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf attach <full|base|role>`
