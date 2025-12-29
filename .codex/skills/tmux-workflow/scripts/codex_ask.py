@@ -21,6 +21,19 @@ def eprint(*args: object) -> None:
     print(*args, file=sys.stderr)
 
 
+def _env_float(*names: str, default: float) -> float:
+    for name in names:
+        raw = os.environ.get(name)
+        if raw is None:
+            continue
+        try:
+            value = float(raw)
+        except ValueError:
+            continue
+        return max(0.0, value)
+    return max(0.0, default)
+
+
 def _realpath(path: Path) -> str:
     return str(path.expanduser().resolve())
 
@@ -238,9 +251,10 @@ def _tmux_cmd(args: list[str], *, input_text: Optional[str] = None) -> None:
     subprocess.run(["tmux", *args], input=data, check=True)
 
 
-def _inject_text(tmux_target: str, text: str) -> None:
+def _inject_text(tmux_target: str, text: str, *, submit_delay_s: float) -> None:
+    text = text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
     # Use buffer paste for large/multiline to avoid argv limits.
-    if "\n" in text or len(text) > 400:
+    if "\n" in text or len(text) > 200:
         buf = f"twf-ask-{os.getpid()}"
         _tmux_cmd(["load-buffer", "-b", buf, "-"], input_text=text)
         try:
@@ -250,7 +264,10 @@ def _inject_text(tmux_target: str, text: str) -> None:
             subprocess.run(["tmux", "delete-buffer", "-b", buf], check=False)
     else:
         _tmux_cmd(["send-keys", "-t", tmux_target, "-l", text])
-    _tmux_cmd(["send-keys", "-t", tmux_target, "C-m"])
+
+    if submit_delay_s > 0:
+        time.sleep(submit_delay_s)
+    _tmux_cmd(["send-keys", "-t", tmux_target, "Enter"])
 
 
 def _poll_for_reply(
@@ -347,7 +364,7 @@ def _poll_for_reply(
         ):
             try:
                 # Some Codex TUI states (startup/paste-burst) may require an extra submit keypress.
-                _tmux_cmd(["send-keys", "-t", tmux_target, "C-m"])
+                _tmux_cmd(["send-keys", "-t", tmux_target, "Enter"])
                 submit_nudges += 1
             except Exception:
                 pass
@@ -427,7 +444,13 @@ def main(argv: list[str]) -> int:
 
     sent_after = datetime.now(timezone.utc) - timedelta(seconds=0.5)
     try:
-        _inject_text(str(tmux_target), text)
+        submit_delay = _env_float(
+            "TWF_SUBMIT_DELAY",
+            "TWF_TMUX_ENTER_DELAY",
+            "CCB_TMUX_ENTER_DELAY",
+            default=0.5,
+        )
+        _inject_text(str(tmux_target), text, submit_delay_s=submit_delay)
     except subprocess.CalledProcessError as exc:
         eprint(f"❌ tmux injection failed: {exc}")
         return EXIT_ERROR

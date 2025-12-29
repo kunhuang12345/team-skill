@@ -11,7 +11,7 @@ This skill is a self-contained toolkit under `scripts/` (copy this whole folder 
 
 1. (Optional) Check deps:
    - `bash .codex/skills/tmux-workflow/scripts/check_deps.sh`
-2. Start a worker and ask with short names (state under `./.twf/`):
+2. Start a worker and ask with short names (state under `~/.twf/`):
    - `bash .codex/skills/tmux-workflow/scripts/twf codex-a`
    - `bash .codex/skills/tmux-workflow/scripts/twf codex-a "你好"`
 
@@ -31,7 +31,7 @@ This skill is a self-contained toolkit under `scripts/` (copy this whole folder 
 
 - **Base name**: short label like `codex-a`.
 - **Full name**: auto-generated unique worker id: `<base>-YYYYmmdd-HHMMSS-<pid>` (also used as tmux session name).
-- `twf <base>` creates a new full-name worker and writes state to `./.twf/<full>.json`.
+- `twf <base>` creates a new full-name worker and writes state to `~/.twf/<full>.json`.
 - `twf <base> "msg"` will use the **latest** full-name worker for that base (by state-file mtime). If none exists, it auto-creates one.
 - `remove` always requires **full name** to avoid deleting the wrong worker.
 
@@ -100,3 +100,5 @@ Safety:
 - `TWF_CODEX_SESSION_ROOT` / `CODEX_SESSION_ROOT` / `CODEX_HOME`: where to scan logs (default: `~/.codex/sessions`).
 - `TWF_POLL_INTERVAL` (seconds, default `0.05`), `TWF_TIMEOUT` (seconds, default `3600`).
 - `TWF_STATE_DIR`: twf wrapper state dir (default: `~/.twf`).
+- `TWF_SUBMIT_DELAY` (seconds, default `0.5`): delay between injecting text and pressing Enter in tmux (workaround for Codex TUI paste-burst behavior).
+- `TWF_SUBMIT_NUDGE_AFTER` (seconds, default `0.7`) and `TWF_SUBMIT_NUDGE_MAX` (default `2`): if the prompt appears to be typed but not submitted, send extra Enter keypresses while waiting for logs to acknowledge the user message.

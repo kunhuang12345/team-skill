@@ -14,6 +14,8 @@ Usage:
   twf ask <name> [message]          # explicit ask (reads stdin if message omitted)
   twf pend <name> [N]               # show latest reply / last N Q&A
   twf ping <name>                   # health check
+  twf self                          # print current worker full name (tmux session name)
+  twf spawn-self <child> [up-args...]# spawn a child worker from the current worker (inside tmux)
   twf stop <name|full-name>          # stop tmux session but keep worker home + state (resume-able)
   twf resume <name|full-name>        # resume worker (default: resume subtree; pass --no-tree for single node)
   twf spawn <parent-full> <child>    # start child worker and link parent/child in state
@@ -156,6 +158,29 @@ start_worker() {
   local session_file="$state_dir/$worker.json"
   bash "$script_dir/codex_up_tmux.sh" --session "$worker" --session-file "$session_file" "$@" 1>&2
   echo "$session_file"
+}
+
+self_worker() {
+  if [[ -z "${TMUX:-}" ]]; then
+    echo "❌ twf self must run inside tmux" >&2
+    exit 1
+  fi
+  tmux display-message -p '#S'
+}
+
+spawn_self_worker() {
+  local child_base="${1:-}"
+  shift || true
+
+  if [[ -z "$child_base" ]]; then
+    echo "❌ usage: twf spawn-self <child-base> [up-args...]" >&2
+    usage
+    exit 1
+  fi
+
+  local parent
+  parent="$(self_worker)"
+  spawn_worker "$parent" "$child_base" "$@"
 }
 
 ask_worker() {
@@ -717,7 +742,24 @@ PY
   local child
   for child in "${meta[@]:5}"; do
     [[ -n "$child" ]] || continue
-    resume_worker_inner "$child" "true"
+
+    local resolved="$child"
+    if ! is_ts_name "$child"; then
+      local sf
+      sf="$(latest_session_file "$child" 2>/dev/null || true)"
+      if [[ -z "$sf" ]]; then
+        echo "⚠️  child state missing, skipping: $child" >&2
+        continue
+      fi
+      resolved="$(basename "$sf" .json)"
+    else
+      if [[ ! -f "$state_dir/$child.json" ]]; then
+        echo "⚠️  child state missing, skipping: $child" >&2
+        continue
+      fi
+    fi
+
+    resume_worker_inner "$resolved" "true"
   done
 }
 
@@ -1049,6 +1091,13 @@ case "$cmd" in
     [[ $# -ge 2 ]] || { echo "❌ missing name" >&2; usage; exit 1; }
     shift
     ping_worker "$@"
+    ;;
+  self|whoami)
+    self_worker
+    ;;
+  spawn-self)
+    shift
+    spawn_self_worker "$@"
     ;;
   stop)
     [[ $# -ge 2 ]] || { echo "❌ missing name" >&2; usage; exit 1; }
