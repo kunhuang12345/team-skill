@@ -22,6 +22,22 @@ Escalation to user:
 - Package the question crisply (options + what decision is needed).
 - Forward to Liaison (find `liaison-*` via `atwf route liaison --role liaison` or registry).
 
+Required “user escalation” envelope:
+- Any worker who thinks user input is needed must send you:
+  - `[ESCALATE-TO-USER]`
+  - `origin: <full>` (the person who needs the answer; usually the sender)
+  - `question: ...`
+  - `already_checked: ...` (e.g. `share/task.md`, `element.md`, MasterGo styles)
+  - `why_user_needed: ...`
+  - `options: ...` (1–3 options if possible)
+- You forward the same envelope to Liaison (do not rewrite into a different format).
+
+User “bounce” handling (important):
+- If Liaison returns `[USER-BOUNCE]` (“user says this should be solvable from docs / user doesn’t understand”):
+  - Route the message back **down the chain** toward `origin:` (and their parent if needed).
+  - Instruct `origin` to self-confirm using existing docs (task/design/MasterGo assets) and continue if resolved.
+  - Only re-escalate to Liaison when a **user decision** is truly required (not internal confirmation).
+
 Reporting enforcement:
 - Ensure reports flow upward: `dev/prod/qa -> arch -> pm`.
 - PM reports to you (internal) and to Liaison (user-facing). Liaison is the only role that talks to the user.

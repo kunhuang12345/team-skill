@@ -104,6 +104,11 @@ Helpers (run inside tmux worker):
   3. Only if unresolved, Coordinator forwards a crisp question to **Liaison**.
   4. Liaison asks the user, then reports back to Coordinator (who distributes).
 
+User “bounce” rule (assistant is a relay):
+- If the user responds with “I don’t understand / shouldn’t this be answerable from docs?”, Liaison does **not** validate internally.
+- Liaison sends a `[USER-BOUNCE]` back; Coordinator routes it back down to the originator to self-confirm using existing docs (task/design/MasterGo assets).
+- Only re-escalate to the user when a real **user decision** is required.
+
 ## Design → Development workflow (required)
 
 1. Everyone reads the shared task: `share/task.md`.

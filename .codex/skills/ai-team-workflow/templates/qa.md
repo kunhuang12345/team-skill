@@ -24,6 +24,11 @@ Protocol:
   2) Discuss with that owner.
   3) Only if still ambiguous, Coordinator forwards a question to Liaison.
 
+User escalation discipline:
+- If user input is truly required, ask Coordinator with:
+  - `[ESCALATE-TO-USER] origin: {{FULL_NAME}} question: ... already_checked: ... options: ...`
+- If Liaison returns `[USER-BOUNCE]`, self-confirm from existing docs and only re-escalate if a user decision is required.
+
 Reporting (mandatory):
 - When validation is complete, report upward to your parent (usually `arch-*`) with:
   - covered scenarios, failing cases (if any), and exact repro steps

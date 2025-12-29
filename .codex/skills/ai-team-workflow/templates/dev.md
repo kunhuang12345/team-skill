@@ -23,6 +23,11 @@ Coordination protocol:
 - If Product clarification is needed, Coordinator routes you to the right `prod-*`.
 - Only unresolved user-facing questions go to Liaison (via Coordinator).
 
+User escalation discipline:
+- If you think user input is needed, ask Coordinator with:
+  - `[ESCALATE-TO-USER] origin: {{FULL_NAME}} question: ... already_checked: ... options: ...`
+- If Liaison returns `[USER-BOUNCE]`, you must self-confirm from existing docs (task/design/MasterGo assets) and continue if resolved; only re-escalate if a user decision is truly required.
+
 Scaling:
 - If overloaded, you may spawn an intern dev:
   - Inside tmux (recommended): `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self dev intern --scope "..."`

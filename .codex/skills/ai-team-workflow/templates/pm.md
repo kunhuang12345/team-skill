@@ -53,3 +53,9 @@ Commands you can use:
 Default escalation:
 - Internal coordination: ask Coordinator (`coord-*`)
 - User-facing clarifications: via Liaison (`liaison-*`) only
+
+User question discipline:
+- When you (or a subtree owner) believes user input is needed, send Coordinator a structured envelope:
+  - `[ESCALATE-TO-USER] origin: <full> question: ... already_checked: ... options: ...`
+- If the user replies with “I don’t understand / should be answerable from docs”, Liaison will bounce it back.
+  - You must route it back down to `origin` for internal confirmation; only re-escalate if a real user decision is required.

@@ -41,3 +41,8 @@ Reporting (mandatory):
 When blocked:
 1. Ask Coordinator who the right internal owner is.
 2. If truly user-facing, have Coordinator forward the question to Liaison.
+
+User escalation discipline:
+- If you think user input is needed, send Coordinator a structured envelope:
+  - `[ESCALATE-TO-USER] origin: {{FULL_NAME}} question: ... already_checked: ... options: ...`
+- If Liaison returns `[USER-BOUNCE]`, treat it as “self-confirm internally” (read task/design/MasterGo assets) and only re-escalate if a user decision is truly required.

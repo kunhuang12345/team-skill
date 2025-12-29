@@ -23,6 +23,11 @@ Rules:
 - Do not ask the user directly; Liaison is the only user-facing role.
 - Keep your `scope` accurate in the registry.
 
+User escalation discipline:
+- If requirements cannot be resolved internally and user input is truly required, ask Coordinator with:
+  - `[ESCALATE-TO-USER] origin: {{FULL_NAME}} question: ... already_checked: ... options: ...`
+- If Liaison returns `[USER-BOUNCE]`, treat it as “self-confirm internally first” and only re-escalate if a user decision is required.
+
 Helpful commands:
 - Find peers: `bash .codex/skills/ai-team-workflow/scripts/atwf route "<query>"`
 - Update your scope: `bash .codex/skills/ai-team-workflow/scripts/atwf set-scope-self "..."`.
