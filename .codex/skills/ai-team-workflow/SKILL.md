@@ -43,6 +43,9 @@ Initialize + start the initial trio + send task to PM:
   - starts: `pm-main`, `coord-main`, `liaison-main`
   - sends the task to PM and prints PM's first reply
 
+Enter a role (avoid `tmux a` attaching the wrong session):
+- `bash .codex/skills/ai-team-workflow/scripts/atwf attach pm`
+
 If you only want to create the registry (no workers):
 - `bash .codex/skills/ai-team-workflow/scripts/atwf init --registry-only`
 
@@ -58,6 +61,7 @@ Create execution roles under an architect:
 Inspect and route:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf list`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf route "login" --role dev`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf resolve pm`  # print PM full name
 
 Disband the whole team (requires PM full name):
 - `bash .codex/skills/ai-team-workflow/scripts/atwf remove <pm-full>`
@@ -100,10 +104,12 @@ All commands are wrappers around `twf` plus registry management:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf report-to <full|base|role> ["message"]` (inside tmux; stdin supported)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf list`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf where`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf resolve <full|base|role>`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf attach <full|base|role>`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf route "<query>" [--role <role>]`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf ask <name|full> ["message"]` (stdin supported)
-- `bash .codex/skills/ai-team-workflow/scripts/atwf pend <name|full> [N]`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf ping <name|full>`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf ask <full|base|role> ["message"]` (stdin supported)
+- `bash .codex/skills/ai-team-workflow/scripts/atwf pend <full|base|role> [N]`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf ping <full|base|role>`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf remove <pm-full>` (disband team; clears registry)
 
 ## Environment knobs

@@ -16,9 +16,9 @@ from typing import Any
 
 SUPPORTED_ROLES = ("pm", "arch", "prod", "dev", "qa", "coord", "liaison")
 INITIAL_TRIO = (
-    ("pm", "main", "overall delivery / milestone planning"),
     ("coord", "main", "internal routing + escalation triage"),
     ("liaison", "main", "user communication + clarifications"),
+    ("pm", "main", "overall delivery / milestone planning"),
 )
 FULL_NAME_RE = re.compile(r"^.+-[0-9]{8}-[0-9]{6}-[0-9]+$")
 
@@ -376,6 +376,28 @@ def _ensure_registry_file(registry: Path, team_dir: Path) -> None:
     _eprint(f"✅ registry ready: {registry}")
 
 
+def _resolve_target_full(data: dict[str, Any], target: str) -> str | None:
+    target = target.strip()
+    if not target:
+        return None
+
+    m = _resolve_member(data, target)
+    if m:
+        full = str(m.get("full", "")).strip()
+        return full or None
+
+    if target in SUPPORTED_ROLES:
+        m2 = _resolve_latest_by_role(data, target)
+        if m2:
+            full = str(m2.get("full", "")).strip()
+            return full or None
+
+    if FULL_NAME_RE.match(target):
+        return target
+
+    return None
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     team_dir = _default_team_dir()
     registry = _registry_path(team_dir)
@@ -396,6 +418,17 @@ def cmd_init(args: argparse.Namespace) -> int:
     pm_full = trio.get("pm", "")
     if not pm_full:
         raise SystemExit("❌ failed to resolve PM worker")
+
+    coord_full = trio.get("coord", "")
+    liaison_full = trio.get("liaison", "")
+    _eprint("✅ initial trio ready:")
+    if pm_full:
+        _eprint(f"   pm:      {pm_full}")
+    if coord_full:
+        _eprint(f"   coord:   {coord_full}")
+    if liaison_full:
+        _eprint(f"   liaison: {liaison_full}")
+    _eprint("   tip: enter a role via: atwf attach pm|coord|liaison")
 
     task_parts: list[str] = []
     if getattr(args, "task_file", None):
@@ -419,8 +452,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         sys.stderr.write(res.stderr)
         return res.returncode
 
-    _eprint("✅ initial trio ready: pm-main / coord-main / liaison-main")
-    _eprint("   next: atwf ask pm-main \"任务描述：...\" (or pass task to `atwf init ...`).")
+    _eprint("   next: atwf ask pm \"任务描述：...\" (or pass task to `atwf init ...`).")
     return 0
 
 
@@ -907,6 +939,44 @@ def cmd_where(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_resolve(args: argparse.Namespace) -> int:
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    target = args.target.strip()
+    if not target:
+        raise SystemExit("❌ target is required")
+
+    full = _resolve_target_full(data, target)
+    if not full:
+        raise SystemExit(f"❌ target not found in registry: {target}")
+    print(full)
+    return 0
+
+
+def cmd_attach(args: argparse.Namespace) -> int:
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    target = args.target.strip()
+    if not target:
+        raise SystemExit("❌ target is required")
+
+    full = _resolve_target_full(data, target)
+    if not full:
+        raise SystemExit(f"❌ target not found in registry: {target}")
+
+    probe = subprocess.run(["tmux", "has-session", "-t", full], check=False)
+    if probe.returncode != 0:
+        raise SystemExit(f"❌ tmux session not found: {full} (maybe stopped; try: twf resume {full})")
+
+    if os.environ.get("TMUX"):
+        return subprocess.run(["tmux", "switch-client", "-t", full], check=False).returncode
+    return subprocess.run(["tmux", "attach-session", "-t", full], check=False).returncode
+
+
 @dataclass(frozen=True)
 class _RouteHit:
     score: int
@@ -974,15 +1044,22 @@ def _forward_stdin() -> str | None:
 
 def cmd_ask(args: argparse.Namespace) -> int:
     twf = _resolve_twf()
-    name = args.name.strip()
-    if not name:
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    target = args.name.strip()
+    if not target:
         raise SystemExit("❌ name is required")
+    full = _resolve_target_full(data, target)
+    if not full:
+        raise SystemExit(f"❌ name not found in registry: {target} (use `atwf list` or `atwf up/spawn`)")
     msg = args.message
     if msg is None:
         msg = _forward_stdin()
     if msg is None:
         raise SystemExit("❌ message missing (provide as arg or via stdin)")
-    res = _run_twf(twf, ["ask", name, msg])
+    res = _run_twf(twf, ["ask", full, msg])
     sys.stdout.write(res.stdout)
     sys.stderr.write(res.stderr)
     return res.returncode
@@ -990,11 +1067,18 @@ def cmd_ask(args: argparse.Namespace) -> int:
 
 def cmd_pend(args: argparse.Namespace) -> int:
     twf = _resolve_twf()
-    name = args.name.strip()
-    if not name:
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    target = args.name.strip()
+    if not target:
         raise SystemExit("❌ name is required")
+    full = _resolve_target_full(data, target)
+    if not full:
+        raise SystemExit(f"❌ name not found in registry: {target} (use `atwf list`)")
     extra = [str(args.n)] if args.n is not None else []
-    res = _run_twf(twf, ["pend", name, *extra])
+    res = _run_twf(twf, ["pend", full, *extra])
     sys.stdout.write(res.stdout)
     sys.stderr.write(res.stderr)
     return res.returncode
@@ -1002,10 +1086,17 @@ def cmd_pend(args: argparse.Namespace) -> int:
 
 def cmd_ping(args: argparse.Namespace) -> int:
     twf = _resolve_twf()
-    name = args.name.strip()
-    if not name:
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    target = args.name.strip()
+    if not target:
         raise SystemExit("❌ name is required")
-    res = _run_twf(twf, ["ping", name])
+    full = _resolve_target_full(data, target)
+    if not full:
+        raise SystemExit(f"❌ name not found in registry: {target} (use `atwf list`)")
+    res = _run_twf(twf, ["ping", full])
     sys.stdout.write(res.stdout)
     sys.stderr.write(res.stderr)
     return res.returncode
@@ -1017,18 +1108,17 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
     registry = _registry_path(team_dir)
     role = _require_role(args.role)
 
-    name = args.name.strip()
-    if not name:
+    target = args.name.strip()
+    if not target:
         raise SystemExit("❌ name is required")
 
     data = _load_registry(registry)
-    m = _resolve_member(data, name)
-    if m:
-        full = str(m.get("full") or "").strip() or name
-        base = str(m.get("base") or "").strip() or name
-    else:
-        full = name
-        base = name
+    full = _resolve_target_full(data, target)
+    if not full:
+        raise SystemExit(f"❌ name not found in registry: {target} (use `atwf list`)")
+    m = _resolve_member(data, full)
+    base = str(m.get("base") or "").strip() if m else ""
+    base = base or full
 
     _bootstrap_worker(twf, name=full, role=role, full=full, base=base, registry=registry, team_dir=team_dir)
     _eprint(f"✅ bootstrapped: {full} as {role}")
@@ -1177,6 +1267,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("where", help="print resolved shared dirs (team_dir + registry)")
 
+    resolve = sub.add_parser("resolve", help="resolve a target to full tmux session name (full|base|role)")
+    resolve.add_argument("target")
+
+    attach = sub.add_parser("attach", help="enter a worker tmux session (full|base|role)")
+    attach.add_argument("target")
+
     route = sub.add_parser("route", help="find best owner(s) for a query")
     route.add_argument("query")
     route.add_argument("--role", choices=SUPPORTED_ROLES)
@@ -1242,6 +1338,10 @@ def main(argv: list[str]) -> int:
         return cmd_list(args)
     if args.cmd == "where":
         return cmd_where(args)
+    if args.cmd == "resolve":
+        return cmd_resolve(args)
+    if args.cmd == "attach":
+        return cmd_attach(args)
     if args.cmd == "route":
         return cmd_route(args)
     if args.cmd == "ask":
