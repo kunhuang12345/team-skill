@@ -50,6 +50,15 @@ The state file is the primary index for:
   - its own `sessions/` logs
   - its own settings/skills snapshot
 
+## Model selection & reasoning effort
+
+- Default config file: `.codex/skills/tmux-workflow/scripts/twf_config.json`
+  - `model` (default `gpt-5.2`)
+  - `model_reasoning_effort` (default `xhigh`)
+- On startup/resume we append:
+  - `-m <model>`
+  - `--config model_reasoning_effort="<effort>"`
+
 ## Parent/child semantics and cycles
 
 - `twf spawn <parent-full> <child-base>` **creates a new child worker** and records:
@@ -65,7 +74,7 @@ Observed behavior: some Codex TUI states treat fast terminal injection as “pas
 
 Mitigations:
 
-- Start Codex with `-c disable_paste_burst=true --sandbox danger-full-access` (default).
+- Start Codex with `-c disable_paste_burst=true --sandbox danger-full-access -m <model> --config model_reasoning_effort="<effort>"` (defaults from `scripts/twf_config.json`).
 - Inject using tmux buffer-paste for multiline/long prompts.
 - Add an explicit delay before submit:
   - `TWF_SUBMIT_DELAY` (default `0.5` seconds)

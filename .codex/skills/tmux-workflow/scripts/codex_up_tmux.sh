@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 usage() {
   cat <<'USAGE' >&2
 Usage:
@@ -9,20 +11,63 @@ Usage:
 Defaults:
   - session-file: ./.codex-tmux-session.json
   - session name: codex-<sha1(realpath(cwd))[:10]>
-  - cmd:         codex -c disable_paste_burst=true --sandbox danger-full-access
+  - cmd:         codex -c disable_paste_burst=true --sandbox danger-full-access -m <model> --config model_reasoning_effort="<effort>"
 
 Environment:
   TWF_SESSION_FILE      Override session file path
   TWF_TMUX_SESSION      Override tmux session name
   TWF_CODEX_CMD         Override codex command
+  TWF_CODEX_CMD_CONFIG  Override JSON config path (default: scripts/twf_config.json)
   TWF_WORKERS_DIR       Per-worker CODEX_HOME base dir (default: ~/.codex-workers)
   TWF_CODEX_HOME_SRC    Source CODEX_HOME to copy from (default: ~/.codex)
 USAGE
 }
 
+config_file="${TWF_CODEX_CMD_CONFIG:-$script_dir/twf_config.json}"
+
+build_default_codex_cmd() {
+  python3 - "$config_file" <<'PY'
+import json
+import shlex
+import sys
+from pathlib import Path
+
+cfg_path = Path(sys.argv[1]).expanduser()
+data = {}
+try:
+    if cfg_path.exists():
+        data = json.loads(cfg_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            data = {}
+except Exception:
+    data = {}
+
+model = data.get("model") if isinstance(data.get("model"), str) else "gpt-5.2"
+effort = data.get("model_reasoning_effort") if isinstance(data.get("model_reasoning_effort"), str) else "xhigh"
+
+model = model.strip()
+effort = effort.strip()
+
+args: list[str] = [
+    "codex",
+    "-c",
+    "disable_paste_burst=true",
+    "--sandbox",
+    "danger-full-access",
+]
+
+if model:
+    args.extend(["-m", model])
+if effort:
+    args.extend(["--config", f'model_reasoning_effort="{effort}"'])
+
+print(" ".join(shlex.quote(a) for a in args))
+PY
+}
+
 session_file="${TWF_SESSION_FILE:-.codex-tmux-session.json}"
 tmux_session="${TWF_TMUX_SESSION:-}"
-codex_cmd="${TWF_CODEX_CMD:-codex -c disable_paste_burst=true --sandbox danger-full-access}"
+codex_cmd="${TWF_CODEX_CMD:-}"
 attach=0
 
 while [[ $# -gt 0 ]]; do
@@ -44,6 +89,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -z "$codex_cmd" ]]; then
+  codex_cmd="$(build_default_codex_cmd)"
+fi
+
 work_dir="$PWD"
 work_dir_norm="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$work_dir")"
 
@@ -51,8 +100,6 @@ if [[ -z "$tmux_session" ]]; then
   hash="$(python3 -c 'import hashlib,sys; print(hashlib.sha1(sys.argv[1].encode()).hexdigest()[:10])' "$work_dir_norm")"
   tmux_session="codex-$hash"
 fi
-
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Per-worker CODEX_HOME isolation: ~/.codex-workers/<worker_id>
 worker_id="$tmux_session"

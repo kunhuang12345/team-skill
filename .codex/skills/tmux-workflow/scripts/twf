@@ -33,7 +33,8 @@ Env:
   TWF_STATE_DIR       Default: ~/.twf
   TWF_WORKERS_DIR     Default: ~/.codex-workers     (forwarded to codex_up_tmux.sh)
   TWF_CODEX_HOME_SRC  Default: ~/.codex             (forwarded to codex_up_tmux.sh)
-  TWF_CODEX_CMD       Default: codex -c disable_paste_burst=true --sandbox danger-full-access (forwarded to codex_up_tmux.sh)
+  TWF_CODEX_CMD_CONFIG  Default: scripts/twf_config.json (model + model_reasoning_effort)
+  TWF_CODEX_CMD       Override full codex command (forwarded to codex_up_tmux.sh)
 USAGE
 }
 
@@ -485,13 +486,15 @@ stop_worker() {
 
   local meta=()
   readarray -t meta < <(
-    python3 - "$session_file" <<'PY'
+    python3 - "$session_file" "$script_dir" <<'PY'
 import json
 import os
 import sys
+import shlex
 from pathlib import Path
 
 p = Path(sys.argv[1])
+script_dir = Path(sys.argv[2])
 try:
     data = json.loads(p.read_text(encoding="utf-8"))
 except Exception:
@@ -604,31 +607,59 @@ def get_str(key: str) -> str:
 tmux_session = get_str("tmux_session") or p.stem
 work_dir = get_str("work_dir") or os.getcwd()
 codex_home = get_str("codex_home")
-codex_cmd = get_str("codex_start_cmd") or os.environ.get("TWF_CODEX_CMD", "codex -c disable_paste_burst=true --sandbox danger-full-access")
+codex_cmd = get_str("codex_start_cmd") or os.environ.get("TWF_CODEX_CMD", "")
 resume_id = get_str("codex_resume_from_id") or get_str("codex_current_id") or get_str("codex_session_id")
 
-def ensure_sandbox(cmd: str) -> str:
+cfg_path = Path(os.environ.get("TWF_CODEX_CMD_CONFIG") or (script_dir / "twf_config.json")).expanduser()
+cfg = {}
+try:
+    if cfg_path.exists():
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        if not isinstance(cfg, dict):
+            cfg = {}
+except Exception:
+    cfg = {}
+
+model = cfg.get("model") if isinstance(cfg.get("model"), str) else "gpt-5.2"
+effort = cfg.get("model_reasoning_effort") if isinstance(cfg.get("model_reasoning_effort"), str) else "xhigh"
+model = model.strip()
+effort = effort.strip()
+
+def has_effort_override(args: list[str]) -> bool:
+    for i, a in enumerate(args):
+        if a in ("--config", "-c") and i + 1 < len(args):
+            v = args[i + 1]
+            if isinstance(v, str) and v.startswith("model_reasoning_effort="):
+                return True
+    return False
+
+def ensure_cmd(cmd: str) -> str:
     try:
-        import shlex
-
         args = shlex.split(cmd)
-        if "--dangerously-bypass-approvals-and-sandbox" in args:
-            return cmd
-        if "--full-auto" in args:
-            return cmd
-        if "--sandbox" in args or "-s" in args:
-            return cmd
     except Exception:
-        # Fallback: best-effort substring checks.
-        if "--dangerously-bypass-approvals-and-sandbox" in cmd:
-            return cmd
-        if "--full-auto" in cmd:
-            return cmd
-        if "--sandbox" in cmd or " -s " in cmd:
-            return cmd
-    return cmd + " --sandbox danger-full-access"
+        return cmd
 
-codex_cmd = ensure_sandbox(codex_cmd)
+    if "--dangerously-bypass-approvals-and-sandbox" not in args and "--full-auto" not in args:
+        if "--sandbox" not in args and "-s" not in args:
+            args.extend(["--sandbox", "danger-full-access"])
+
+    if model and "-m" not in args and "--model" not in args:
+        args.extend(["-m", model])
+
+    if effort and not has_effort_override(args):
+        args.extend(["--config", f'model_reasoning_effort="{effort}"'])
+
+    return " ".join(shlex.quote(a) for a in args)
+
+def build_default_cmd() -> str:
+    args: list[str] = ["codex", "-c", "disable_paste_burst=true", "--sandbox", "danger-full-access"]
+    if model:
+        args.extend(["-m", model])
+    if effort:
+        args.extend(["--config", f'model_reasoning_effort="{effort}"'])
+    return " ".join(shlex.quote(a) for a in args)
+
+codex_cmd = ensure_cmd(codex_cmd) if codex_cmd else build_default_cmd()
 
 children = data.get("children")
 if not isinstance(children, list):

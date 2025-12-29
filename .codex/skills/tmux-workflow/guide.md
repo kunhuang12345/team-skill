@@ -16,6 +16,13 @@
   - Logs: `~/.codex-workers/<worker_id>/sessions/**/*.jsonl`
 - **tmux sessions:** worker full name == tmux session name
 
+## Model & reasoning config
+
+- Config file: `.codex/skills/tmux-workflow/scripts/twf_config.json` (override path with `TWF_CODEX_CMD_CONFIG`)
+  - `model` (default `gpt-5.2`)
+  - `model_reasoning_effort` (default `xhigh`)
+- Advanced override: set `TWF_CODEX_CMD` to fully control the `codex ...` command.
+
 ## Naming rules (base vs full name)
 
 - **Base name:** short label like `codex-a`
@@ -69,7 +76,7 @@ Some Codex TUI states (startup / paste-burst handling) may interpret fast termin
 
 Mitigations used by this skill:
 
-- Start Codex with `-c disable_paste_burst=true --sandbox danger-full-access` (default `TWF_CODEX_CMD`).
+- Start Codex with `-c disable_paste_burst=true --sandbox danger-full-access -m <model> --config model_reasoning_effort="<effort>"` (model/effort from `scripts/twf_config.json`).
 - Delay submit after injection: `TWF_SUBMIT_DELAY` (default `0.5` seconds).
 - Log-ack based retries: `TWF_SUBMIT_NUDGE_AFTER` / `TWF_SUBMIT_NUDGE_MAX` send extra Enter keypresses until Codex logs show the user message was accepted.
 

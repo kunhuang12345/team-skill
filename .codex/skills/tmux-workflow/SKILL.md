@@ -94,7 +94,10 @@ Safety:
 
 - `TWF_SESSION_FILE`: session file path (default: `./.codex-tmux-session.json`).
 - `TWF_TMUX_SESSION`: override tmux session name (default: `codex-<hash(cwd)>`).
-- `TWF_CODEX_CMD`: command used inside tmux (default: `codex -c disable_paste_burst=true --sandbox danger-full-access`).
+- `TWF_CODEX_CMD_CONFIG`: JSON config path (default: `scripts/twf_config.json` in this skill). Keys:
+  - `model` (default `gpt-5.2`)
+  - `model_reasoning_effort` (default `xhigh`)
+- `TWF_CODEX_CMD`: override the full command used inside tmux (if unset, it is built from `TWF_CODEX_CMD_CONFIG`).
 - `TWF_WORKERS_DIR`: per-worker `CODEX_HOME` base dir (default: `~/.codex-workers`).
 - `TWF_CODEX_HOME_SRC`: source `CODEX_HOME` to copy from (default: `~/.codex`).
 - `TWF_CODEX_SESSION_ROOT` / `CODEX_SESSION_ROOT` / `CODEX_HOME`: where to scan logs (default: `~/.codex/sessions`).
