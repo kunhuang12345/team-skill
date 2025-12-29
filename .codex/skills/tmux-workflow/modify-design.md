@@ -65,7 +65,7 @@ Observed behavior: some Codex TUI states treat fast terminal injection as “pas
 
 Mitigations:
 
-- Start Codex with `-c disable_paste_burst=true` (default).
+- Start Codex with `-c disable_paste_burst=true --sandbox danger-full-access` (default).
 - Inject using tmux buffer-paste for multiline/long prompts.
 - Add an explicit delay before submit:
   - `TWF_SUBMIT_DELAY` (default `0.5` seconds)
@@ -80,4 +80,3 @@ Mitigations:
 - `twf remove` requires a **full name**.
 - It only deletes a worker’s `codex_home` if it is under `TWF_WORKERS_DIR` (or default `~/.codex-workers`) to reduce the risk of deleting arbitrary paths.
 - State operations are locked with `flock` on `~/.twf/.lock`.
-

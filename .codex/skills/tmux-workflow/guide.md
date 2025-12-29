@@ -69,11 +69,10 @@ Some Codex TUI states (startup / paste-burst handling) may interpret fast termin
 
 Mitigations used by this skill:
 
-- Start Codex with `-c disable_paste_burst=true` (default `TWF_CODEX_CMD`).
+- Start Codex with `-c disable_paste_burst=true --sandbox danger-full-access` (default `TWF_CODEX_CMD`).
 - Delay submit after injection: `TWF_SUBMIT_DELAY` (default `0.5` seconds).
 - Log-ack based retries: `TWF_SUBMIT_NUDGE_AFTER` / `TWF_SUBMIT_NUDGE_MAX` send extra Enter keypresses until Codex logs show the user message was accepted.
 
 ## How “send success” is detected
 
 `scripts/codex_ask.py` watches the worker’s `sessions/**/*.jsonl` and treats a prompt as “submitted” when a new user-message entry appears (for example `type=event_msg` with `payload.type=user_message`) after the injection baseline.
-

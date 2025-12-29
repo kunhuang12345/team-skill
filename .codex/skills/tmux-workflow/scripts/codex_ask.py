@@ -447,7 +447,6 @@ def main(argv: list[str]) -> int:
         submit_delay = _env_float(
             "TWF_SUBMIT_DELAY",
             "TWF_TMUX_ENTER_DELAY",
-            "CCB_TMUX_ENTER_DELAY",
             default=0.5,
         )
         _inject_text(str(tmux_target), text, submit_delay_s=submit_delay)

@@ -9,7 +9,7 @@ Usage:
 Defaults:
   - session-file: ./.codex-tmux-session.json
   - session name: codex-<sha1(realpath(cwd))[:10]>
-  - cmd:         codex -c disable_paste_burst=true
+  - cmd:         codex -c disable_paste_burst=true --sandbox danger-full-access
 
 Environment:
   TWF_SESSION_FILE      Override session file path
@@ -22,7 +22,7 @@ USAGE
 
 session_file="${TWF_SESSION_FILE:-.codex-tmux-session.json}"
 tmux_session="${TWF_TMUX_SESSION:-}"
-codex_cmd="${TWF_CODEX_CMD:-codex -c disable_paste_burst=true}"
+codex_cmd="${TWF_CODEX_CMD:-codex -c disable_paste_burst=true --sandbox danger-full-access}"
 attach=0
 
 while [[ $# -gt 0 ]]; do

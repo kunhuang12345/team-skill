@@ -33,7 +33,7 @@ Env:
   TWF_STATE_DIR       Default: ~/.twf
   TWF_WORKERS_DIR     Default: ~/.codex-workers     (forwarded to codex_up_tmux.sh)
   TWF_CODEX_HOME_SRC  Default: ~/.codex             (forwarded to codex_up_tmux.sh)
-  TWF_CODEX_CMD       Default: codex -c disable_paste_burst=true (forwarded to codex_up_tmux.sh)
+  TWF_CODEX_CMD       Default: codex -c disable_paste_burst=true --sandbox danger-full-access (forwarded to codex_up_tmux.sh)
 USAGE
 }
 
@@ -604,8 +604,31 @@ def get_str(key: str) -> str:
 tmux_session = get_str("tmux_session") or p.stem
 work_dir = get_str("work_dir") or os.getcwd()
 codex_home = get_str("codex_home")
-codex_cmd = get_str("codex_start_cmd") or os.environ.get("TWF_CODEX_CMD", "codex -c disable_paste_burst=true")
+codex_cmd = get_str("codex_start_cmd") or os.environ.get("TWF_CODEX_CMD", "codex -c disable_paste_burst=true --sandbox danger-full-access")
 resume_id = get_str("codex_resume_from_id") or get_str("codex_current_id") or get_str("codex_session_id")
+
+def ensure_sandbox(cmd: str) -> str:
+    try:
+        import shlex
+
+        args = shlex.split(cmd)
+        if "--dangerously-bypass-approvals-and-sandbox" in args:
+            return cmd
+        if "--full-auto" in args:
+            return cmd
+        if "--sandbox" in args or "-s" in args:
+            return cmd
+    except Exception:
+        # Fallback: best-effort substring checks.
+        if "--dangerously-bypass-approvals-and-sandbox" in cmd:
+            return cmd
+        if "--full-auto" in cmd:
+            return cmd
+        if "--sandbox" in cmd or " -s " in cmd:
+            return cmd
+    return cmd + " --sandbox danger-full-access"
+
+codex_cmd = ensure_sandbox(codex_cmd)
 
 children = data.get("children")
 if not isinstance(children, list):
