@@ -24,10 +24,10 @@ Usage:
   twf list [--running|--stopped|--orphans] # list all workers (flat)
 
 State:
-  session files directory is configurable via `scripts/twf_config.json`:
+  session files directory is configurable via `scripts/twf_config.yaml`:
     - auto:   <skill_root>/.twf/  (default)
     - global: ~/.twf/
-    - manual: ./.twf/  (must run in that directory)
+    - manual: <twf_state_dir>  (must be set in config)
   override: `TWF_STATE_DIR=/some/path` (highest priority)
   file names:
     - timestamped: <name>-<YYYYmmdd-HHMMSS>-<pid>.json
@@ -37,7 +37,7 @@ Env:
   TWF_STATE_DIR       Override twf state dir (highest priority)
   TWF_WORKERS_DIR     Default: ~/.codex-workers     (forwarded to codex_up_tmux.sh)
   TWF_CODEX_HOME_SRC  Default: ~/.codex             (forwarded to codex_up_tmux.sh)
-  TWF_CODEX_CMD_CONFIG  Default: scripts/twf_config.json (model + model_reasoning_effort)
+  TWF_CODEX_CMD_CONFIG  Default: scripts/twf_config.yaml (model + model_reasoning_effort + twf_state_dir_mode)
   TWF_CODEX_CMD       Override full codex command (forwarded to codex_up_tmux.sh)
 USAGE
 }
@@ -47,37 +47,100 @@ is_ts_name() {
   [[ "$1" =~ -[0-9]{8}-[0-9]{6}(-[0-9]+)?$ ]]
 }
 
-config_file="${TWF_CODEX_CMD_CONFIG:-$script_dir/twf_config.json}"
+config_file="${TWF_CODEX_CMD_CONFIG:-$script_dir/twf_config.yaml}"
+if [[ -z "${TWF_CODEX_CMD_CONFIG:-}" && ! -f "$config_file" && -f "$script_dir/twf_config.json" ]]; then
+  config_file="$script_dir/twf_config.json"
+fi
 skill_dir="$(cd "$script_dir/.." && pwd)"
 
-state_dir_mode() {
+read_state_dir_config() {
   python3 - "$config_file" <<'PY'
-import json
 import sys
 from pathlib import Path
+import json
 
 cfg_path = Path(sys.argv[1]).expanduser()
-mode = "auto"
+raw = ""
 try:
   if cfg_path.exists():
-    data = json.loads(cfg_path.read_text(encoding="utf-8"))
-    if isinstance(data, dict) and isinstance(data.get("twf_state_dir_mode"), str):
-      mode = data["twf_state_dir_mode"].strip().lower() or "auto"
+    raw = cfg_path.read_text(encoding="utf-8")
 except Exception:
   pass
+
+def parse_yaml(text: str) -> dict:
+  out: dict[str, str] = {}
+  for line in text.splitlines():
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+      continue
+    if ":" not in stripped:
+      continue
+    key, value = stripped.split(":", 1)
+    key = key.strip()
+    if not key:
+      continue
+    value = value.strip()
+    if not value:
+      out[key] = ""
+      continue
+    if value[0] in {"'", '"'}:
+      q = value[0]
+      if value.endswith(q) and len(value) >= 2:
+        out[key] = value[1:-1]
+      else:
+        out[key] = value[1:]
+      continue
+    if "#" in value:
+      for i, ch in enumerate(value):
+        if ch == "#" and (i == 0 or value[i - 1].isspace()):
+          value = value[:i].strip()
+          break
+    out[key] = value.strip()
+  return out
+
+data = {}
+try:
+  if raw.lstrip().startswith("{"):
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+      data = {}
+  else:
+    data = parse_yaml(raw)
+except Exception:
+  data = parse_yaml(raw)
+
+mode = data.get("twf_state_dir_mode", "auto")
+if not isinstance(mode, str):
+  mode = "auto"
+mode = mode.strip().lower() or "auto"
+manual_dir = data.get("twf_state_dir", "")
+if not isinstance(manual_dir, str):
+  manual_dir = ""
+manual_dir = manual_dir.strip()
+
 print(mode)
+print(manual_dir)
 PY
 }
 
 state_dir="${TWF_STATE_DIR:-}"
 if [[ -z "$state_dir" ]]; then
-  mode="$(state_dir_mode)"
+  readarray -t state_cfg < <(read_state_dir_config)
+  mode="${state_cfg[0]:-auto}"
+  manual_dir="${state_cfg[1]:-}"
   case "$mode" in
     global)
       state_dir="$HOME/.twf"
       ;;
     manual)
-      state_dir="$PWD/.twf"
+      if [[ -z "$manual_dir" ]]; then
+        echo "❌ twf_state_dir_mode=manual requires twf_state_dir to be set in $config_file (or set TWF_STATE_DIR)." >&2
+        exit 1
+      fi
+      state_dir="$(python3 -c 'import os,sys; print(os.path.expanduser(sys.argv[1]))' "$manual_dir")"
+      if [[ "$state_dir" != /* ]]; then
+        state_dir="$PWD/$state_dir"
+      fi
       ;;
     auto|*)
       state_dir="$skill_dir/.twf"
@@ -628,13 +691,16 @@ resume_worker_inner() {
 
   local meta=()
   readarray -t meta < <(
-    python3 - "$session_file" <<'PY'
+    python3 - "$session_file" "$script_dir" "$config_file" <<'PY'
 import json
 import os
 import sys
+import shlex
 from pathlib import Path
 
 p = Path(sys.argv[1])
+script_dir = Path(sys.argv[2])
+cfg_path = Path(sys.argv[3]).expanduser()
 try:
     data = json.loads(p.read_text(encoding="utf-8"))
 except Exception:
@@ -650,15 +716,54 @@ codex_home = get_str("codex_home")
 codex_cmd = get_str("codex_start_cmd") or os.environ.get("TWF_CODEX_CMD", "")
 resume_id = get_str("codex_resume_from_id") or get_str("codex_current_id") or get_str("codex_session_id")
 
-cfg_path = Path(os.environ.get("TWF_CODEX_CMD_CONFIG") or (script_dir / "twf_config.json")).expanduser()
-cfg = {}
+raw_cfg = ""
 try:
     if cfg_path.exists():
-        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        raw_cfg = cfg_path.read_text(encoding="utf-8")
+except Exception:
+    raw_cfg = ""
+
+def parse_yaml(text: str) -> dict:
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if ":" not in stripped:
+            continue
+        key, value = stripped.split(":", 1)
+        key = key.strip()
+        if not key:
+            continue
+        value = value.strip()
+        if not value:
+            out[key] = ""
+            continue
+        if value[0] in {"'", '"'}:
+            q = value[0]
+            if value.endswith(q) and len(value) >= 2:
+                out[key] = value[1:-1]
+            else:
+                out[key] = value[1:]
+            continue
+        if "#" in value:
+            for i, ch in enumerate(value):
+                if ch == "#" and (i == 0 or value[i - 1].isspace()):
+                    value = value[:i].strip()
+                    break
+        out[key] = value.strip()
+    return out
+
+cfg = {}
+try:
+    if raw_cfg.lstrip().startswith("{"):
+        cfg = json.loads(raw_cfg)
         if not isinstance(cfg, dict):
             cfg = {}
+    else:
+        cfg = parse_yaml(raw_cfg)
 except Exception:
-    cfg = {}
+    cfg = parse_yaml(raw_cfg)
 
 model = cfg.get("model") if isinstance(cfg.get("model"), str) else "gpt-5.2"
 effort = cfg.get("model_reasoning_effort") if isinstance(cfg.get("model_reasoning_effort"), str) else "xhigh"

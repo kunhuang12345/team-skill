@@ -17,13 +17,16 @@ Environment:
   TWF_SESSION_FILE      Override session file path
   TWF_TMUX_SESSION      Override tmux session name
   TWF_CODEX_CMD         Override codex command
-  TWF_CODEX_CMD_CONFIG  Override JSON config path (default: scripts/twf_config.json)
+  TWF_CODEX_CMD_CONFIG  Override YAML config path (default: scripts/twf_config.yaml)
   TWF_WORKERS_DIR       Per-worker CODEX_HOME base dir (default: ~/.codex-workers)
   TWF_CODEX_HOME_SRC    Source CODEX_HOME to copy from (default: ~/.codex)
 USAGE
 }
 
-config_file="${TWF_CODEX_CMD_CONFIG:-$script_dir/twf_config.json}"
+config_file="${TWF_CODEX_CMD_CONFIG:-$script_dir/twf_config.yaml}"
+if [[ -z "${TWF_CODEX_CMD_CONFIG:-}" && ! -f "$config_file" && -f "$script_dir/twf_config.json" ]]; then
+  config_file="$script_dir/twf_config.json"
+fi
 
 build_default_codex_cmd() {
   python3 - "$config_file" <<'PY'
@@ -33,14 +36,55 @@ import sys
 from pathlib import Path
 
 cfg_path = Path(sys.argv[1]).expanduser()
-data = {}
+raw = ""
 try:
     if cfg_path.exists():
-        data = json.loads(cfg_path.read_text(encoding="utf-8"))
+        raw = cfg_path.read_text(encoding="utf-8")
+except Exception:
+    raw = ""
+
+def parse_yaml(text: str) -> dict:
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if ":" not in stripped:
+            continue
+        key, value = stripped.split(":", 1)
+        key = key.strip()
+        if not key:
+            continue
+        value = value.strip()
+        if not value:
+            out[key] = ""
+            continue
+        if value[0] in {"'", '"'}:
+            q = value[0]
+            if value.endswith(q) and len(value) >= 2:
+                out[key] = value[1:-1]
+            else:
+                out[key] = value[1:]
+            continue
+        if "#" in value:
+            # strip inline comment (only when it starts a token)
+            for i, ch in enumerate(value):
+                if ch == "#" and (i == 0 or value[i - 1].isspace()):
+                    value = value[:i].strip()
+                    break
+        out[key] = value.strip()
+    return out
+
+data = {}
+try:
+    if raw.lstrip().startswith("{"):
+        data = json.loads(raw)
         if not isinstance(data, dict):
             data = {}
+    else:
+        data = parse_yaml(raw)
 except Exception:
-    data = {}
+    data = parse_yaml(raw)
 
 model = data.get("model") if isinstance(data.get("model"), str) else "gpt-5.2"
 effort = data.get("model_reasoning_effort") if isinstance(data.get("model_reasoning_effort"), str) else "xhigh"

@@ -1,0 +1,27 @@
+# tmux-workflow (twf) config
+#
+# This file is read by:
+# - scripts/codex_up_tmux.sh (build default `codex ...` command)
+# - scripts/twf             (pick twf state dir + model defaults)
+#
+# Override config path:
+#   TWF_CODEX_CMD_CONFIG=/path/to/twf_config.yaml
+#
+# Override state dir completely (highest priority, ignores twf_state_dir_mode):
+#   TWF_STATE_DIR=/some/path
+
+# Codex model selection
+model: gpt-5.2
+model_reasoning_effort: xhigh
+
+# twf worker state directory mode (where twf writes its worker state JSON files):
+# - auto:   <skill_root>/.twf/  (default; for project installs: ./.codex/skills/tmux-workflow/.twf/)
+# - global: ~/.twf/             (shared across projects/worktrees)
+# - manual: use twf_state_dir   (must be set)
+twf_state_dir_mode: auto
+
+# Only used when twf_state_dir_mode: manual
+# Tip: use an absolute path to avoid ambiguity.
+# Relative paths are resolved from the current working directory.
+twf_state_dir: ""
+

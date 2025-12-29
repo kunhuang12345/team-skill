@@ -36,10 +36,10 @@ This skill is a self-contained toolkit under `scripts/` (copy this whole folder 
 - `remove` always requires **full name** to avoid deleting the wrong worker.
 
 State directory:
-- default: configured via `scripts/twf_config.json` (`twf_state_dir_mode`, default `auto`)
+- default: configured via `scripts/twf_config.yaml` (`twf_state_dir_mode`, default `auto`)
   - `auto`: `<skill_root>/.twf/` (project install default: `./.codex/skills/tmux-workflow/.twf/`)
   - `global`: `~/.twf/`
-  - `manual`: `./.twf/` (must run twf in that directory)
+  - `manual`: `twf_state_dir` (must be set in config; relative paths resolve from current directory)
 - override: `TWF_STATE_DIR=/some/path` (highest priority; ignores `twf_state_dir_mode`)
 
 ### Core commands
@@ -97,10 +97,11 @@ Safety:
 
 - `TWF_SESSION_FILE`: session file path (default: `./.codex-tmux-session.json`).
 - `TWF_TMUX_SESSION`: override tmux session name (default: `codex-<hash(cwd)>`).
-- `TWF_CODEX_CMD_CONFIG`: JSON config path (default: `scripts/twf_config.json` in this skill). Keys:
+- `TWF_CODEX_CMD_CONFIG`: YAML config path (default: `scripts/twf_config.yaml` in this skill). Keys:
   - `model` (default `gpt-5.2`)
   - `model_reasoning_effort` (default `xhigh`)
   - `twf_state_dir_mode` (default `auto`; `auto|global|manual`)
+  - `twf_state_dir` (required when `twf_state_dir_mode=manual`)
 - `TWF_CODEX_CMD`: override the full command used inside tmux (if unset, it is built from `TWF_CODEX_CMD_CONFIG`).
 - `TWF_WORKERS_DIR`: per-worker `CODEX_HOME` base dir (default: `~/.codex-workers`).
 - `TWF_CODEX_HOME_SRC`: source `CODEX_HOME` to copy from (default: `~/.codex`).
