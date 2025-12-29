@@ -1725,8 +1725,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     init = sub.add_parser("init", help="init registry and start initial PM/Coordinator/Liaison trio")
-    init.add_argument("task", nargs="?", help="task description text to send to PM (or pipe via stdin)")
-    init.add_argument("--task-file", help="task file path to include in the PM message")
+    init.add_argument("task", nargs="?", help="task description (saved to share/task.md); or pipe via stdin")
+    init.add_argument("--task-file", help="task file path to copy into share/task.md")
     init.add_argument("--registry-only", action="store_true", help="only create registry, do not start workers")
     init.add_argument("--force-new", action="store_true", help="always start a fresh trio (even if one exists)")
     init.add_argument("--no-bootstrap", action="store_true", help="skip sending role templates on creation")
