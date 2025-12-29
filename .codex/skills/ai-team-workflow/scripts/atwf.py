@@ -376,6 +376,151 @@ def _ensure_registry_file(registry: Path, team_dir: Path) -> None:
     _eprint(f"✅ registry ready: {registry}")
 
 
+def _write_text_atomic(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    payload = text if text.endswith("\n") else text + "\n"
+    tmp.write_text(payload, encoding="utf-8")
+    tmp.replace(path)
+
+
+def _task_path(team_dir: Path) -> Path:
+    return team_dir / "task.md"
+
+
+def _design_dir(team_dir: Path) -> Path:
+    return team_dir / "design"
+
+
+def _design_summary_path(team_dir: Path) -> Path:
+    return team_dir / "design.md"
+
+
+def _design_member_path(team_dir: Path, full: str) -> Path:
+    safe = full.strip()
+    if not safe:
+        raise ValueError("full is required")
+    return _design_dir(team_dir) / f"{safe}.md"
+
+
+def _extract_task_file_from_text(task: str) -> str | None:
+    raw = task.strip()
+    if not raw:
+        return None
+
+    candidates = []
+    if raw.startswith("任务描述：") or raw.startswith("任务描述:"):
+        candidates.append(raw.split(":", 1)[1] if ":" in raw else raw.split("：", 1)[1])
+    candidates.append(raw)
+
+    for cand in candidates:
+        p = cand.strip().strip('"').strip("'")
+        if not p:
+            continue
+        if not p.startswith("/"):
+            continue
+        try:
+            path = _expand_path(p)
+        except Exception:
+            continue
+        if path.is_file():
+            return str(path)
+    return None
+
+
+def _read_task_content(args: argparse.Namespace) -> tuple[str | None, str | None]:
+    task_file = str(getattr(args, "task_file", "") or "").strip()
+    task_text = str(getattr(args, "task", "") or "").strip()
+
+    if not task_file and task_text:
+        guessed = _extract_task_file_from_text(task_text)
+        if guessed:
+            task_file = guessed
+            task_text = ""
+
+    stdin_text = ""
+    if not sys.stdin.isatty():
+        stdin_text = sys.stdin.read().strip()
+
+    if task_file:
+        path = _expand_path(task_file)
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError as e:
+            raise SystemExit(f"❌ failed to read task file: {path} ({e})")
+        return content, str(path)
+
+    if task_text:
+        return task_text, None
+    if stdin_text:
+        return stdin_text, None
+    return None, None
+
+
+def _ensure_share_layout(team_dir: Path) -> None:
+    team_dir.mkdir(parents=True, exist_ok=True)
+    _design_dir(team_dir).mkdir(parents=True, exist_ok=True)
+
+
+def _ensure_task_and_design_files(team_dir: Path, *, task_content: str | None, task_source: str | None) -> Path | None:
+    _ensure_share_layout(team_dir)
+
+    task_path = _task_path(team_dir)
+    if task_content is not None:
+        header = ""
+        if task_source:
+            header = (
+                f"<!-- AITWF_TASK_SOURCE: {task_source} -->\n"
+                f"<!-- AITWF_TASK_SAVED_AT: {_now()} -->\n\n"
+            )
+        _write_text_atomic(task_path, header + task_content.strip() + "\n")
+
+    summary_path = _design_summary_path(team_dir)
+    if not summary_path.exists():
+        seed = "# Consolidated Design\n\n"
+        if task_path.exists():
+            seed += f"- Task: `{task_path}`\n\n"
+        seed += "PM should consolidate module/team designs into this file.\n"
+        _write_text_atomic(summary_path, seed)
+
+    return task_path if task_path.exists() else None
+
+
+def _design_seed(*, member: dict[str, Any], full: str, team_dir: Path) -> str:
+    role = str(member.get("role", "")).strip()
+    base = str(member.get("base", "")).strip()
+    scope = str(member.get("scope", "")).strip()
+    task_path = _task_path(team_dir)
+
+    lines = [
+        f"# Design: {full}",
+        "",
+        f"- role: `{role or '?'}`",
+        f"- base: `{base or full}`",
+        f"- scope: {scope or '(fill in)'}",
+        f"- task: `{task_path}`" if task_path.exists() else "- task: (missing)",
+        f"- created_at: {_now()}",
+        "",
+        "## Goal",
+        "",
+        "## Scope / Non-goals",
+        "",
+        "## Approach",
+        "",
+        "## Plan (steps)",
+        "",
+        "## Interfaces / Data",
+        "",
+        "## Testing / Verification",
+        "",
+        "## Risks / Rollback",
+        "",
+        "## Open Questions",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def _resolve_target_full(data: dict[str, Any], target: str) -> str | None:
     target = target.strip()
     if not target:
@@ -403,7 +548,13 @@ def cmd_init(args: argparse.Namespace) -> int:
     registry = _registry_path(team_dir)
 
     _ensure_registry_file(registry, team_dir)
+
+    task_content, task_source = _read_task_content(args)
+    task_path = _ensure_task_and_design_files(team_dir, task_content=task_content, task_source=task_source)
+
     if args.registry_only:
+        if task_path:
+            _eprint(f"✅ shared task saved: {task_path}")
         return 0
 
     twf = _resolve_twf()
@@ -430,29 +581,14 @@ def cmd_init(args: argparse.Namespace) -> int:
         _eprint(f"   liaison: {liaison_full}")
     _eprint("   tip: enter a role via: atwf attach pm|coord|liaison")
 
-    task_parts: list[str] = []
-    if getattr(args, "task_file", None):
-        task_file = str(args.task_file).strip()
-        if task_file:
-            task_parts.append(f"任务描述文件：{task_file}")
-    if getattr(args, "task", None):
-        task = str(args.task).strip()
-        if task:
-            task_parts.append(task)
-
-    if not task_parts and not sys.stdin.isatty():
-        stdin_text = sys.stdin.read().strip()
-        if stdin_text:
-            task_parts.append(stdin_text)
-
-    if task_parts:
-        msg = "[TASK]\n" + "\n".join(task_parts).strip()
+    if task_path:
+        msg = "[TASK]\n" f"Shared task file: {task_path}\n" "Please read it and proceed.\n"
         res = _run_twf(twf, ["ask", pm_full, msg])
         sys.stdout.write(res.stdout)
         sys.stderr.write(res.stderr)
         return res.returncode
 
-    _eprint("   next: atwf ask pm \"任务描述：...\" (or pass task to `atwf init ...`).")
+    _eprint("   next: atwf init \"任务描述：...\" (or: atwf init --task-file /abs/path).")
     return 0
 
 
@@ -939,6 +1075,398 @@ def cmd_where(_: argparse.Namespace) -> int:
     return 0
 
 
+def _tmux_running(session: str) -> bool:
+    if not session.strip():
+        return False
+    res = subprocess.run(["tmux", "has-session", "-t", session], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return res.returncode == 0
+
+
+def _tree_children(data: dict[str, Any]) -> dict[str, list[str]]:
+    members = data.get("members", [])
+    if not isinstance(members, list):
+        return {}
+
+    out: dict[str, list[str]] = {}
+
+    for m in members:
+        if not isinstance(m, dict):
+            continue
+        full = str(m.get("full", "")).strip()
+        if not full:
+            continue
+        parent = m.get("parent")
+        parent_full = str(parent).strip() if isinstance(parent, str) else ""
+        if parent_full:
+            out.setdefault(parent_full, []).append(full)
+
+    # Merge explicit children lists (if present).
+    for m in members:
+        if not isinstance(m, dict):
+            continue
+        full = str(m.get("full", "")).strip()
+        if not full:
+            continue
+        children = m.get("children")
+        if not isinstance(children, list):
+            continue
+        for c in children:
+            child = str(c).strip() if isinstance(c, str) else ""
+            if not child:
+                continue
+            out.setdefault(full, []).append(child)
+
+    # Dedup + stable sort.
+    for k, v in list(out.items()):
+        uniq: list[str] = []
+        seen: set[str] = set()
+        for child in v:
+            if child not in seen:
+                seen.add(child)
+                uniq.append(child)
+        out[k] = sorted(uniq)
+
+    return out
+
+
+def _tree_roots(data: dict[str, Any]) -> list[str]:
+    members = data.get("members", [])
+    if not isinstance(members, list):
+        return []
+
+    fulls = []
+    for m in members:
+        if not isinstance(m, dict):
+            continue
+        full = str(m.get("full", "")).strip()
+        if full:
+            fulls.append(full)
+
+    known = set(fulls)
+    roots = []
+    for m in members:
+        if not isinstance(m, dict):
+            continue
+        full = str(m.get("full", "")).strip()
+        if not full:
+            continue
+        parent = m.get("parent")
+        parent_full = str(parent).strip() if isinstance(parent, str) else ""
+        if not parent_full or parent_full not in known:
+            roots.append(full)
+
+    # Stable-ish order by updated_at desc when available.
+    def key(full: str) -> str:
+        mm = _resolve_member(data, full)
+        return str(mm.get("updated_at", "")) if mm else ""
+
+    roots.sort(key=key, reverse=True)
+    return roots
+
+
+def cmd_tree(args: argparse.Namespace) -> int:
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    members = data.get("members", [])
+    if not isinstance(members, list) or not members:
+        print("(empty)")
+        return 0
+
+    root_fulls: list[str]
+    if getattr(args, "root", None):
+        target = str(args.root).strip()
+        if not target:
+            raise SystemExit("❌ root is required")
+        full = _resolve_target_full(data, target)
+        if not full:
+            raise SystemExit(f"❌ target not found in registry: {target}")
+        root_fulls = [full]
+    else:
+        root_fulls = _tree_roots(data)
+
+    children_map = _tree_children(data)
+    visited: set[str] = set()
+
+    def label(full: str) -> str:
+        m = _resolve_member(data, full) or {}
+        role = str(m.get("role", "")).strip()
+        scope = str(m.get("scope", "")).strip()
+        status = "running" if _tmux_running(full) else "stopped"
+        parts = [f"[{role or '?'}]", full, f"({status})"]
+        if scope:
+            parts.append(f"- {scope}")
+        return " ".join(parts)
+
+    def walk(full: str, indent: str) -> None:
+        if full in visited:
+            print(f"{indent}{label(full)}  (cycle)")
+            return
+        visited.add(full)
+        print(f"{indent}{label(full)}")
+        for child in children_map.get(full, []):
+            walk(child, indent + "  ")
+
+    for i, root in enumerate(root_fulls):
+        if i > 0:
+            print("")
+        walk(root, "")
+    return 0
+
+
+def cmd_design_path(args: argparse.Namespace) -> int:
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    target = args.target.strip()
+    if not target:
+        raise SystemExit("❌ target is required")
+
+    full = _resolve_target_full(data, target)
+    if not full:
+        raise SystemExit(f"❌ target not found in registry: {target}")
+
+    print(str(_design_member_path(team_dir, full)))
+    return 0
+
+
+def cmd_design_init(args: argparse.Namespace) -> int:
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    target = args.target.strip()
+    if not target:
+        raise SystemExit("❌ target is required")
+
+    full = _resolve_target_full(data, target)
+    if not full:
+        raise SystemExit(f"❌ target not found in registry: {target}")
+
+    _ensure_share_layout(team_dir)
+    path = _design_member_path(team_dir, full)
+    if path.exists() and not args.force:
+        print(str(path))
+        return 0
+
+    m = _resolve_member(data, full) or {}
+    _write_text_atomic(path, _design_seed(member=m, full=full, team_dir=team_dir))
+    print(str(path))
+    return 0
+
+
+def cmd_design_init_self(args: argparse.Namespace) -> int:
+    res = _run(["tmux", "display-message", "-p", "#S"])
+    if res.returncode != 0:
+        raise SystemExit("❌ design-init-self must run inside tmux")
+    full = res.stdout.strip()
+    if not full:
+        raise SystemExit("❌ failed to detect current tmux session name")
+    ns = argparse.Namespace(target=full, force=bool(args.force))
+    return cmd_design_init(ns)
+
+
+def _git_root() -> Path:
+    res = _run(["git", "rev-parse", "--show-toplevel"])
+    if res.returncode != 0:
+        raise SystemExit("❌ not a git repository (needed for worktree commands)")
+    root = res.stdout.strip()
+    if not root:
+        raise SystemExit("❌ failed to detect git root")
+    return Path(root).resolve()
+
+
+def _worktrees_dir(git_root: Path) -> Path:
+    return git_root / "worktree"
+
+
+def _worktree_path(git_root: Path, full: str) -> Path:
+    return _worktrees_dir(git_root) / full.strip()
+
+
+def cmd_worktree_path(args: argparse.Namespace) -> int:
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    target = args.target.strip()
+    if not target:
+        raise SystemExit("❌ target is required")
+
+    full = _resolve_target_full(data, target)
+    if not full:
+        raise SystemExit(f"❌ target not found in registry: {target}")
+
+    git_root = _git_root()
+    print(str(_worktree_path(git_root, full)))
+    return 0
+
+
+def cmd_worktree_create(args: argparse.Namespace) -> int:
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    target = args.target.strip()
+    if not target:
+        raise SystemExit("❌ target is required")
+
+    full = _resolve_target_full(data, target)
+    if not full:
+        raise SystemExit(f"❌ target not found in registry: {target}")
+
+    git_root = _git_root()
+    wt_dir = _worktrees_dir(git_root)
+    wt_dir.mkdir(parents=True, exist_ok=True)
+
+    path = _worktree_path(git_root, full)
+    base = (args.base or "HEAD").strip() or "HEAD"
+    branch = (args.branch or full).strip() or full
+
+    if path.exists():
+        print(str(path))
+        return 0
+
+    res = _run(["git", "worktree", "add", "-b", branch, str(path), base])
+    if res.returncode != 0:
+        err = (res.stderr or "").strip()
+        raise SystemExit(err or f"❌ git worktree add failed (code {res.returncode})")
+
+    print(str(path))
+    return 0
+
+
+def cmd_worktree_create_self(args: argparse.Namespace) -> int:
+    res = _run(["tmux", "display-message", "-p", "#S"])
+    if res.returncode != 0:
+        raise SystemExit("❌ worktree-create-self must run inside tmux")
+    full = res.stdout.strip()
+    if not full:
+        raise SystemExit("❌ failed to detect current tmux session name")
+    ns = argparse.Namespace(target=full, base=args.base, branch=args.branch)
+    return cmd_worktree_create(ns)
+
+
+def cmd_worktree_check_self(_: argparse.Namespace) -> int:
+    res = _run(["tmux", "display-message", "-p", "#S"])
+    if res.returncode != 0:
+        raise SystemExit("❌ worktree-check-self must run inside tmux")
+    full = res.stdout.strip()
+    if not full:
+        raise SystemExit("❌ failed to detect current tmux session name")
+
+    git_root = _git_root()
+    expected = _worktree_path(git_root, full).resolve()
+    cwd = Path.cwd().resolve()
+
+    if expected == cwd or expected in cwd.parents:
+        print("OK")
+        return 0
+
+    _eprint("❌ not in your dedicated worktree")
+    _eprint(f"   expected: {expected}")
+    _eprint(f"   cwd:      {cwd}")
+    _eprint(f"   fix:      bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self && cd {expected}")
+    return 1
+
+
+def _members_by_role(data: dict[str, Any], role: str) -> list[str]:
+    role = role.strip()
+    members = data.get("members", [])
+    if not isinstance(members, list):
+        return []
+    out = []
+    for m in members:
+        if not isinstance(m, dict):
+            continue
+        if str(m.get("role", "")).strip() != role:
+            continue
+        full = str(m.get("full", "")).strip()
+        if full:
+            out.append(full)
+    return sorted(set(out))
+
+
+def _subtree_fulls(data: dict[str, Any], root_full: str) -> list[str]:
+    root_full = root_full.strip()
+    if not root_full:
+        return []
+    children_map = _tree_children(data)
+    out: list[str] = []
+    seen: set[str] = set()
+    stack = [root_full]
+    while stack:
+        cur = stack.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        out.append(cur)
+        for child in children_map.get(cur, []):
+            if child not in seen:
+                stack.append(child)
+    return out
+
+
+def cmd_broadcast(args: argparse.Namespace) -> int:
+    twf = _resolve_twf()
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    msg = args.message
+    if msg is None:
+        msg = _forward_stdin()
+    if msg is None:
+        raise SystemExit("❌ message missing (use --message or pipe via stdin)")
+    msg = msg.strip()
+    if not msg:
+        raise SystemExit("❌ empty message")
+
+    targets: list[str] = []
+    if args.role:
+        targets = _members_by_role(data, args.role)
+    elif args.subtree:
+        root = _resolve_target_full(data, args.subtree)
+        if not root:
+            raise SystemExit(f"❌ subtree root not found in registry: {args.subtree}")
+        targets = _subtree_fulls(data, root)
+    else:
+        raw_targets = getattr(args, "targets", []) or []
+        if not isinstance(raw_targets, list) or not raw_targets:
+            raise SystemExit("❌ targets are required (or use --role/--subtree)")
+        for t in raw_targets:
+            full = _resolve_target_full(data, str(t))
+            if not full:
+                raise SystemExit(f"❌ target not found in registry: {t}")
+            targets.append(full)
+
+    if not targets:
+        raise SystemExit("❌ no targets matched")
+
+    uniq: list[str] = []
+    seen: set[str] = set()
+    for t in targets:
+        if t not in seen:
+            seen.add(t)
+            uniq.append(t)
+
+    failures: list[str] = []
+    for full in uniq:
+        sys.stdout.write(f"--- {full} ---\n")
+        res = _run_twf(twf, ["ask", full, msg])
+        sys.stdout.write(res.stdout)
+        sys.stderr.write(res.stderr)
+        if res.returncode != 0:
+            failures.append(full)
+
+    if failures:
+        _eprint(f"❌ broadcast failures: {len(failures)} targets")
+        return 1
+    return 0
+
+
 def cmd_resolve(args: argparse.Namespace) -> int:
     team_dir = _default_team_dir()
     registry = _registry_path(team_dir)
@@ -1267,6 +1795,39 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("where", help="print resolved shared dirs (team_dir + registry)")
 
+    tree = sub.add_parser("tree", help="print org tree from registry (parent/children)")
+    tree.add_argument("root", nargs="?", help="optional root: full|base|role")
+
+    dpath = sub.add_parser("design-path", help="print the per-member design doc path under share/design/")
+    dpath.add_argument("target", help="full|base|role")
+
+    dinit = sub.add_parser("design-init", help="create a design doc stub under share/design/ (non-destructive by default)")
+    dinit.add_argument("target", help="full|base|role")
+    dinit.add_argument("--force", action="store_true", help="overwrite if exists")
+
+    dself = sub.add_parser("design-init-self", help="create a design doc stub for the current tmux worker")
+    dself.add_argument("--force", action="store_true", help="overwrite if exists")
+
+    wtp = sub.add_parser("worktree-path", help="print the dedicated git worktree path for a worker")
+    wtp.add_argument("target", help="full|base|role")
+
+    wtc = sub.add_parser("worktree-create", help="create a dedicated git worktree under <git-root>/worktree/<full>")
+    wtc.add_argument("target", help="full|base|role")
+    wtc.add_argument("--base", default="HEAD", help="base ref/branch/commit (default: HEAD)")
+    wtc.add_argument("--branch", default="", help="branch name to create for the worktree (default: <full>)")
+
+    wtcs = sub.add_parser("worktree-create-self", help="create a dedicated git worktree for the current tmux worker")
+    wtcs.add_argument("--base", default="HEAD", help="base ref/branch/commit (default: HEAD)")
+    wtcs.add_argument("--branch", default="", help="branch name to create for the worktree (default: <full>)")
+
+    sub.add_parser("worktree-check-self", help="ensure you are working inside your dedicated worktree (inside tmux)")
+
+    bc = sub.add_parser("broadcast", help="send the same message to multiple workers (sequential)")
+    bc.add_argument("targets", nargs="*", help="targets (full|base|role). Ignored when --role/--subtree is used.")
+    bc.add_argument("--role", choices=SUPPORTED_ROLES, help="broadcast to all members of a role")
+    bc.add_argument("--subtree", help="broadcast to all members under a root (full|base|role)")
+    bc.add_argument("--message", default=None, help="message text (if omitted, read stdin)")
+
     resolve = sub.add_parser("resolve", help="resolve a target to full tmux session name (full|base|role)")
     resolve.add_argument("target")
 
@@ -1338,6 +1899,24 @@ def main(argv: list[str]) -> int:
         return cmd_list(args)
     if args.cmd == "where":
         return cmd_where(args)
+    if args.cmd == "tree":
+        return cmd_tree(args)
+    if args.cmd == "design-path":
+        return cmd_design_path(args)
+    if args.cmd == "design-init":
+        return cmd_design_init(args)
+    if args.cmd == "design-init-self":
+        return cmd_design_init_self(args)
+    if args.cmd == "worktree-path":
+        return cmd_worktree_path(args)
+    if args.cmd == "worktree-create":
+        return cmd_worktree_create(args)
+    if args.cmd == "worktree-create-self":
+        return cmd_worktree_create_self(args)
+    if args.cmd == "worktree-check-self":
+        return cmd_worktree_check_self(args)
+    if args.cmd == "broadcast":
+        return cmd_broadcast(args)
     if args.cmd == "resolve":
         return cmd_resolve(args)
     if args.cmd == "attach":

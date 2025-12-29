@@ -4,6 +4,8 @@ Identity:
 - role: `{{ROLE}}`
 - you are worker: `{{FULL_NAME}}` (base: `{{BASE_NAME}}`)
 - shared registry: `{{REGISTRY_PATH}}`
+- shared task: `{{TEAM_DIR}}/task.md`
+- consolidated design: `{{TEAM_DIR}}/design.md`
 - if you forget the path: run `bash .codex/skills/ai-team-workflow/scripts/atwf where`
 
 Rules:

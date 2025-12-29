@@ -36,15 +36,25 @@ It records, per worker:
 - `scope`: what this worker owns (used for routing)
 - `parent` / `children`: org tree links (mirrors `twf spawn`)
 
+## Shared artifacts (task + designs)
+
+Within the same `share_dir` as `registry.json`, this skill also standardizes:
+- Shared task: `share/task.md` (written by `atwf init ...`)
+- Per-member designs: `share/design/<full>.md` (create via `atwf design-init[-self]`)
+- Consolidated design: `share/design.md` (PM owns the final merged version)
+
 ## Quick start
 
 Initialize + start the initial trio + send task to PM:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf init "任务描述：/path/to/task.md"`
   - starts: `pm-main`, `coord-main`, `liaison-main`
-  - sends the task to PM and prints PM's first reply
+  - copies the task into `share/task.md`, sends PM the shared path, and prints PM's first reply
 
 Enter a role (avoid `tmux a` attaching the wrong session):
 - `bash .codex/skills/ai-team-workflow/scripts/atwf attach pm`
+
+View org/dependency tree:
+- `bash .codex/skills/ai-team-workflow/scripts/atwf tree`
 
 If you only want to create the registry (no workers):
 - `bash .codex/skills/ai-team-workflow/scripts/atwf init --registry-only`
@@ -60,6 +70,7 @@ Create execution roles under an architect:
 
 Inspect and route:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf list`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf tree pm`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf route "login" --role dev`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf resolve pm`  # print PM full name
 
@@ -89,6 +100,27 @@ Helpers (run inside tmux worker):
   3. Only if unresolved, Coordinator forwards a crisp question to **Liaison**.
   4. Liaison asks the user, then reports back to Coordinator (who distributes).
 
+## Design → Development workflow (required)
+
+1. Everyone reads the shared task: `share/task.md`.
+2. Everyone writes a per-scope design doc under `share/design/`:
+   - inside tmux: `bash .codex/skills/ai-team-workflow/scripts/atwf design-init-self`
+3. Bottom-up consolidation:
+   - interns → dev → arch → pm
+4. After PM finishes the consolidated design (`share/design.md`) and confirms “no conflicts”, PM announces **START DEV**.
+5. Each `dev-*` (including interns) creates a dedicated git worktree (no work on current branch):
+   - inside tmux: `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self`
+   - then: `cd <git-root>/worktree/<your-full-name>`
+6. Implement + commit + report upward with verification steps. Parent integrates subtree first; PM integrates last.
+
+## Conflict resolution protocol (ordered loop)
+
+For design conflicts or merge conflicts within a subtree:
+- Parent selects the conflicting participants (N people) and assigns an order `1..N`.
+- Use a strict “token passing” loop: only the current number speaks; after speaking they message the next number.
+- When the last (`N`) finishes, loop back to `1`. If `1` declares the conflict resolved, `1` summarizes and reports up; otherwise continue the loop.
+- Use `atwf broadcast` to keep everyone in sync.
+
 ## Commands
 
 All commands are wrappers around `twf` plus registry management:
@@ -104,6 +136,15 @@ All commands are wrappers around `twf` plus registry management:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf report-to <full|base|role> ["message"]` (inside tmux; stdin supported)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf list`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf where`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf tree [root]`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf design-path <full|base|role>`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf design-init <full|base|role> [--force]`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf design-init-self [--force]`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-path <full|base|role>`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create <full|base|role> [--base REF] [--branch BR]`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self [--base REF] [--branch BR]`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-check-self`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf broadcast [--role ROLE|--subtree ROOT|targets...] --message "..."` (or stdin)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf resolve <full|base|role>`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf attach <full|base|role>`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf route "<query>" [--role <role>]`
