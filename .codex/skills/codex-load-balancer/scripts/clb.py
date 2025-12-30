@@ -514,7 +514,12 @@ def _tmux_capture(target: str, *, lines: int = 200) -> str:
 
 
 def _tmux_send(target: str, text: str) -> None:
-    subprocess.run(["tmux", "send-keys", "-t", target, text, "Enter"], check=False)
+    subprocess.run(
+        ["tmux", "send-keys", "-t", target, text, "Enter"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 def _strip_status_line(line: str) -> str:
@@ -605,7 +610,15 @@ def cmd_status(args: argparse.Namespace) -> int:
                 if _tmux_has(session):
                     _tmux_kill(session)
 
-                launch = f"env CODEX_HOME={shlex.quote(str(home))} {codex_cmd}"
+                # Keep the tmux session alive even if Codex exits quickly, so we can
+                # capture errors without the tmux server disappearing mid-loop.
+                inner = (
+                    f"export CODEX_HOME={shlex.quote(str(home))}; "
+                    f"{codex_cmd}; "
+                    'echo "[CODEX_EXIT] $?"; '
+                    "sleep 3600"
+                )
+                launch = f"bash -lc {shlex.quote(inner)}"
                 res = subprocess.run(["tmux", "new-session", "-d", "-s", session, "-c", str(Path.cwd()), launch], check=False)
                 if res.returncode != 0:
                     raise SystemExit("❌ failed to start tmux session for status (is tmux installed?)")
