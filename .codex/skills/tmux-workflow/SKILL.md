@@ -102,9 +102,13 @@ Safety:
   - `model_reasoning_effort` (default `xhigh`)
   - `twf_state_dir_mode` (default `auto`; `auto|global|manual`)
   - `twf_state_dir` (required when `twf_state_dir_mode=manual`)
+  - `twf_use_load_balancer` (default `false`; when `true`, asks `codex-load-balancer` to choose a `CODEX_HOME` source per worker)
+  - `twf_load_balancer_cmd` (optional path override to the load balancer command; otherwise auto-detected)
 - `TWF_CODEX_CMD`: override the full command used inside tmux (if unset, it is built from `TWF_CODEX_CMD_CONFIG`).
 - `TWF_WORKERS_DIR`: per-worker `CODEX_HOME` base dir (default: `~/.codex-workers`).
 - `TWF_CODEX_HOME_SRC`: source `CODEX_HOME` to copy from (default: `~/.codex`).
+- `TWF_AUTH_SRC`: optional auth file to copy into worker as `auth.json` (overrides synced `auth.json`).
+- `TWF_LOAD_BALANCER_CMD`: optional path to `codex-load-balancer/scripts/clb` (takes precedence over `twf_load_balancer_cmd`).
 - `TWF_CODEX_SESSION_ROOT` / `CODEX_SESSION_ROOT` / `CODEX_HOME`: where to scan logs (default: `~/.codex/sessions`).
 - `TWF_WATCH_MODE` (default `auto`):
   - `auto`: on Linux/WSL use `inotify` to block until the log file changes; otherwise fall back to polling.

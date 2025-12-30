@@ -25,3 +25,31 @@ twf_state_dir_mode: auto
 # Relative paths are resolved from the current working directory.
 twf_state_dir: ""
 
+# Optional dependency: multi-account load balancer
+#
+# When enabled, twf will ask a separate "load balancer" skill to:
+# - choose which CODEX_HOME source to copy from for each worker, and
+# - choose an auth credential file and copy it into worker home as `auth.json`,
+# so many workers don't all share the same login credentials.
+#
+# Default is false (no dependency).
+twf_use_load_balancer: true
+
+# Optional override path to the load balancer command.
+# If empty, twf auto-detects:
+# - sibling project skill: ./.codex/skills/codex-load-balancer/scripts/clb
+# - global install:        ~/.codex/skills/codex-load-balancer/scripts/clb
+twf_load_balancer_cmd: ""
+
+# Auth load balancing (AUTH_TEAM)
+#
+# When twf_use_load_balancer=true, twf will call `clb pick-auth` to select an auth
+# credential file from AUTH_TEAM and copy it into the worker home as `auth.json`.
+#
+# - Recommended: set twf_auth_team_dir to a directory containing *only* auth files
+#   to avoid accidentally selecting non-auth files.
+twf_auth_team_dir: ""
+
+# Which files to consider inside twf_auth_team_dir.
+# Example: "auth.json.*" (matches auth.json.88code, auth.json.outlook-1, ...)
+twf_auth_team_glob: "auth.json*"

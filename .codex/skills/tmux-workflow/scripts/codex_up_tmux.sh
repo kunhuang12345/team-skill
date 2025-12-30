@@ -20,6 +20,7 @@ Environment:
   TWF_CODEX_CMD_CONFIG  Override YAML config path (default: scripts/twf_config.yaml)
   TWF_WORKERS_DIR       Per-worker CODEX_HOME base dir (default: ~/.codex-workers)
   TWF_CODEX_HOME_SRC    Source CODEX_HOME to copy from (default: ~/.codex)
+  TWF_AUTH_SRC          Optional auth file to copy into worker as `auth.json` (overrides synced auth.json)
 USAGE
 }
 
@@ -149,11 +150,21 @@ fi
 worker_id="$tmux_session"
 codex_workers_dir="${TWF_WORKERS_DIR:-$HOME/.codex-workers}"
 codex_home_src="${TWF_CODEX_HOME_SRC:-$HOME/.codex}"
+auth_src="${TWF_AUTH_SRC:-}"
 worker_home="$codex_workers_dir/$worker_id"
 worker_sessions_root="$worker_home/sessions"
 
 echo "🔧 Syncing CODEX_HOME -> $worker_home (excluding sessions/log/history.jsonl)" >&2
 python3 "$script_dir/sync_codex_home.py" --src "$codex_home_src" --dst "$worker_home"
+
+if [[ -n "$auth_src" ]]; then
+  if [[ ! -f "$auth_src" ]]; then
+    echo "❌ TWF_AUTH_SRC not found (expected file): $auth_src" >&2
+    exit 1
+  fi
+  cp -f "$auth_src" "$worker_home/auth.json"
+  chmod 600 "$worker_home/auth.json" >/dev/null 2>&1 || true
+fi
 
 tmux_target="${tmux_session}:0.0"
 
@@ -169,7 +180,7 @@ tmux set-environment -t "$tmux_session" CODEX_HOME "$worker_home" >/dev/null 2>&
 
 pane_id="$(tmux display-message -p -t "$tmux_target" '#{pane_id}' 2>/dev/null || true)"
 
-python3 - "$session_file" "$tmux_session" "$tmux_target" "$pane_id" "$work_dir" "$work_dir_norm" "$codex_cmd" "$worker_id" "$worker_home" "$worker_sessions_root" <<'PY'
+python3 - "$session_file" "$tmux_session" "$tmux_target" "$pane_id" "$work_dir" "$work_dir_norm" "$codex_cmd" "$worker_id" "$worker_home" "$worker_sessions_root" "$codex_home_src" "$auth_src" <<'PY'
 import json
 import sys
 from datetime import datetime
@@ -185,6 +196,8 @@ codex_cmd = sys.argv[7]
 worker_id = sys.argv[8]
 codex_home = sys.argv[9]
 sessions_root = sys.argv[10]
+codex_home_src = sys.argv[11]
+auth_src = sys.argv[12] or ""
 
 def load_json(path: Path) -> dict:
     try:
@@ -246,6 +259,8 @@ data.update(
         "work_dir_norm": work_dir_norm,
         "worker_id": worker_id,
         "codex_home": codex_home,
+        "codex_home_src": codex_home_src,
+        "auth_src": auth_src,
         "codex_session_root": sessions_root,
         "active": True,
         "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
