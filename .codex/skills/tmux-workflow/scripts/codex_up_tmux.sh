@@ -164,6 +164,10 @@ if [[ -n "$auth_src" ]]; then
   fi
   cp -f "$auth_src" "$worker_home/auth.json"
   chmod 600 "$worker_home/auth.json" >/dev/null 2>&1 || true
+  # Force Codex to use the injected auth file. Codex can track an "active auth"
+  # via `.auth_current_name` and may ignore auth.json otherwise.
+  printf '%s\n' "auth.json" >"$worker_home/.auth_current_name" 2>/dev/null || true
+  chmod 600 "$worker_home/.auth_current_name" >/dev/null 2>&1 || true
 fi
 
 tmux_target="${tmux_session}:0.0"

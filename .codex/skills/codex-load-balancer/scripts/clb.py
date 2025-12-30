@@ -619,11 +619,25 @@ def _parse_status(text: str) -> dict[str, str]:
 
 
 def _extract_status_block(text: str) -> str:
-    # Best-effort: find the last box that contains "Account:" and return it.
+    # Best-effort: find the last rendered /status "card" box and return it.
     lines = text.splitlines()
-    last_idx = None
+    anchors = (
+        "Account:",
+        "Token usage",
+        "Weekly limit:",
+        "5h limit:",
+        "Context window:",
+        "Visit https://chatgpt.com/codex/settings/usage",
+        "Model:",
+        "Directory:",
+        "Approval:",
+        "Sandbox:",
+        "Agents.md:",
+        "Session:",
+    )
+    last_idx: int | None = None
     for i, raw in enumerate(lines):
-        if "Account:" in raw:
+        if any(a in raw for a in anchors):
             last_idx = i
     if last_idx is None:
         return ""
@@ -699,6 +713,13 @@ def cmd_status(args: argparse.Namespace) -> int:
                 os.chmod(home / "auth.json", 0o600)
             except OSError:
                 pass
+            # Force Codex to use the injected auth.json. Codex can track an
+            # "active auth" via `.auth_current_name` and may ignore auth.json.
+            try:
+                (home / ".auth_current_name").write_text("auth.json\n", encoding="utf-8")
+                os.chmod(home / ".auth_current_name", 0o600)
+            except OSError:
+                pass
 
             session = f"clb-status-{os.getpid()}-{i}"
             target = f"{session}:0.0"
@@ -743,7 +764,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             finally:
                 _tmux_kill(session)
 
-    # Print a compact summary.
+    # Print results.
     print(f"team_dir: {team_dir}")
     print(f"glob: {glob_pat}")
     print(f"count: {len(results)}")
@@ -752,7 +773,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     for auth_file, parsed, block, captured, exit_code in results:
         meta = _auth_meta(auth_file)
         picked_count = max(0, counts.get(str(auth_file.resolve()), 0))
-        print(f"- auth: {auth_file.name}")
+        print(f"auth:   {auth_file.name}")
+        print(f"picked: {picked_count}")
         acct = parsed.get("account", "").strip()
         if not acct:
             email = meta.get("email", "").strip()
@@ -763,23 +785,23 @@ def cmd_status(args: argparse.Namespace) -> int:
         five = parsed.get("5h_limit", "").strip()
         week = parsed.get("weekly_limit", "").strip()
         directory = parsed.get("directory", "").strip()
+        print(f"account: {acct}")
         if directory:
-            print(f"  dir: {directory}")
-        print(f"  picked: {picked_count}")
-        print(f"  account: {acct}")
+            print(f"dir:     {directory}")
         if five:
-            print(f"  5h: {five}")
+            print(f"5h:      {five}")
         if week:
-            print(f"  week: {week}")
+            print(f"week:    {week}")
         if exit_code is not None:
-            print(f"  codex_exit: {exit_code}")
+            print(f"codex_exit: {exit_code}")
         if args.print_raw:
-            print("  --- raw ---")
             raw_to_print = block or captured
-            if not raw_to_print.strip():
-                raw_to_print = "(empty capture)"
-            for line in raw_to_print.splitlines():
-                print(f"  {line}")
+            if raw_to_print.strip():
+                print("")
+                print(raw_to_print.rstrip())
+            else:
+                print("")
+                print("(empty capture)")
         print("")
 
     return 0
