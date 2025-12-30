@@ -6,7 +6,12 @@ import hashlib
 import json
 import os
 import secrets
+import shlex
+import shutil
+import subprocess
 import sys
+import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -236,6 +241,96 @@ def _pick_hash(*, cfg: _Config, worker: str) -> Path:
     idx = n % len(cfg.sources)
     return cfg.sources[idx]
 
+def _sync_codex_home(src_root: Path, dst_root: Path) -> None:
+    # Minimal copy of a CODEX_HOME template, excluding worker-local roots.
+    exclude = {"sessions", "log", "history.jsonl"}
+    src_root = src_root.expanduser()
+    dst_root = dst_root.expanduser()
+    if not src_root.is_dir():
+        raise SystemExit(f"❌ source CODEX_HOME not found: {src_root}")
+    dst_root.mkdir(parents=True, exist_ok=True)
+
+    def safe_unlink(path: Path) -> None:
+        try:
+            if path.is_symlink() or path.is_file():
+                path.unlink()
+            else:
+                shutil.rmtree(path)
+        except FileNotFoundError:
+            return
+
+    def is_same_filetype(a: Path, b: Path) -> bool:
+        try:
+            if a.is_symlink() or b.is_symlink():
+                return a.is_symlink() and b.is_symlink()
+            if a.is_dir() and b.is_dir():
+                return True
+            if a.is_file() and b.is_file():
+                return True
+        except OSError:
+            return False
+        return False
+
+    def sync_entry(src: Path, dst: Path) -> None:
+        if dst.exists() and not is_same_filetype(src, dst):
+            safe_unlink(dst)
+
+        if src.is_symlink():
+            try:
+                target = os.readlink(src)
+            except OSError:
+                return
+            if dst.exists():
+                safe_unlink(dst)
+            dst.symlink_to(target)
+            return
+
+        if src.is_dir():
+            sync_dir(src, dst)
+            return
+
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+
+    def sync_dir(src_dir: Path, dst_dir: Path) -> None:
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            src_children = {p.name: p for p in src_dir.iterdir()}
+        except OSError:
+            return
+
+        for name, src_child in src_children.items():
+            sync_entry(src_child, dst_dir / name)
+
+        try:
+            for dst_child in dst_dir.iterdir():
+                if dst_child.name not in src_children:
+                    safe_unlink(dst_child)
+        except OSError:
+            return
+
+    try:
+        src_entries = {p.name: p for p in src_root.iterdir() if p.name not in exclude}
+    except OSError as exc:
+        raise SystemExit(f"❌ failed to list source CODEX_HOME: {exc}") from exc
+
+    for name, src_entry in src_entries.items():
+        sync_entry(src_entry, dst_root / name)
+
+    # Delete extras in dst, but preserve excluded root items (worker-local)
+    try:
+        for dst_entry in dst_root.iterdir():
+            if dst_entry.name in exclude:
+                continue
+            if dst_entry.name not in src_entries:
+                safe_unlink(dst_entry)
+    except OSError:
+        pass
+
+    (dst_root / "sessions").mkdir(parents=True, exist_ok=True)
+    (dst_root / "log").mkdir(parents=True, exist_ok=True)
+
+
 def _auth_candidates(cfg: _Config) -> list[Path]:
     if cfg.auth_team_dir is None:
         raise SystemExit(
@@ -327,6 +422,244 @@ def _pick_auth_balanced(*, cfg: _Config) -> Path:
     return picked
 
 
+def _quote_dotted_key(name: str) -> str:
+    # Keep simple keys unquoted; quote everything else for Codex dotted-path parsing.
+    safe = all(ch.isalnum() or ch == "_" for ch in name)
+    if safe:
+        return name
+    return '"' + name.replace('"', '\\"') + '"'
+
+
+def _detect_mcp_server_names() -> list[str]:
+    try:
+        res = subprocess.run(
+            ["codex", "mcp", "list"],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        return []
+
+    if res.returncode != 0 or not res.stdout.strip():
+        return []
+
+    lines = res.stdout.splitlines()
+    names: list[str] = []
+    for line in lines:
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("Name ") or s.startswith("Name\t"):
+            continue
+        if set(s) <= {"-"}:
+            continue
+        # Expect first column is name.
+        parts = s.split()
+        if not parts:
+            continue
+        name = parts[0].strip()
+        if name and name != "Name":
+            names.append(name)
+
+    # Dedup preserving order.
+    out: list[str] = []
+    seen: set[str] = set()
+    for n in names:
+        if n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
+
+
+def _build_codex_cmd_args(*, disable_all_mcp: bool) -> list[str]:
+    args: list[str] = [
+        "codex",
+        "-c",
+        "disable_paste_burst=true",
+        "--sandbox",
+        "workspace-write",
+        "--ask-for-approval",
+        "untrusted",
+    ]
+
+    if disable_all_mcp:
+        for name in _detect_mcp_server_names():
+            key = f'mcp_servers.{_quote_dotted_key(name)}.enabled=false'
+            args.extend(["-c", key])
+
+    return args
+
+
+def _tmux_has(session: str) -> bool:
+    res = subprocess.run(["tmux", "has-session", "-t", session], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return res.returncode == 0
+
+
+def _tmux_kill(session: str) -> None:
+    subprocess.run(["tmux", "kill-session", "-t", session], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _tmux_capture(target: str, *, lines: int = 200) -> str:
+    start = f"-{max(50, lines)}"
+    res = subprocess.run(
+        ["tmux", "capture-pane", "-p", "-t", target, "-S", start],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    return res.stdout or ""
+
+
+def _tmux_send(target: str, text: str) -> None:
+    subprocess.run(["tmux", "send-keys", "-t", target, text, "Enter"], check=False)
+
+
+def _strip_status_line(line: str) -> str:
+    s = line.strip()
+    if s.startswith("│"):
+        s = s[1:]
+    if s.endswith("│"):
+        s = s[:-1]
+    return s.strip()
+
+
+def _parse_status(text: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for raw in text.splitlines():
+        line = _strip_status_line(raw)
+        if not line:
+            continue
+        for key in ("Model:", "Directory:", "Approval:", "Sandbox:", "Agents.md:", "Account:", "Session:", "5h limit:", "Weekly limit:", "Context window:"):
+            if key in line:
+                val = line.split(key, 1)[1].strip()
+                out[key[:-1].lower().replace(" ", "_")] = val
+                break
+    return out
+
+
+def _extract_status_block(text: str) -> str:
+    # Best-effort: find the last box that contains "Account:" and return it.
+    lines = text.splitlines()
+    last_idx = None
+    for i, raw in enumerate(lines):
+        if "Account:" in raw:
+            last_idx = i
+    if last_idx is None:
+        return ""
+
+    # Expand to nearest box borders.
+    top = last_idx
+    while top > 0 and not (lines[top].lstrip().startswith("╭") or lines[top].lstrip().startswith("┌")):
+        top -= 1
+    bot = last_idx
+    while bot < len(lines) - 1 and not (lines[bot].lstrip().startswith("╰") or lines[bot].lstrip().startswith("└")):
+        bot += 1
+    return "\n".join(lines[top : bot + 1]).strip()
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    team_dir = Path(os.path.expanduser(args.team_dir)).resolve()
+    if not team_dir.is_dir():
+        raise SystemExit(f"❌ team dir not found: {team_dir}")
+
+    glob_pat = (args.glob or "").strip() or "auth.json*"
+    try:
+        candidates = [p.resolve() for p in team_dir.glob(glob_pat) if p.is_file()]
+    except OSError:
+        candidates = []
+
+    # Filter common junk.
+    candidates = [p for p in candidates if not (p.name.endswith(".lock") or p.name.endswith(".tmp") or p.name == ".DS_Store")]
+    candidates.sort(key=lambda p: p.name)
+    if not candidates:
+        raise SystemExit(f"❌ no auth files found under {team_dir} (glob={glob_pat!r})")
+
+    cfg = _load_config()
+    home_src = cfg.sources[0]
+
+    disable_mcp = bool(args.disable_mcp)
+    codex_args = _build_codex_cmd_args(disable_all_mcp=disable_mcp)
+    codex_cmd = " ".join(shlex.quote(a) for a in codex_args)
+
+    results: list[tuple[Path, dict[str, str], str]] = []
+
+    with tempfile.TemporaryDirectory(prefix="clb-status-") as tmp:
+        tmp_root = Path(tmp).resolve()
+        home = tmp_root / "home"
+        _sync_codex_home(home_src, home)
+
+        for i, auth_file in enumerate(candidates, start=1):
+            # Install selected auth into the temp home.
+            shutil.copy2(auth_file, home / "auth.json")
+            try:
+                os.chmod(home / "auth.json", 0o600)
+            except OSError:
+                pass
+
+            session = f"clb-status-{os.getpid()}-{i}"
+            target = f"{session}:0.0"
+            try:
+                if _tmux_has(session):
+                    _tmux_kill(session)
+
+                launch = f"env CODEX_HOME={shlex.quote(str(home))} {codex_cmd}"
+                res = subprocess.run(["tmux", "new-session", "-d", "-s", session, "-c", str(Path.cwd()), launch], check=False)
+                if res.returncode != 0:
+                    raise SystemExit("❌ failed to start tmux session for status (is tmux installed?)")
+
+                time.sleep(0.5)
+                _tmux_send(target, "/status")
+
+                # Wait for Account line to appear.
+                captured = ""
+                deadline = time.time() + float(args.timeout)
+                while time.time() < deadline:
+                    captured = _tmux_capture(target, lines=300)
+                    if "Account:" in captured and "Weekly limit:" in captured:
+                        break
+                    time.sleep(0.2)
+
+                block = _extract_status_block(captured) or ""
+                parsed = _parse_status(block or captured)
+                results.append((auth_file, parsed, block or ""))
+
+                _tmux_send(target, "/exit")
+                # Give Codex a moment to quit.
+                time.sleep(0.5)
+            finally:
+                _tmux_kill(session)
+
+    # Print a compact summary.
+    print(f"team_dir: {team_dir}")
+    print(f"glob: {glob_pat}")
+    print(f"count: {len(results)}")
+    print("")
+
+    for auth_file, parsed, block in results:
+        print(f"- auth: {auth_file.name}")
+        acct = parsed.get("account", "").strip() or "(unknown)"
+        five = parsed.get("5h_limit", "").strip()
+        week = parsed.get("weekly_limit", "").strip()
+        directory = parsed.get("directory", "").strip()
+        if directory:
+            print(f"  dir: {directory}")
+        print(f"  account: {acct}")
+        if five:
+            print(f"  5h: {five}")
+        if week:
+            print(f"  week: {week}")
+        if args.print_raw and block:
+            print("  --- raw ---")
+            for line in block.splitlines():
+                print(f"  {line}")
+        print("")
+
+    return 0
+
+
 def cmd_where(_: argparse.Namespace) -> int:
     cfg = _load_config()
     print(f"skill_dir:  {str(_skill_dir())}")
@@ -397,6 +730,18 @@ def build_parser() -> argparse.ArgumentParser:
     pick_auth = sub.add_parser("pick-auth", help="pick an auth file from AUTH_TEAM (balanced by least-used)")
     pick_auth.add_argument("--worker", required=True)
     pick_auth.add_argument("--base", required=True)
+
+    status = sub.add_parser("status", help="inspect /status for every auth file under a team dir (tmux required)")
+    status.add_argument("team_dir", help="AUTH_TEAM directory containing auth files (names unrestricted)")
+    status.add_argument("--glob", default="", help="file glob inside team_dir (default: auth.json*)")
+    status.add_argument("--timeout", default="12", help="seconds to wait per account (default: 12)")
+    status.add_argument(
+        "--disable-mcp",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="disable all MCP servers for faster startup (default: enabled)",
+    )
+    status.add_argument("--print-raw", action="store_true", help="also print the raw /status box for each account")
     return p
 
 
@@ -411,6 +756,8 @@ def main(argv: list[str]) -> int:
         return cmd_pick(args)
     if args.cmd == "pick-auth":
         return cmd_pick_auth(args)
+    if args.cmd == "status":
+        return cmd_status(args)
     raise SystemExit("unreachable")
 
 
