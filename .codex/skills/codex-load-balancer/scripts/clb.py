@@ -542,27 +542,49 @@ def _detect_mcp_server_names() -> list[str]:
     return out
 
 
-def _build_codex_cmd_args(*, disable_all_mcp: bool) -> list[str]:
-    args: list[str] = [
-        "codex",
-        "-c",
-        "disable_paste_burst=true",
-        "--sandbox",
-        "workspace-write",
-        "--ask-for-approval",
-        "untrusted",
-    ]
+def _build_codex_cmd_args() -> list[str]:
+    # For `clb status`, we want startup to be as close to a normal user
+    # invocation as possible. MCP is disabled by editing the temporary
+    # CODEX_HOME config.toml, not by passing many `-c ...` flags.
+    return ["codex"]
 
-    if disable_all_mcp:
-        for name in _detect_mcp_server_names():
-            seg = _dotted_path_segment(name)
-            if seg is None:
-                if os.environ.get("CLB_DEBUG", "").strip():
-                    _eprint(f"⚠️ cannot disable MCP server via -c (unsupported name): {name!r}")
+
+def _strip_mcp_servers_from_config(config_path: Path) -> bool:
+    try:
+        raw = config_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return False
+
+    lines = raw.splitlines(keepends=True)
+    out: list[str] = []
+    changed = False
+
+    skipping = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            # Section header like: [mcp_servers.fetch-md]
+            header = stripped[1:-1].strip()
+            if header == "mcp_servers" or header.startswith("mcp_servers."):
+                skipping = True
+                changed = True
                 continue
-            args.extend(["-c", f"mcp_servers.{seg}.enabled=false"])
+            skipping = False
+        if skipping:
+            changed = True
+            continue
+        out.append(line)
 
-    return args
+    if not changed:
+        return False
+
+    try:
+        config_path.write_text("".join(out), encoding="utf-8")
+        return True
+    except OSError:
+        return False
 
 
 def _tmux_has(session: str) -> bool:
@@ -699,8 +721,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             except Exception:
                 counts[k] = 0
 
-    disable_mcp = bool(args.disable_mcp)
-    codex_args = _build_codex_cmd_args(disable_all_mcp=disable_mcp)
+    codex_args = _build_codex_cmd_args()
     codex_cmd = " ".join(shlex.quote(a) for a in codex_args)
 
     results: list[tuple[Path, dict[str, str], str, str, int | None]] = []
@@ -709,6 +730,8 @@ def cmd_status(args: argparse.Namespace) -> int:
         tmp_root = Path(tmp).resolve()
         home = tmp_root / "home"
         _sync_codex_home(home_src, home)
+        if bool(args.disable_mcp):
+            _strip_mcp_servers_from_config(home / "config.toml")
 
         for i, auth_file in enumerate(candidates, start=1):
             # Install selected auth into the temp home.
@@ -886,7 +909,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--disable-mcp",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="disable all MCP servers for faster startup (default: enabled)",
+        help="disable all MCP servers for faster startup by stripping mcp_servers from temp config.toml (default: enabled)",
     )
     status.add_argument("--print-raw", action="store_true", help="also print the raw /status box for each account")
     return p
