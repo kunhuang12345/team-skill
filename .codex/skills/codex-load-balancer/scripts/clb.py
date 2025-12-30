@@ -586,13 +586,21 @@ def _tmux_capture(target: str, *, lines: int = 200) -> str:
     return res.stdout or ""
 
 
-def _tmux_send(target: str, text: str) -> None:
+def _tmux_send_keys(target: str, *keys: str) -> None:
     subprocess.run(
-        ["tmux", "send-keys", "-t", target, text, "Enter"],
+        ["tmux", "send-keys", "-t", target, *keys],
         check=False,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+
+
+def _tmux_type_line(target: str, text: str) -> None:
+    _tmux_send_keys(target, text)
+
+
+def _tmux_press_enter(target: str) -> None:
+    _tmux_send_keys(target, "Enter")
 
 
 def _strip_status_line(line: str) -> str:
@@ -619,21 +627,17 @@ def _parse_status(text: str) -> dict[str, str]:
 
 
 def _extract_status_block(text: str) -> str:
-    # Best-effort: find the last rendered /status "card" box and return it.
+    # Best-effort: find the last rendered /status "usage/status" card box and return it.
+    #
+    # Important: do NOT match the startup banner box (it contains Model/Directory too).
     lines = text.splitlines()
     anchors = (
-        "Account:",
         "Token usage",
         "Weekly limit:",
         "5h limit:",
         "Context window:",
         "Visit https://chatgpt.com/codex/settings/usage",
-        "Model:",
-        "Directory:",
-        "Approval:",
-        "Sandbox:",
-        "Agents.md:",
-        "Session:",
+        "Account:",
     )
     last_idx: int | None = None
     for i, raw in enumerate(lines):
@@ -743,69 +747,60 @@ def cmd_status(args: argparse.Namespace) -> int:
                 if res.returncode != 0:
                     raise SystemExit("❌ failed to start tmux session for status (is tmux installed?)")
 
-                time.sleep(0.5)
-                _tmux_send(target, "/status")
+                # Mimic a human: wait for UI to settle, type /status, wait a bit,
+                # then press Enter.
+                time.sleep(float(args.pre_send_wait))
+                before = _tmux_capture(target, lines=500)
+                _tmux_type_line(target, "/status")
+                time.sleep(float(args.enter_delay))
+                _tmux_press_enter(target)
 
-                # Wait for Account line to appear.
+                # Wait for a status card to appear.
                 captured = ""
                 deadline = time.time() + float(args.timeout)
                 while time.time() < deadline:
-                    captured = _tmux_capture(target, lines=300)
-                    if "Account:" in captured or "Weekly limit:" in captured:
+                    captured = _tmux_capture(target, lines=800)
+                    if _extract_status_block(captured):
                         break
                     if _find_codex_exit_code(captured) is not None:
                         break
                     time.sleep(0.2)
 
-                block = _extract_status_block(captured) or ""
-                parsed = _parse_status(block or captured)
+                # Prefer extracting from the portion after the last "/status".
+                tail = captured
+                idx = tail.rfind("/status")
+                if idx != -1:
+                    tail = tail[idx:]
+
+                block = _extract_status_block(tail) or _extract_status_block(captured) or ""
+                parsed = _parse_status(block or tail or captured)
                 results.append((auth_file, parsed, block or "", captured or "", _find_codex_exit_code(captured or "")))
 
-                _tmux_send(target, "/exit")
+                _tmux_type_line(target, "/exit")
+                _tmux_press_enter(target)
                 # Give Codex a moment to quit.
                 time.sleep(0.5)
             finally:
                 _tmux_kill(session)
 
     # Print results.
-    print(f"team_dir: {team_dir}")
-    print(f"glob: {glob_pat}")
-    print(f"count: {len(results)}")
-    print("")
-
     for auth_file, parsed, block, captured, exit_code in results:
-        meta = _auth_meta(auth_file)
-        picked_count = max(0, counts.get(str(auth_file.resolve()), 0))
-        print(f"auth:   {auth_file.name}")
-        print(f"picked: {picked_count}")
-        acct = parsed.get("account", "").strip()
-        if not acct:
-            email = meta.get("email", "").strip()
-            plan = meta.get("plan", "").strip().lower()
-            if email:
-                acct = f"{email} ({plan})" if plan else email
-        acct = acct or "(unknown)"
-        five = parsed.get("5h_limit", "").strip()
-        week = parsed.get("weekly_limit", "").strip()
-        directory = parsed.get("directory", "").strip()
-        print(f"account: {acct}")
-        if directory:
-            print(f"dir:     {directory}")
-        if five:
-            print(f"5h:      {five}")
-        if week:
-            print(f"week:    {week}")
-        if exit_code is not None:
-            print(f"codex_exit: {exit_code}")
-        if args.print_raw:
-            raw_to_print = block or captured
-            if raw_to_print.strip():
-                print("")
-                print(raw_to_print.rstrip())
+        # Delimiter per auth (the status card itself does not include the auth file name).
+        print(f"--- {auth_file.name} ---")
+        if block.strip():
+            print(block.rstrip())
+        else:
+            if args.print_raw:
+                raw_to_print = captured or ""
+                if raw_to_print.strip():
+                    print(raw_to_print.rstrip())
+                else:
+                    print("(empty capture)")
             else:
-                print("")
-                print("(empty capture)")
-        print("")
+                print("(no /status card captured; re-run with --print-raw and/or higher --timeout)")
+        if exit_code is not None and exit_code != 0:
+            print(f"[codex_exit={exit_code}]")
+        print()
 
     return 0
 
@@ -885,6 +880,8 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("team_dir", help="AUTH_TEAM directory containing auth files (names unrestricted)")
     status.add_argument("--glob", default="", help="file glob inside team_dir (default: auth.json*)")
     status.add_argument("--timeout", default="12", help="seconds to wait per account (default: 12)")
+    status.add_argument("--pre-send-wait", default="1.0", help="seconds to wait after starting Codex before typing /status (default: 1.0)")
+    status.add_argument("--enter-delay", default="0.5", help="seconds to wait after typing /status before pressing Enter (default: 0.5)")
     status.add_argument(
         "--disable-mcp",
         action=argparse.BooleanOptionalAction,
