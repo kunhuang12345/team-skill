@@ -36,8 +36,7 @@
   - `bash .codex/skills/ai-team-workflow/scripts/atwf attach pm|coord|liaison`
 - 给成员发消息：
   - `bash .codex/skills/ai-team-workflow/scripts/atwf ask pm "..."`（也可用 full-name）
-- 解散团队（只能传 PM 的 full-name，会级联移除全部成员并清空 registry）：
-  - `bash .codex/skills/ai-team-workflow/scripts/atwf remove <pm-full-name>`
+- 解散团队：当前版本不提供 `atwf remove`（避免误删）；请使用 `stop/resume` 暂停/恢复，或用 `reset` 做环境级清理。
 
 ---
 

@@ -2237,10 +2237,6 @@ def build_parser() -> argparse.ArgumentParser:
     boot.add_argument("name")
     boot.add_argument("role", choices=SUPPORTED_ROLES)
 
-    rm = sub.add_parser("remove", help="disband the whole team by removing the PM (and all recorded members)")
-    rm.add_argument("pm_full", help="PM full name: pm-...-YYYYmmdd-HHMMSS-<pid>")
-    rm.add_argument("--dry-run", action="store_true", help="print what would be removed")
-
     return p
 
 
@@ -2320,8 +2316,6 @@ def main(argv: list[str]) -> int:
         return cmd_ping(args)
     if args.cmd == "bootstrap":
         return cmd_bootstrap(args)
-    if args.cmd == "remove":
-        return cmd_remove(args)
 
     raise SystemExit("❌ unreachable")
 
