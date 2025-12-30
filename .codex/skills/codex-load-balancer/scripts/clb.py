@@ -713,11 +713,14 @@ def cmd_status(args: argparse.Namespace) -> int:
                 os.chmod(home / "auth.json", 0o600)
             except OSError:
                 pass
-            # Force Codex to use the injected auth.json. Codex can track an
-            # "active auth" via `.auth_current_name` and may ignore auth.json.
             try:
-                (home / ".auth_current_name").write_text("auth.json\n", encoding="utf-8")
-                os.chmod(home / ".auth_current_name", 0o600)
+                (home / ".auth_current_name").unlink(missing_ok=True)  # py>=3.8
+            except TypeError:
+                try:
+                    if (home / ".auth_current_name").exists():
+                        (home / ".auth_current_name").unlink()
+                except OSError:
+                    pass
             except OSError:
                 pass
 

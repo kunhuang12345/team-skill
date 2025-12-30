@@ -1067,10 +1067,8 @@ PY
       fi
       cp -f "$auth_src_final" "$codex_home/auth.json"
       chmod 600 "$codex_home/auth.json" >/dev/null 2>&1 || true
-      # Force Codex to use the injected auth file. Codex can track an "active auth"
-      # via `.auth_current_name` and may ignore auth.json otherwise.
-      printf '%s\n' "auth.json" >"$codex_home/.auth_current_name" 2>/dev/null || true
-      chmod 600 "$codex_home/.auth_current_name" >/dev/null 2>&1 || true
+      # Ensure we don't carry a pinned auth selector from the template.
+      rm -f "$codex_home/.auth_current_name" >/dev/null 2>&1 || true
     fi
 
     local quoted_codex_home

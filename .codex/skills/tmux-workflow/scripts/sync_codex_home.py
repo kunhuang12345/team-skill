@@ -7,7 +7,10 @@ import shutil
 from pathlib import Path
 
 
-EXCLUDE_ROOT = {"sessions", "log", "history.jsonl"}
+# Exclude worker-local and machine-local state files.
+# `.auth_current_name` can pin Codex to a different auth file than `auth.json`,
+# which breaks skills that intentionally inject a specific `auth.json`.
+EXCLUDE_ROOT = {"sessions", "log", "history.jsonl", ".auth_current_name"}
 
 
 def _is_same_filetype(src: Path, dst: Path) -> bool:
