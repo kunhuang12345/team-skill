@@ -691,15 +691,34 @@ def _extract_status_tail(text: str) -> str:
     return "\n".join(lines[last_idx:]).rstrip()
 
 
-def _status_response_ready(tail: str) -> bool:
-    # We treat either a full status card OR the minimal "context left" line as
-    # a valid response.
-    if not tail.strip():
-        return False
-    if _extract_status_block(tail):
-        return True
-    lowered = tail.lower()
-    return "context left" in lowered or "token usage" in lowered or "weekly limit" in lowered or "5h limit" in lowered
+def _status_block_score(block: str) -> int:
+    # Prefer "richer" cards that include limits/bars. This is used to pick the
+    # best snapshot if the UI is updating while we poll.
+    score = 0
+    for needle in (
+        "Visit https://chatgpt.com/codex/settings/usage",
+        "Model:",
+        "Directory:",
+        "Approval:",
+        "Sandbox:",
+        "Agents.md:",
+        "Account:",
+        "Session:",
+        "Context window:",
+        "5h limit:",
+        "Weekly limit:",
+    ):
+        if needle in block:
+            score += 1
+    # Penalize the placeholder.
+    if "data not available yet" in block.lower():
+        score -= 2
+    return score
+
+
+def _status_block_complete(block: str) -> bool:
+    # The user wants the real limits lines (bars).
+    return "5h limit:" in block and "Weekly limit:" in block
 
 
 def _find_codex_exit_code(text: str) -> int | None:
@@ -748,7 +767,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     codex_args = _build_codex_cmd_args()
     codex_cmd = " ".join(shlex.quote(a) for a in codex_args)
 
-    results: list[tuple[Path, dict[str, str], str, str, int | None]] = []
+    results: list[tuple[Path, dict[str, str], str, str, str, int | None]] = []
 
     with tempfile.TemporaryDirectory(prefix="clb-status-") as tmp:
         tmp_root = Path(tmp).resolve()
@@ -802,22 +821,35 @@ def cmd_status(args: argparse.Namespace) -> int:
                 time.sleep(float(args.enter_delay))
                 _tmux_press_enter(target)
 
-                # Wait for a status card to appear.
+                # Poll until we get the richest /status card we can.
                 captured = ""
+                best_block = ""
+                best_tail = ""
+                best_score = -10_000
                 deadline = time.time() + float(args.timeout)
                 while time.time() < deadline:
                     captured = _tmux_capture(target, lines=800)
                     tail_now = _extract_status_tail(captured)
-                    if _status_response_ready(tail_now):
-                        break
+                    if tail_now.strip():
+                        best_tail = tail_now
+
+                    block_now = _extract_status_block(tail_now)
+                    if block_now:
+                        score = _status_block_score(block_now)
+                        if score > best_score:
+                            best_score = score
+                            best_block = block_now
+                        if _status_block_complete(block_now):
+                            break
                     if _find_codex_exit_code(captured) is not None:
                         break
                     time.sleep(0.2)
 
-                tail = _extract_status_tail(captured)
-                block = _extract_status_block(tail) or ""
+                # Prefer the best status card we saw; fall back to the /status tail.
+                tail = best_tail or _extract_status_tail(captured)
+                block = best_block or _extract_status_block(tail) or ""
                 parsed = _parse_status(block or tail or captured)
-                results.append((auth_file, parsed, block or "", captured or "", _find_codex_exit_code(captured or "")))
+                results.append((auth_file, parsed, block or "", tail or "", captured or "", _find_codex_exit_code(captured or "")))
 
                 _tmux_type_line(target, "/exit")
                 _tmux_press_enter(target)
@@ -827,23 +859,18 @@ def cmd_status(args: argparse.Namespace) -> int:
                 _tmux_kill(session)
 
     # Print results.
-    for auth_file, parsed, block, captured, exit_code in results:
+    for auth_file, parsed, block, tail, captured, exit_code in results:
         # Delimiter per auth (the status card itself does not include the auth file name).
         print(f"--- {auth_file.name} ---")
-        tail = _extract_status_tail(captured or "")
         if block.strip():
             print(block.rstrip())
         elif tail.strip():
             # Minimal /status output (e.g. "100% context left")
             print(tail.rstrip())
-        elif args.print_raw:
-            raw_to_print = captured or ""
-            if raw_to_print.strip():
-                print(raw_to_print.rstrip())
-            else:
-                print("(empty capture)")
+        elif args.print_raw and (captured or "").strip():
+            print(captured.rstrip())
         else:
-            print("(no /status output captured; re-run with --print-raw and/or higher --timeout)")
+            print("(no /status output captured; increase --timeout / --pre-send-wait)")
         if exit_code is not None and exit_code != 0:
             print(f"[codex_exit={exit_code}]")
         print()
@@ -926,7 +953,7 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("team_dir", help="AUTH_TEAM directory containing auth files (names unrestricted)")
     status.add_argument("--glob", default="", help="file glob inside team_dir (default: auth.json*)")
     status.add_argument("--timeout", default="12", help="seconds to wait per account (default: 12)")
-    status.add_argument("--pre-send-wait", default="1.0", help="seconds to wait after starting Codex before typing /status (default: 1.0)")
+    status.add_argument("--pre-send-wait", default="5.0", help="seconds to wait after starting Codex before typing /status (default: 5.0)")
     status.add_argument("--enter-delay", default="0.5", help="seconds to wait after typing /status before pressing Enter (default: 0.5)")
     status.add_argument(
         "--disable-mcp",
