@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -197,6 +198,69 @@ def _write_state_atomic(path: Path, data: dict[str, object]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     tmp.replace(path)
+
+
+def _b64url_decode(s: str) -> bytes:
+    raw = s.encode("utf-8")
+    pad = b"=" * ((4 - (len(raw) % 4)) % 4)
+    return base64.urlsafe_b64decode(raw + pad)
+
+
+def _jwt_payload(token: str) -> dict[str, object] | None:
+    parts = token.split(".")
+    if len(parts) < 2:
+        return None
+    try:
+        payload = _b64url_decode(parts[1]).decode("utf-8", errors="replace")
+        data = json.loads(payload)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _auth_meta(path: Path) -> dict[str, str]:
+    try:
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+
+    out: dict[str, str] = {}
+
+    api_key = data.get("OPENAI_API_KEY")
+    if isinstance(api_key, str) and api_key.strip():
+        out["auth_type"] = "api_key"
+        return out
+
+    tokens = data.get("tokens")
+    if not isinstance(tokens, dict):
+        return out
+
+    account_id = tokens.get("account_id")
+    if isinstance(account_id, str) and account_id.strip():
+        out["account_id"] = account_id.strip()
+
+    id_token = tokens.get("id_token")
+    if not isinstance(id_token, str) or not id_token.strip():
+        return out
+
+    payload = _jwt_payload(id_token)
+    if not payload:
+        return out
+
+    email = payload.get("email")
+    if isinstance(email, str) and email.strip():
+        out["email"] = email.strip()
+
+    auth = payload.get("https://api.openai.com/auth")
+    if isinstance(auth, dict):
+        plan = auth.get("chatgpt_plan_type")
+        if isinstance(plan, str) and plan.strip():
+            out["plan"] = plan.strip()
+
+    return out
 
 
 def _pick_round_robin(*, cfg: _Config) -> Path:
@@ -422,12 +486,17 @@ def _pick_auth_balanced(*, cfg: _Config) -> Path:
     return picked
 
 
-def _quote_dotted_key(name: str) -> str:
-    # Keep simple keys unquoted; quote everything else for Codex dotted-path parsing.
-    safe = all(ch.isalnum() or ch == "_" for ch in name)
-    if safe:
-        return name
-    return '"' + name.replace('"', '\\"') + '"'
+def _dotted_path_segment(name: str) -> str | None:
+    # Codex's `-c key=value` dotted-path parser does NOT support quoted segments.
+    # That means keys that contain "." cannot be addressed safely.
+    # Hyphens (e.g. fetch-md) are OK.
+    if not name:
+        return None
+    if "." in name or "=" in name:
+        return None
+    if any(ch.isspace() for ch in name):
+        return None
+    return name
 
 
 def _detect_mcp_server_names() -> list[str]:
@@ -486,8 +555,12 @@ def _build_codex_cmd_args(*, disable_all_mcp: bool) -> list[str]:
 
     if disable_all_mcp:
         for name in _detect_mcp_server_names():
-            key = f'mcp_servers.{_quote_dotted_key(name)}.enabled=false'
-            args.extend(["-c", key])
+            seg = _dotted_path_segment(name)
+            if seg is None:
+                if os.environ.get("CLB_DEBUG", "").strip():
+                    _eprint(f"⚠️ cannot disable MCP server via -c (unsupported name): {name!r}")
+                continue
+            args.extend(["-c", f"mcp_servers.{seg}.enabled=false"])
 
     return args
 
@@ -565,6 +638,18 @@ def _extract_status_block(text: str) -> str:
     return "\n".join(lines[top : bot + 1]).strip()
 
 
+def _find_codex_exit_code(text: str) -> int | None:
+    for raw in text.splitlines():
+        s = raw.strip()
+        if s.startswith("[CODEX_EXIT]"):
+            tail = s.split("[CODEX_EXIT]", 1)[1].strip()
+            try:
+                return int(tail.split()[0])
+            except Exception:
+                return None
+    return None
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     team_dir = Path(os.path.expanduser(args.team_dir)).resolve()
     if not team_dir.is_dir():
@@ -584,12 +669,23 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     cfg = _load_config()
     home_src = cfg.sources[0]
+    state = _read_state(cfg.state_file)
+    raw_counts = state.get("auth_counts")
+    counts: dict[str, int] = {}
+    if isinstance(raw_counts, dict):
+        for k, v in raw_counts.items():
+            if not isinstance(k, str) or not k.strip():
+                continue
+            try:
+                counts[k] = int(v) if v is not None else 0
+            except Exception:
+                counts[k] = 0
 
     disable_mcp = bool(args.disable_mcp)
     codex_args = _build_codex_cmd_args(disable_all_mcp=disable_mcp)
     codex_cmd = " ".join(shlex.quote(a) for a in codex_args)
 
-    results: list[tuple[Path, dict[str, str], str]] = []
+    results: list[tuple[Path, dict[str, str], str, str, int | None]] = []
 
     with tempfile.TemporaryDirectory(prefix="clb-status-") as tmp:
         tmp_root = Path(tmp).resolve()
@@ -631,13 +727,15 @@ def cmd_status(args: argparse.Namespace) -> int:
                 deadline = time.time() + float(args.timeout)
                 while time.time() < deadline:
                     captured = _tmux_capture(target, lines=300)
-                    if "Account:" in captured and "Weekly limit:" in captured:
+                    if "Account:" in captured or "Weekly limit:" in captured:
+                        break
+                    if _find_codex_exit_code(captured) is not None:
                         break
                     time.sleep(0.2)
 
                 block = _extract_status_block(captured) or ""
                 parsed = _parse_status(block or captured)
-                results.append((auth_file, parsed, block or ""))
+                results.append((auth_file, parsed, block or "", captured or "", _find_codex_exit_code(captured or "")))
 
                 _tmux_send(target, "/exit")
                 # Give Codex a moment to quit.
@@ -651,22 +749,36 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"count: {len(results)}")
     print("")
 
-    for auth_file, parsed, block in results:
+    for auth_file, parsed, block, captured, exit_code in results:
+        meta = _auth_meta(auth_file)
+        picked_count = max(0, counts.get(str(auth_file.resolve()), 0))
         print(f"- auth: {auth_file.name}")
-        acct = parsed.get("account", "").strip() or "(unknown)"
+        acct = parsed.get("account", "").strip()
+        if not acct:
+            email = meta.get("email", "").strip()
+            plan = meta.get("plan", "").strip().lower()
+            if email:
+                acct = f"{email} ({plan})" if plan else email
+        acct = acct or "(unknown)"
         five = parsed.get("5h_limit", "").strip()
         week = parsed.get("weekly_limit", "").strip()
         directory = parsed.get("directory", "").strip()
         if directory:
             print(f"  dir: {directory}")
+        print(f"  picked: {picked_count}")
         print(f"  account: {acct}")
         if five:
             print(f"  5h: {five}")
         if week:
             print(f"  week: {week}")
-        if args.print_raw and block:
+        if exit_code is not None:
+            print(f"  codex_exit: {exit_code}")
+        if args.print_raw:
             print("  --- raw ---")
-            for line in block.splitlines():
+            raw_to_print = block or captured
+            if not raw_to_print.strip():
+                raw_to_print = "(empty capture)"
+            for line in raw_to_print.splitlines():
                 print(f"  {line}")
         print("")
 
