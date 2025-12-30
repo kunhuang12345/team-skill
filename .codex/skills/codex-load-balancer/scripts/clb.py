@@ -678,6 +678,30 @@ def _extract_status_block(text: str) -> str:
     return "\n".join(lines[top : bot + 1]).strip()
 
 
+def _extract_status_tail(text: str) -> str:
+    # Return the output starting from the most recent "/status" invocation
+    # (including the command line itself), so we can ignore the startup banner.
+    lines = text.splitlines()
+    last_idx: int | None = None
+    for i, raw in enumerate(lines):
+        if "/status" in raw:
+            last_idx = i
+    if last_idx is None:
+        return ""
+    return "\n".join(lines[last_idx:]).rstrip()
+
+
+def _status_response_ready(tail: str) -> bool:
+    # We treat either a full status card OR the minimal "context left" line as
+    # a valid response.
+    if not tail.strip():
+        return False
+    if _extract_status_block(tail):
+        return True
+    lowered = tail.lower()
+    return "context left" in lowered or "token usage" in lowered or "weekly limit" in lowered or "5h limit" in lowered
+
+
 def _find_codex_exit_code(text: str) -> int | None:
     for raw in text.splitlines():
         s = raw.strip()
@@ -783,19 +807,15 @@ def cmd_status(args: argparse.Namespace) -> int:
                 deadline = time.time() + float(args.timeout)
                 while time.time() < deadline:
                     captured = _tmux_capture(target, lines=800)
-                    if _extract_status_block(captured):
+                    tail_now = _extract_status_tail(captured)
+                    if _status_response_ready(tail_now):
                         break
                     if _find_codex_exit_code(captured) is not None:
                         break
                     time.sleep(0.2)
 
-                # Prefer extracting from the portion after the last "/status".
-                tail = captured
-                idx = tail.rfind("/status")
-                if idx != -1:
-                    tail = tail[idx:]
-
-                block = _extract_status_block(tail) or _extract_status_block(captured) or ""
+                tail = _extract_status_tail(captured)
+                block = _extract_status_block(tail) or ""
                 parsed = _parse_status(block or tail or captured)
                 results.append((auth_file, parsed, block or "", captured or "", _find_codex_exit_code(captured or "")))
 
@@ -810,17 +830,20 @@ def cmd_status(args: argparse.Namespace) -> int:
     for auth_file, parsed, block, captured, exit_code in results:
         # Delimiter per auth (the status card itself does not include the auth file name).
         print(f"--- {auth_file.name} ---")
+        tail = _extract_status_tail(captured or "")
         if block.strip():
             print(block.rstrip())
-        else:
-            if args.print_raw:
-                raw_to_print = captured or ""
-                if raw_to_print.strip():
-                    print(raw_to_print.rstrip())
-                else:
-                    print("(empty capture)")
+        elif tail.strip():
+            # Minimal /status output (e.g. "100% context left")
+            print(tail.rstrip())
+        elif args.print_raw:
+            raw_to_print = captured or ""
+            if raw_to_print.strip():
+                print(raw_to_print.rstrip())
             else:
-                print("(no /status card captured; re-run with --print-raw and/or higher --timeout)")
+                print("(empty capture)")
+        else:
+            print("(no /status output captured; re-run with --print-raw and/or higher --timeout)")
         if exit_code is not None and exit_code != 0:
             print(f"[codex_exit={exit_code}]")
         print()
