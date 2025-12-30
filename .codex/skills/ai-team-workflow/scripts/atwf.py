@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -136,6 +137,154 @@ def _resolve_twf() -> Path:
         "❌ tmux-workflow not found.\n"
         "   Expected `tmux-workflow/scripts/twf` next to this skill, or set AITWF_TWF=/path/to/twf."
     )
+
+
+def _resolve_twf_state_dir(twf: Path) -> Path:
+    # Mirror twf's state dir resolution (subset):
+    # - env override: TWF_STATE_DIR
+    # - config: scripts/twf_config.yaml (auto/global/manual)
+    override = os.environ.get("TWF_STATE_DIR", "").strip()
+    if override:
+        return _expand_path(override)
+
+    tmux_skill_dir = twf.resolve().parents[1]
+    cfg_path = tmux_skill_dir / "scripts" / "twf_config.yaml"
+    cfg = _read_simple_yaml_kv(cfg_path)
+
+    mode = (cfg.get("twf_state_dir_mode", "") or "auto").strip().lower()
+    if mode not in {"auto", "global", "manual"}:
+        mode = "auto"
+
+    if mode == "global":
+        return Path.home() / ".twf"
+
+    if mode == "manual":
+        raw = (cfg.get("twf_state_dir", "") or "").strip()
+        if not raw:
+            raise SystemExit(f"❌ twf_state_dir_mode=manual but twf_state_dir is empty in: {cfg_path}")
+        return _expand_path(raw)
+
+    return tmux_skill_dir / ".twf"
+
+
+def _rm_tree(path: Path) -> None:
+    try:
+        shutil.rmtree(path)
+    except FileNotFoundError:
+        return
+    except OSError:
+        # Best effort.
+        return
+
+
+def _tmux_kill_session(name: str) -> None:
+    name = (name or "").strip()
+    if not name:
+        return
+    subprocess.run(["tmux", "kill-session", "-t", name], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def cmd_reset(args: argparse.Namespace) -> int:
+    """
+    Reset current environment by deleting all local temp/state artifacts:
+    - ai-team-workflow share dir (registry/task/design)
+    - tmux-workflow workers for this project (tmux sessions, state files, worker homes)
+    - codex-load-balancer local state.json
+    """
+    expected_root = _expected_project_root()
+    twf = _resolve_twf()
+
+    # 1) Stop/remove tmux-workflow workers for this project.
+    state_dir = _resolve_twf_state_dir(twf)
+    worker_candidates: list[tuple[Path, dict[str, Any]]] = []
+    if state_dir.is_dir():
+        for p in sorted(state_dir.glob("*.json")):
+            try:
+                data = _read_json(p)
+            except SystemExit:
+                continue
+            if not data:
+                continue
+            if _state_file_matches_project(p, expected_root):
+                worker_candidates.append((p, data))
+
+    codex_workers_root = Path(os.environ.get("TWF_WORKERS_DIR", "") or (Path.home() / ".codex-workers")).expanduser().resolve()
+
+    if args.dry_run:
+        print(f"project_root: {expected_root}")
+        print(f"twf_state_dir: {state_dir}")
+        print(f"workers_matched: {len(worker_candidates)}")
+        for p, data in worker_candidates:
+            print(f"- state: {p}")
+            tmux_session = str(data.get("tmux_session") or "").strip()
+            codex_home = str(data.get("codex_home") or "").strip()
+            if tmux_session:
+                print(f"  tmux_session: {tmux_session}")
+            if codex_home:
+                print(f"  codex_home: {codex_home}")
+        team_dir = _default_team_dir()
+        print(f"ai_team_share_dir: {team_dir}")
+        lb_state = (_skill_dir().parent / "codex-load-balancer" / "share" / "state.json").resolve()
+        print(f"clb_state: {lb_state}")
+        return 0
+
+    for p, data in worker_candidates:
+        tmux_session = str(data.get("tmux_session") or "").strip()
+        if tmux_session:
+            _tmux_kill_session(tmux_session)
+
+        codex_home_raw = str(data.get("codex_home") or "").strip()
+        if codex_home_raw:
+            try:
+                codex_home = Path(codex_home_raw).expanduser().resolve()
+                # Safety: only remove under codex_workers_root unless --force.
+                if codex_workers_root == codex_home or codex_workers_root in codex_home.parents:
+                    _rm_tree(codex_home)
+                elif args.force:
+                    _rm_tree(codex_home)
+                else:
+                    _eprint(f"⚠️ skip removing codex_home outside {codex_workers_root}: {codex_home}")
+            except Exception:
+                pass
+
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+    # Remove stale lock file if present.
+    try:
+        (state_dir / ".lock").unlink()
+    except Exception:
+        pass
+
+    # 2) Remove ai-team-workflow share dir (registry/task/design).
+    team_dir = _default_team_dir()
+    _rm_tree(team_dir)
+
+    # 3) Remove local codex-load-balancer state (per-project).
+    clb_share = _skill_dir().parent / "codex-load-balancer" / "share"
+    clb_state = clb_share / "state.json"
+    clb_lock = clb_share / "state.json.lock"
+    try:
+        clb_state.unlink()
+    except Exception:
+        pass
+    try:
+        clb_lock.unlink()
+    except Exception:
+        pass
+    # If share becomes empty, remove it.
+    try:
+        if clb_share.is_dir() and not any(clb_share.iterdir()):
+            clb_share.rmdir()
+    except Exception:
+        pass
+
+    _eprint("✅ reset complete")
+    return 0
 
 
 def _run(cmd: list[str], *, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -1949,6 +2098,10 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--force-new", action="store_true", help="always start a fresh trio (even if one exists)")
     init.add_argument("--no-bootstrap", action="store_true", help="skip sending role templates on creation")
 
+    reset = sub.add_parser("reset", help="reset local environment (delete worker state + share + lb state)")
+    reset.add_argument("--dry-run", action="store_true", help="print what would be deleted, without deleting")
+    reset.add_argument("--force", action="store_true", help="also delete codex_home paths outside ~/.codex-workers (dangerous)")
+
     up = sub.add_parser("up", help="start a new role worker (twf up) + register + bootstrap")
     up.add_argument("role")
     up.add_argument("label", nargs="?")
@@ -2097,6 +2250,8 @@ def main(argv: list[str]) -> int:
 
     if args.cmd == "init":
         return cmd_init(args)
+    if args.cmd == "reset":
+        return cmd_reset(args)
     if args.cmd == "up":
         return cmd_up(args)
     if args.cmd == "spawn":
