@@ -48,7 +48,7 @@ twf_load_balancer_cmd: ""
 #
 # - Recommended: set twf_auth_team_dir to a directory containing *only* auth files
 #   to avoid accidentally selecting non-auth files.
-twf_auth_team_dir: ""
+twf_auth_team_dir: "/root/.codex/team-1"
 
 # Which files to consider inside twf_auth_team_dir.
 # Example: "auth.json.*" (matches auth.json.88code, auth.json.outlook-1, ...)
