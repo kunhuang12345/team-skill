@@ -1,6 +1,6 @@
 ---
 name: ai-team-workflow
-description: Role-based multi-agent workflow built on tmux-workflow/twf. Use when you want to run a PM/Architect/Product/Dev/QA/Coordinator/Liaison “AI team” as multiple Codex tmux workers, keep a shared responsibilities registry, route internal questions via Coordinator, and escalate user-facing questions via Liaison.
+description: Role-based multi-agent workflow built on tmux-workflow/twf. Use when you want to run a PM/Architect/Product/Dev/QA/Ops/Coordinator/Liaison “AI team” as multiple Codex tmux workers, keep a shared responsibilities registry, route internal questions via Coordinator, and escalate user-facing questions via Liaison.
 ---
 
 # ai-team-workflow
@@ -32,7 +32,7 @@ Print the resolved paths:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf where`
 
 It records, per worker:
-- `role`: `pm|arch|prod|dev|qa|coord|liaison`
+- `role`: `pm|arch|prod|dev|qa|ops|coord|liaison`
 - `scope`: what this worker owns (used for routing)
 - `parent` / `children`: org tree links (mirrors `twf spawn`)
 
@@ -42,6 +42,9 @@ Within the same `share_dir` as `registry.json`, this skill also standardizes:
 - Shared task: `share/task.md` (written by `atwf init ...`)
 - Per-member designs: `share/design/<full>.md` (create via `atwf design-init[-self]`)
 - Consolidated design: `share/design.md` (PM owns the final merged version)
+- Ops environment docs:
+  - `share/ops/env.md`
+  - `share/ops/host-deps.md` (records any host-level installs like `apt`/`curl` downloads)
 
 ## Quick start
 
@@ -66,6 +69,9 @@ If you copied this skill from another repo and `init` reuses stale workers:
 Create an architect under PM:
 - preferred: PM runs inside its tmux: `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self arch user --scope "user module design + task breakdown"`
 
+Create an ops under PM (environment owner):
+- preferred: PM runs inside its tmux: `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self ops env --scope "local Docker + docker-compose environment management"`
+
 Create execution roles under an architect:
 - preferred: the architect runs inside its tmux:
   - `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self dev backend --scope "backend implementation for user module"`
@@ -86,7 +92,7 @@ Disband the whole team (requires PM full name):
 
 Completion/progress must flow upward:
 - If you hire subordinates, you are responsible for collecting their reports and then reporting *up* only when the whole subtree is done.
-- Default chain: `dev/prod/qa -> arch -> pm -> (coord + liaison) -> user`.
+- Default chains: `dev/prod/qa -> arch -> pm -> (coord + liaison) -> user`; `ops -> pm -> (coord + liaison) -> user`.
 
 Helpers (run inside tmux worker):
 - `bash .codex/skills/ai-team-workflow/scripts/atwf parent-self`

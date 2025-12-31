@@ -17,10 +17,16 @@ Operating rules:
 Workflow:
 1. Read `{{REGISTRY_PATH}}` to understand existing roles/scopes.
 2. If missing roles, start/spawn them (preferred via `atwf` so the registry stays correct).
+   - For new projects, start/spawn `ops-*` to own the local Docker + docker-compose environment.
 3. When assigning scope, ensure the registry’s `scope` fields reflect ownership (use `atwf set-scope ...` if needed).
 4. Ensure everyone reads the shared task: `{{TEAM_DIR}}/task.md`
 5. Require every member to write a per-scope design doc under `{{TEAM_DIR}}/design/` (use `atwf design-init[-self]`).
 6. Consolidate designs bottom-up (interns → dev → arch → you) into `{{TEAM_DIR}}/design.md`.
+
+Environment policy (Ops-owned):
+- All services for this project must live in a single docker-compose setup.
+- Any host-level installs (apt/brew/curl/etc.) must be documented in `{{TEAM_DIR}}/ops/host-deps.md`.
+- Ops maintains `{{TEAM_DIR}}/ops/env.md`; keep it aligned with the team’s design decisions.
 
 Reporting (mandatory):
 - Collect module reports from your architects (`arch-*`).

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 
-SUPPORTED_ROLES = ("pm", "arch", "prod", "dev", "qa", "coord", "liaison")
+SUPPORTED_ROLES = ("pm", "arch", "prod", "dev", "qa", "ops", "coord", "liaison")
 INITIAL_TRIO = (
     ("coord", "main", "internal routing + escalation triage"),
     ("liaison", "main", "user communication + clarifications"),
@@ -608,6 +608,18 @@ def _design_summary_path(team_dir: Path) -> Path:
     return team_dir / "design.md"
 
 
+def _ops_dir(team_dir: Path) -> Path:
+    return team_dir / "ops"
+
+
+def _ops_env_notes_path(team_dir: Path) -> Path:
+    return _ops_dir(team_dir) / "env.md"
+
+
+def _ops_host_deps_path(team_dir: Path) -> Path:
+    return _ops_dir(team_dir) / "host-deps.md"
+
+
 def _design_member_path(team_dir: Path, full: str) -> Path:
     safe = full.strip()
     if not safe:
@@ -672,6 +684,7 @@ def _read_task_content(args: argparse.Namespace) -> tuple[str | None, str | None
 def _ensure_share_layout(team_dir: Path) -> None:
     team_dir.mkdir(parents=True, exist_ok=True)
     _design_dir(team_dir).mkdir(parents=True, exist_ok=True)
+    _ops_dir(team_dir).mkdir(parents=True, exist_ok=True)
 
 
 def _ensure_task_and_design_files(team_dir: Path, *, task_content: str | None, task_source: str | None) -> Path | None:
@@ -694,6 +707,39 @@ def _ensure_task_and_design_files(team_dir: Path, *, task_content: str | None, t
             seed += f"- Task: `{task_path}`\n\n"
         seed += "PM should consolidate module/team designs into this file.\n"
         _write_text_atomic(summary_path, seed)
+
+    env_notes_path = _ops_env_notes_path(team_dir)
+    if not env_notes_path.exists():
+        seed = (
+            "# Ops: Environment Notes\n\n"
+            "## Policy (development-time)\n"
+            "- Ops manages the project environment.\n"
+            "- Ops can only operate local Docker (no remote hosts).\n"
+            "- For a single project, all services must live in a single `docker-compose` file.\n"
+            "- If anything must be installed on the host (e.g. `apt`, `brew`, `curl` download/unpack), it must be recorded in:\n"
+            f"  - `{_ops_host_deps_path(team_dir)}`\n\n"
+            "## Docker Compose\n"
+            "- Keep one compose file for the whole project (commonly repo root `docker-compose.yml` or `compose.yaml`).\n"
+            "- Prefer bind mounts + named volumes; avoid undocumented host paths.\n"
+            "- Put secrets in `.env` (not committed) and document required keys.\n\n"
+            "## Change Log\n"
+            "- Record noteworthy environment changes here (date + what + why).\n"
+        )
+        _write_text_atomic(env_notes_path, seed)
+
+    host_deps_path = _ops_host_deps_path(team_dir)
+    if not host_deps_path.exists():
+        seed = (
+            "# Ops: Host Dependencies (must document)\n\n"
+            "Record any dependencies installed outside Docker (OS-level installs, downloaded binaries, etc.).\n\n"
+            "## APT (Linux)\n"
+            "- (date) `sudo apt-get install ...`  # why\n\n"
+            "## Brew (macOS)\n"
+            "- (date) `brew install ...`  # why\n\n"
+            "## Downloaded binaries\n"
+            "- (date) url: ...  dest: ...  sha256: ...  # why\n"
+        )
+        _write_text_atomic(host_deps_path, seed)
 
     return task_path if task_path.exists() else None
 
@@ -2135,7 +2181,7 @@ def build_parser() -> argparse.ArgumentParser:
     rup.add_argument("message", nargs="?")
 
     rto = sub.add_parser("report-to", help="send a report to a target member or role (inside tmux)")
-    rto.add_argument("target", help="full|base|role (role: pm|arch|prod|dev|qa|coord|liaison)")
+    rto.add_argument("target", help="full|base|role (role: pm|arch|prod|dev|qa|ops|coord|liaison)")
     rto.add_argument("message", nargs="?")
 
     sub.add_parser("self", help="print current tmux session name")
