@@ -41,6 +41,18 @@ twf_use_load_balancer: true
 # - global install:        ~/.codex/skills/codex-load-balancer/scripts/clb
 twf_load_balancer_cmd: ""
 
+# Default profile/auth when load balancer is disabled
+#
+# When twf_use_load_balancer=false, you can optionally:
+# - pass a Codex profile (equivalent to `codex -p <profile>`), and/or
+# - inject an auth credential file (any filename) by copying its contents into
+#   each worker's `CODEX_HOME/auth.json` (Codex only reads auth from `auth.json`).
+#
+# If these are empty or not set, behavior stays the same as before
+# (use the synced template's default config/auth.json).
+twf_profile: ""
+twf_auth_src: ""
+
 # Auth load balancing (AUTH_TEAM)
 #
 # When twf_use_load_balancer=true, twf will call `clb pick-auth` to select an auth

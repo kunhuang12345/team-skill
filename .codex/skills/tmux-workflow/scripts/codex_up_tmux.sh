@@ -17,6 +17,7 @@ Environment:
   TWF_SESSION_FILE      Override session file path
   TWF_TMUX_SESSION      Override tmux session name
   TWF_CODEX_CMD         Override codex command
+  TWF_CODEX_PROFILE     Optional codex profile (adds `-p <profile>`)
   TWF_CODEX_CMD_CONFIG  Override YAML config path (default: scripts/twf_config.yaml)
   TWF_WORKERS_DIR       Per-worker CODEX_HOME base dir (default: ~/.codex-workers)
   TWF_CODEX_HOME_SRC    Source CODEX_HOME to copy from (default: ~/.codex)
@@ -136,6 +137,35 @@ done
 
 if [[ -z "$codex_cmd" ]]; then
   codex_cmd="$(build_default_codex_cmd)"
+fi
+
+profile="${TWF_CODEX_PROFILE:-}"
+if [[ -n "$profile" ]]; then
+  codex_cmd="$(python3 - "$profile" "$codex_cmd" <<'PY'
+import shlex
+import sys
+
+profile = sys.argv[1].strip()
+cmd = sys.argv[2]
+
+try:
+    parts = shlex.split(cmd)
+except Exception:
+    print(cmd)
+    raise SystemExit(0)
+
+if not parts or parts[0] != "codex":
+    print(cmd)
+    raise SystemExit(0)
+
+if "-p" in parts or "--profile" in parts:
+    print(cmd)
+    raise SystemExit(0)
+
+parts = [parts[0], "-p", profile] + parts[1:]
+print(" ".join(shlex.quote(p) for p in parts))
+PY
+)"
 fi
 
 work_dir="$PWD"

@@ -61,6 +61,10 @@
   - `manual`：state 写在 `twf_state_dir`
 - `TWF_STATE_DIR`：环境变量强制覆盖 state 目录（最高优先级）。
 - `TWF_WORKERS_DIR`：环境变量覆盖 worker home 根目录（默认 `~/.codex-workers`）。
+- `twf_profile`、`twf_auth_src`（仅当 `twf_use_load_balancer: false` 时生效）：
+  - `twf_profile`：等价于给启动命令加 `codex -p <profile>`。
+  - `twf_auth_src`：指定一个“任意文件名”的 auth 文件路径，启动时把它复制成每个 worker 的 `CODEX_HOME/auth.json`（Codex 只认 `auth.json` 这个文件名）。
+  - 若 `twf_auth_src` 配了但文件不存在，`twf up` 会直接报错（避免你以为生效但实际没生效）。
 
 ### 负载均衡相关（依赖 codex-load-balancer）
 

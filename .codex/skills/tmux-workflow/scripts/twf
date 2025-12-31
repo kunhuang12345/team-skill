@@ -38,6 +38,7 @@ Env:
   TWF_WORKERS_DIR     Default: ~/.codex-workers     (forwarded to codex_up_tmux.sh)
   TWF_CODEX_HOME_SRC  Default: ~/.codex             (forwarded to codex_up_tmux.sh)
   TWF_AUTH_SRC        Optional: auth file to copy into worker as `auth.json` (overrides synced auth.json)
+  TWF_CODEX_PROFILE   Optional: codex profile (equivalent to `codex -p <profile>`)
   TWF_LOAD_BALANCER_CMD  Optional: path to `codex-load-balancer/scripts/clb` (used when twf_use_load_balancer=true)
   TWF_CODEX_CMD_CONFIG  Default: scripts/twf_config.yaml (model + model_reasoning_effort + twf_state_dir_mode)
   TWF_CODEX_CMD       Override full codex command (forwarded to codex_up_tmux.sh)
@@ -142,6 +143,16 @@ if not isinstance(lb_cmd, str):
   lb_cmd = ""
 lb_cmd = lb_cmd.strip()
 
+profile = data.get("twf_profile", "")
+if not isinstance(profile, str):
+  profile = ""
+profile = profile.strip()
+
+auth_src = data.get("twf_auth_src", "")
+if not isinstance(auth_src, str):
+  auth_src = ""
+auth_src = auth_src.strip()
+
 auth_team_dir = data.get("twf_auth_team_dir", "")
 if not isinstance(auth_team_dir, str):
   auth_team_dir = ""
@@ -156,6 +167,8 @@ print(mode)
 print(manual_dir)
 print(use_lb)
 print(lb_cmd)
+print(profile)
+print(auth_src)
 print(auth_team_dir)
 print(auth_team_glob)
 PY
@@ -164,6 +177,8 @@ PY
 state_dir="${TWF_STATE_DIR:-}"
 twf_use_lb="false"
 twf_lb_cmd_cfg=""
+twf_profile_cfg=""
+twf_auth_src_cfg=""
 twf_auth_team_dir_cfg=""
 twf_auth_team_glob_cfg=""
 if [[ -z "$state_dir" ]]; then
@@ -172,8 +187,10 @@ if [[ -z "$state_dir" ]]; then
   manual_dir="${state_cfg[1]:-}"
   twf_use_lb="${state_cfg[2]:-false}"
   twf_lb_cmd_cfg="${state_cfg[3]:-}"
-  twf_auth_team_dir_cfg="${state_cfg[4]:-}"
-  twf_auth_team_glob_cfg="${state_cfg[5]:-}"
+  twf_profile_cfg="${state_cfg[4]:-}"
+  twf_auth_src_cfg="${state_cfg[5]:-}"
+  twf_auth_team_dir_cfg="${state_cfg[6]:-}"
+  twf_auth_team_glob_cfg="${state_cfg[7]:-}"
   case "$mode" in
     global)
       state_dir="$HOME/.twf"
@@ -241,6 +258,25 @@ PY
 
   echo ""
   return 0
+}
+
+resolve_auth_src_cfg() {
+  local raw="$1"
+  [[ -n "$raw" ]] || return 0
+  local resolved
+  resolved="$(python3 - "$raw" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+raw = sys.argv[1].strip()
+p = Path(os.path.expanduser(raw))
+if not p.is_absolute():
+    p = (Path.cwd() / p).resolve()
+print(str(p))
+PY
+)"
+  echo "$resolved"
 }
 
 pick_codex_home_src() {
@@ -417,6 +453,27 @@ print(sid or "")
 PY
 }
 
+auth_src_default() {
+  # Only used when load balancer is disabled AND no env override is provided.
+  if lower_bool "$twf_use_lb"; then
+    echo ""
+    return 0
+  fi
+  if [[ -z "$twf_auth_src_cfg" ]]; then
+    echo ""
+    return 0
+  fi
+
+  local resolved
+  resolved="$(resolve_auth_src_cfg "$twf_auth_src_cfg")"
+  if [[ -z "$resolved" || ! -f "$resolved" ]]; then
+    echo "❌ twf_auth_src is set but file does not exist: $twf_auth_src_cfg" >&2
+    echo "   Resolved path: ${resolved:-<empty>}" >&2
+    exit 1
+  fi
+  echo "$resolved"
+}
+
 start_worker() {
   local base="$1"
   shift || true
@@ -438,6 +495,9 @@ start_worker() {
   if [[ -z "$auth_src" ]] && lower_bool "$twf_use_lb"; then
     auth_src="$(pick_auth_src "$worker" "$base")"
   fi
+  if [[ -z "$auth_src" ]] && ! lower_bool "$twf_use_lb"; then
+    auth_src="$(auth_src_default)"
+  fi
 
   if [[ -n "$home_src" || -n "$auth_src" ]]; then
     local env_args=()
@@ -446,6 +506,10 @@ start_worker() {
     fi
     if [[ -n "$auth_src" ]]; then
       env_args+=("TWF_AUTH_SRC=$auth_src")
+    fi
+    # Only apply profile when load balancer is disabled.
+    if ! lower_bool "$twf_use_lb" && [[ -n "$twf_profile_cfg" ]]; then
+      env_args+=("TWF_CODEX_PROFILE=$twf_profile_cfg")
     fi
     env "${env_args[@]}" bash "$script_dir/codex_up_tmux.sh" --session "$worker" --session-file "$session_file" "$@" 1>&2
   else
