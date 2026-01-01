@@ -27,6 +27,8 @@ Edit `scripts/clb_config.yaml`:
   - `bash .codex/skills/codex-load-balancer/scripts/clb pick --worker <full> --base <base>`
 - Pick an auth file (used by `twf`):
   - `bash .codex/skills/codex-load-balancer/scripts/clb pick-auth --worker <full> --base <base>`
+- Reset the balancer state (auth/home counters):
+  - `bash .codex/skills/codex-load-balancer/scripts/clb reset-state`
 - Inspect a whole team’s usage by driving Codex `/status` in tmux (requires `tmux` + `codex`):
   - `bash .codex/skills/codex-load-balancer/scripts/clb status /abs/path/to/AUTH_TEAM`
 - List configured sources:

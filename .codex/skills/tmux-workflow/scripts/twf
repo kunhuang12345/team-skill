@@ -350,6 +350,61 @@ PY
   echo "$src"
 }
 
+any_running_tmux_sessions_in_state_dir() {
+  local sessions=()
+  readarray -t sessions < <(
+    python3 - "$state_dir" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).expanduser()
+out: set[str] = set()
+for p in root.glob("*.json"):
+    if not p.is_file():
+        continue
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    tmux_session = data.get("tmux_session") if isinstance(data, dict) else None
+    if not isinstance(tmux_session, str) or not tmux_session.strip():
+        tmux_session = p.stem
+    out.add(tmux_session.strip())
+for s in sorted(out):
+    if s:
+        print(s)
+PY
+  )
+
+  local s
+  for s in "${sessions[@]}"; do
+    if tmux has-session -t "$s" >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+reset_load_balancer_state_if_all_stopped() {
+  local cmd
+  cmd="$(resolve_lb_cmd)"
+  if [[ -z "$cmd" || ! -f "$cmd" ]]; then
+    return 0
+  fi
+
+  if any_running_tmux_sessions_in_state_dir; then
+    return 0
+  fi
+
+  # Best-effort: the state file is only a fairness counter, so failure here
+  # must not block stop/resume flows.
+  if bash "$cmd" reset-state >/dev/null 2>&1; then
+    echo "🧹 reset load balancer state" >&2
+  fi
+  return 0
+}
+
 lock_state() {
   if [[ -n "${TWF_LOCK_HOLDER_PID:-}" ]] && kill -0 "$TWF_LOCK_HOLDER_PID" >/dev/null 2>&1; then
     return 0
@@ -1030,6 +1085,8 @@ tmp.parent.mkdir(parents=True, exist_ok=True)
 tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 tmp.replace(p)
 PY
+
+  reset_load_balancer_state_if_all_stopped || true
 }
 
 resume_worker_inner() {

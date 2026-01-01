@@ -934,6 +934,34 @@ def cmd_pick_auth(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_reset_state(_: argparse.Namespace) -> int:
+    cfg = _load_config()
+    lock_path = _lock_path(cfg.state_file)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with lock_path.open("w", encoding="utf-8") as f:
+        try:
+            import fcntl
+
+            fcntl.flock(f, fcntl.LOCK_EX)
+        except Exception:
+            pass
+
+        ts = _now()
+        state: dict[str, object] = {"reset_at": ts, "updated_at": ts}
+        _write_state_atomic(cfg.state_file, state)
+
+        try:
+            import fcntl
+
+            fcntl.flock(f, fcntl.LOCK_UN)
+        except Exception:
+            pass
+
+    print(str(cfg.state_file))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="clb", add_help=True)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -948,6 +976,8 @@ def build_parser() -> argparse.ArgumentParser:
     pick_auth = sub.add_parser("pick-auth", help="pick an auth file from AUTH_TEAM (balanced by least-used)")
     pick_auth.add_argument("--worker", required=True)
     pick_auth.add_argument("--base", required=True)
+
+    sub.add_parser("reset-state", help="reset the state file (auth/home counters)")
 
     status = sub.add_parser("status", help="inspect /status for every auth file under a team dir (tmux required)")
     status.add_argument("team_dir", help="AUTH_TEAM directory containing auth files (names unrestricted)")
@@ -976,6 +1006,8 @@ def main(argv: list[str]) -> int:
         return cmd_pick(args)
     if args.cmd == "pick-auth":
         return cmd_pick_auth(args)
+    if args.cmd == "reset-state":
+        return cmd_reset_state(args)
     if args.cmd == "status":
         return cmd_status(args)
     raise SystemExit("unreachable")
