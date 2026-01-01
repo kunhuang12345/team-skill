@@ -351,12 +351,54 @@ PY
 }
 
 lock_state() {
-  exec 9>"$lock_file"
-  flock -x 9
+  if [[ -n "${TWF_LOCK_HOLDER_PID:-}" ]] && kill -0 "$TWF_LOCK_HOLDER_PID" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local timeout_s="${TWF_LOCK_TIMEOUT:-60}"
+  if [[ -z "$timeout_s" ]]; then
+    timeout_s="60"
+  fi
+  if ! [[ "$timeout_s" =~ ^[0-9]+$ ]]; then
+    timeout_s="60"
+  fi
+
+  # Hold the state lock in a dedicated `flock` process so child processes (tmux/codex)
+  # cannot inherit the lock fd and block subsequent resume/stop operations.
+  local token="$state_dir/.lock.acquired.$$.$RANDOM"
+  rm -f "$token" >/dev/null 2>&1 || true
+
+  (flock -x -w "$timeout_s" "$lock_file" -c "echo locked >\"$token\"; exec sleep 2147483647") &
+  local pid="$!"
+
+  local deadline=$((SECONDS + timeout_s + 2))
+  while [[ ! -f "$token" ]]; do
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      rm -f "$token" >/dev/null 2>&1 || true
+      echo "❌ failed to acquire twf state lock: $lock_file" >&2
+      echo "   (set TWF_LOCK_TIMEOUT to adjust; current=${timeout_s}s)" >&2
+      exit 1
+    fi
+    if [[ $SECONDS -ge $deadline ]]; then
+      kill "$pid" >/dev/null 2>&1 || true
+      rm -f "$token" >/dev/null 2>&1 || true
+      echo "❌ timed out acquiring twf state lock: $lock_file" >&2
+      echo "   (set TWF_LOCK_TIMEOUT to adjust; current=${timeout_s}s)" >&2
+      exit 1
+    fi
+    sleep 0.05
+  done
+
+  rm -f "$token" >/dev/null 2>&1 || true
+  TWF_LOCK_HOLDER_PID="$pid"
 }
 
 unlock_state() {
-  exec 9>&- 2>/dev/null || true
+  if [[ -n "${TWF_LOCK_HOLDER_PID:-}" ]]; then
+    kill "$TWF_LOCK_HOLDER_PID" >/dev/null 2>&1 || true
+    wait "$TWF_LOCK_HOLDER_PID" >/dev/null 2>&1 || true
+    unset TWF_LOCK_HOLDER_PID
+  fi
 }
 
 now_human() {
