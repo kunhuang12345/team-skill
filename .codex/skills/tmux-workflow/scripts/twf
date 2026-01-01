@@ -1080,8 +1080,8 @@ PY
   local auth_src="${meta[4]:-}"
   local codex_cmd="${meta[5]:-codex -c disable_paste_burst=true}"
   local resume_id="${meta[6]:-}"
-  local codex_home_src_final="$codex_home_src"
-  local auth_src_final="$auth_src"
+  local codex_home_src_final=""
+  local auth_src_final=""
   local profile_final="${TWF_CODEX_PROFILE:-}"
 
   if [[ -z "$codex_home" ]]; then
@@ -1100,32 +1100,27 @@ PY
       mkdir -p "$codex_home"
     fi
 
-    if [[ -z "$codex_home_src_final" ]]; then
+    # Always resolve template/auth from CURRENT config (not stale state), so operators
+    # can stop -> toggle twf_use_load_balancer/team dir -> resume and have it apply.
+    if lower_bool "$twf_use_lb"; then
       codex_home_src_final="${TWF_CODEX_HOME_SRC:-}"
-    fi
-    if [[ -z "$codex_home_src_final" ]] && lower_bool "$twf_use_lb"; then
-      codex_home_src_final="$(pick_codex_home_src "$tmux_session" "$(base_from_full "$tmux_session")")"
-    fi
-    if [[ -z "$codex_home_src_final" ]]; then
-      codex_home_src_final="$HOME/.codex"
-    fi
+      if [[ -z "$codex_home_src_final" ]]; then
+        codex_home_src_final="$(pick_codex_home_src "$tmux_session" "$(base_from_full "$tmux_session")")"
+      fi
 
-    # When load balancer is disabled, prefer config-driven profile/auth over state,
-    # so operators can switch providers/credentials via twf_config.yaml and resume safely.
-    if ! lower_bool "$twf_use_lb"; then
+      auth_src_final="${TWF_AUTH_SRC:-}"
+      if [[ -z "$auth_src_final" ]]; then
+        auth_src_final="$(pick_auth_src "$tmux_session" "$(base_from_full "$tmux_session")")"
+      fi
+    else
+      codex_home_src_final="${TWF_CODEX_HOME_SRC:-$HOME/.codex}"
+
       auth_src_final="${TWF_AUTH_SRC:-}"
       if [[ -z "$profile_final" ]]; then
         profile_final="$twf_profile_cfg"
       fi
       if [[ -z "$auth_src_final" ]] && [[ -n "$twf_auth_src_cfg" ]]; then
         auth_src_final="$(resolve_auth_src_cfg "$twf_auth_src_cfg")"
-      fi
-    else
-      if [[ -z "$auth_src_final" ]]; then
-        auth_src_final="${TWF_AUTH_SRC:-}"
-      fi
-      if [[ -z "$auth_src_final" ]]; then
-        auth_src_final="$(pick_auth_src "$tmux_session" "$(base_from_full "$tmux_session")")"
       fi
     fi
 
