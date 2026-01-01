@@ -363,12 +363,65 @@ lock_state() {
     timeout_s="60"
   fi
 
-  # Hold the state lock in a dedicated `flock` process so child processes (tmux/codex)
-  # cannot inherit the lock fd and block subsequent resume/stop operations.
+  # Keep the lock in a dedicated process that does NOT exec children,
+  # so tmux/codex cannot inherit the lock fd and block subsequent operations.
   local token="$state_dir/.lock.acquired.$$.$RANDOM"
   rm -f "$token" >/dev/null 2>&1 || true
 
-  (flock -x -w "$timeout_s" "$lock_file" -c "echo locked >\"$token\"; exec sleep 2147483647") &
+  python3 - "$lock_file" "$timeout_s" "$token" "$$" <<'PY' &
+import ctypes
+import ctypes.util
+import fcntl
+import os
+import signal
+import sys
+import time
+from pathlib import Path
+
+lock_path = Path(sys.argv[1])
+timeout_s = float(sys.argv[2])
+token_path = Path(sys.argv[3])
+parent_pid = int(sys.argv[4])
+
+def _set_pdeathsig() -> None:
+    try:
+        libc_path = ctypes.util.find_library("c")
+        if not libc_path:
+            return
+        libc = ctypes.CDLL(libc_path, use_errno=True)
+        PR_SET_PDEATHSIG = 1
+        libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM)
+    except Exception:
+        return
+
+def _exit(*_args) -> None:
+    raise SystemExit(0)
+
+signal.signal(signal.SIGTERM, _exit)
+signal.signal(signal.SIGINT, _exit)
+signal.signal(signal.SIGHUP, _exit)
+
+_set_pdeathsig()
+
+fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+start = time.time()
+while True:
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        break
+    except BlockingIOError:
+        if timeout_s >= 0 and (time.time() - start) >= timeout_s:
+            raise SystemExit(2)
+        # If parent died before pdeathsig was set, bail out.
+        if os.getppid() != parent_pid:
+            raise SystemExit(3)
+        time.sleep(0.05)
+
+token_path.write_text("locked\n", encoding="utf-8")
+
+while True:
+    time.sleep(3600)
+PY
   local pid="$!"
 
   local deadline=$((SECONDS + timeout_s + 2))
@@ -377,13 +430,26 @@ lock_state() {
       rm -f "$token" >/dev/null 2>&1 || true
       echo "❌ failed to acquire twf state lock: $lock_file" >&2
       echo "   (set TWF_LOCK_TIMEOUT to adjust; current=${timeout_s}s)" >&2
+      if command -v lsof >/dev/null 2>&1; then
+        lsof "$lock_file" >&2 || true
+      fi
+      if command -v fuser >/dev/null 2>&1; then
+        fuser -v "$lock_file" >&2 || true
+      fi
       exit 1
     fi
     if [[ $SECONDS -ge $deadline ]]; then
       kill "$pid" >/dev/null 2>&1 || true
+      wait "$pid" >/dev/null 2>&1 || true
       rm -f "$token" >/dev/null 2>&1 || true
       echo "❌ timed out acquiring twf state lock: $lock_file" >&2
       echo "   (set TWF_LOCK_TIMEOUT to adjust; current=${timeout_s}s)" >&2
+      if command -v lsof >/dev/null 2>&1; then
+        lsof "$lock_file" >&2 || true
+      fi
+      if command -v fuser >/dev/null 2>&1; then
+        fuser -v "$lock_file" >&2 || true
+      fi
       exit 1
     fi
     sleep 0.05
