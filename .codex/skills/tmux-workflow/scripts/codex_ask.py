@@ -409,6 +409,22 @@ def _inject_text(tmux_target: str, text: str, *, submit_delay_s: float) -> None:
     _tmux_cmd(["send-keys", "-t", tmux_target, "Enter"])
 
 
+def _send_submit_nudges(tmux_target: str, *, base_time_s: float, after_s: float, count: int) -> None:
+    if count <= 0:
+        return
+    if after_s < 0:
+        after_s = 0.0
+    for i in range(count):
+        deadline = base_time_s + after_s * (i + 1)
+        sleep_s = deadline - time.time()
+        if sleep_s > 0:
+            time.sleep(sleep_s)
+        try:
+            _tmux_cmd(["send-keys", "-t", tmux_target, "Enter"])
+        except Exception:
+            pass
+
+
 def _poll_for_reply(
     log_path: Path,
     offset: int,
@@ -421,8 +437,6 @@ def _poll_for_reply(
     timeout_s: float,
     poll_s: float,
     tmux_target: Optional[str],
-    submit_nudge_after_s: float,
-    submit_nudge_max: int,
 ) -> Tuple[Optional[str], Path, int]:
     deadline = time.time() + timeout_s
     current_path = log_path
@@ -432,8 +446,8 @@ def _poll_for_reply(
         watcher.watch_path(current_path)
     last_rescan = time.time()
     rescan_interval = min(2.0, max(0.2, timeout_s / 2.0 if timeout_s > 0 else 0.2))
-    submit_nudges = 0
-    inject_started = time.time()
+    # Nudges are sent by a dedicated scheduler in main() to guarantee timing,
+    # independent of log detection. Keep polling pure here.
 
     try:
         while True:
@@ -497,20 +511,10 @@ def _poll_for_reply(
                         watcher.watch_path(current_path)
                 last_rescan = now
 
-            if tmux_target and submit_nudges < submit_nudge_max and time.time() - inject_started >= submit_nudge_after_s * (submit_nudges + 1):
-                try:
-                    # Some Codex TUI states (startup/paste-burst) may require extra submit keypresses.
-                    _tmux_cmd(["send-keys", "-t", tmux_target, "Enter"])
-                    submit_nudges += 1
-                except Exception:
-                    pass
-
             now = time.time()
             next_wakeup = deadline
             if allow_rescan:
                 next_wakeup = min(next_wakeup, last_rescan + rescan_interval)
-            if tmux_target and submit_nudges < submit_nudge_max:
-                next_wakeup = min(next_wakeup, inject_started + submit_nudge_after_s * (submit_nudges + 1))
 
             if watcher is None:
                 time.sleep(poll_s)
@@ -609,6 +613,20 @@ def main(argv: list[str]) -> int:
         submit_nudge_after = 0.0
     submit_nudge_max = max(0, submit_nudge_max)
 
+    # Guarantee submit nudges run regardless of log detection.
+    nudge_thread = None
+    if tmux_target and submit_nudge_max > 0:
+        import threading
+
+        base_time_s = time.time()
+        nudge_thread = threading.Thread(
+            target=_send_submit_nudges,
+            args=(str(tmux_target),),
+            kwargs={"base_time_s": base_time_s, "after_s": submit_nudge_after, "count": submit_nudge_max},
+        )
+        nudge_thread.daemon = False
+        nudge_thread.start()
+
     reply, used_log_path, _new_offset = _poll_for_reply(
         log_path,
         offset,
@@ -620,9 +638,10 @@ def main(argv: list[str]) -> int:
         timeout_s=max(0.0, args.timeout),
         poll_s=min(0.5, max(0.01, args.poll)),
         tmux_target=str(tmux_target) if tmux_target else None,
-        submit_nudge_after_s=min(submit_nudge_after, max(0.0, args.timeout)),
-        submit_nudge_max=submit_nudge_max,
     )
+
+    if nudge_thread is not None:
+        nudge_thread.join()
 
     if reply is None:
         eprint("⏳ Timeout: no reply.")
