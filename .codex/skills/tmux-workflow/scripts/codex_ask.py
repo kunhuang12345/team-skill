@@ -432,7 +432,6 @@ def _poll_for_reply(
         watcher.watch_path(current_path)
     last_rescan = time.time()
     rescan_interval = min(2.0, max(0.2, timeout_s / 2.0 if timeout_s > 0 else 0.2))
-    saw_user = False
     submit_nudges = 0
     inject_started = time.time()
 
@@ -479,9 +478,6 @@ def _poll_for_reply(
                         if ts is not None and ts < sent_after_utc:
                             continue
 
-                        if not saw_user and _extract_user_text(entry) is not None:
-                            saw_user = True
-
                         msg = _extract_assistant_text(entry)
                         if msg is not None:
                             return msg, current_path, current_offset
@@ -501,14 +497,9 @@ def _poll_for_reply(
                         watcher.watch_path(current_path)
                 last_rescan = now
 
-            if (
-                tmux_target
-                and not saw_user
-                and submit_nudges < submit_nudge_max
-                and time.time() - inject_started >= submit_nudge_after_s * (submit_nudges + 1)
-            ):
+            if tmux_target and submit_nudges < submit_nudge_max and time.time() - inject_started >= submit_nudge_after_s * (submit_nudges + 1):
                 try:
-                    # Some Codex TUI states (startup/paste-burst) may require an extra submit keypress.
+                    # Some Codex TUI states (startup/paste-burst) may require extra submit keypresses.
                     _tmux_cmd(["send-keys", "-t", tmux_target, "Enter"])
                     submit_nudges += 1
                 except Exception:
@@ -518,7 +509,7 @@ def _poll_for_reply(
             next_wakeup = deadline
             if allow_rescan:
                 next_wakeup = min(next_wakeup, last_rescan + rescan_interval)
-            if tmux_target and (not saw_user) and submit_nudges < submit_nudge_max:
+            if tmux_target and submit_nudges < submit_nudge_max:
                 next_wakeup = min(next_wakeup, inject_started + submit_nudge_after_s * (submit_nudges + 1))
 
             if watcher is None:
@@ -613,7 +604,7 @@ def main(argv: list[str]) -> int:
         return EXIT_ERROR
 
     submit_nudge_after = float(os.environ.get("TWF_SUBMIT_NUDGE_AFTER", "0.7"))
-    submit_nudge_max = int(os.environ.get("TWF_SUBMIT_NUDGE_MAX", "2"))
+    submit_nudge_max = int(os.environ.get("TWF_SUBMIT_NUDGE_MAX", "3"))
     if submit_nudge_after < 0:
         submit_nudge_after = 0.0
     submit_nudge_max = max(0, submit_nudge_max)

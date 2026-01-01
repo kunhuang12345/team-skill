@@ -1087,6 +1087,7 @@ PY
   local resume_id="${meta[6]:-}"
   local codex_home_src_final="$codex_home_src"
   local auth_src_final="$auth_src"
+  local profile_final="${TWF_CODEX_PROFILE:-}"
 
   if [[ -z "$codex_home" ]]; then
     echo "❌ codex_home missing in state: $session_file" >&2
@@ -1114,11 +1115,49 @@ PY
       codex_home_src_final="$HOME/.codex"
     fi
 
-    if [[ -z "$auth_src_final" ]]; then
+    # When load balancer is disabled, prefer config-driven profile/auth over state,
+    # so operators can switch providers/credentials via twf_config.yaml and resume safely.
+    if ! lower_bool "$twf_use_lb"; then
       auth_src_final="${TWF_AUTH_SRC:-}"
+      if [[ -z "$profile_final" ]]; then
+        profile_final="$twf_profile_cfg"
+      fi
+      if [[ -z "$auth_src_final" ]] && [[ -n "$twf_auth_src_cfg" ]]; then
+        auth_src_final="$(resolve_auth_src_cfg "$twf_auth_src_cfg")"
+      fi
+    else
+      if [[ -z "$auth_src_final" ]]; then
+        auth_src_final="${TWF_AUTH_SRC:-}"
+      fi
+      if [[ -z "$auth_src_final" ]]; then
+        auth_src_final="$(pick_auth_src "$tmux_session" "$(base_from_full "$tmux_session")")"
+      fi
     fi
-    if [[ -z "$auth_src_final" ]] && lower_bool "$twf_use_lb"; then
-      auth_src_final="$(pick_auth_src "$tmux_session" "$(base_from_full "$tmux_session")")"
+
+    if ! lower_bool "$twf_use_lb" && [[ -n "$profile_final" ]]; then
+      codex_cmd="$(python3 - "$profile_final" "$codex_cmd" <<'PY'
+import shlex, sys
+profile = sys.argv[1].strip()
+cmd = sys.argv[2]
+try:
+    parts = shlex.split(cmd)
+except Exception:
+    print(cmd)
+    raise SystemExit(0)
+if not parts or parts[0] != "codex" or not profile:
+    print(cmd)
+    raise SystemExit(0)
+for flag in ("-p", "--profile"):
+    if flag in parts:
+        i = parts.index(flag)
+        if i + 1 < len(parts):
+            parts[i + 1] = profile
+        print(" ".join(shlex.quote(p) for p in parts))
+        raise SystemExit(0)
+parts = [parts[0], "-p", profile] + parts[1:]
+print(" ".join(shlex.quote(p) for p in parts))
+PY
+)"
     fi
 
     echo "🔧 Syncing CODEX_HOME -> $codex_home (excluding sessions/log/history.jsonl)" >&2
