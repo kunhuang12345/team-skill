@@ -174,23 +174,18 @@ print(auth_team_glob)
 PY
 }
 
+readarray -t state_cfg < <(read_state_dir_config)
+mode="${state_cfg[0]:-auto}"
+manual_dir="${state_cfg[1]:-}"
+twf_use_lb="${state_cfg[2]:-false}"
+twf_lb_cmd_cfg="${state_cfg[3]:-}"
+twf_profile_cfg="${state_cfg[4]:-}"
+twf_auth_src_cfg="${state_cfg[5]:-}"
+twf_auth_team_dir_cfg="${state_cfg[6]:-}"
+twf_auth_team_glob_cfg="${state_cfg[7]:-}"
+
 state_dir="${TWF_STATE_DIR:-}"
-twf_use_lb="false"
-twf_lb_cmd_cfg=""
-twf_profile_cfg=""
-twf_auth_src_cfg=""
-twf_auth_team_dir_cfg=""
-twf_auth_team_glob_cfg=""
 if [[ -z "$state_dir" ]]; then
-  readarray -t state_cfg < <(read_state_dir_config)
-  mode="${state_cfg[0]:-auto}"
-  manual_dir="${state_cfg[1]:-}"
-  twf_use_lb="${state_cfg[2]:-false}"
-  twf_lb_cmd_cfg="${state_cfg[3]:-}"
-  twf_profile_cfg="${state_cfg[4]:-}"
-  twf_auth_src_cfg="${state_cfg[5]:-}"
-  twf_auth_team_dir_cfg="${state_cfg[6]:-}"
-  twf_auth_team_glob_cfg="${state_cfg[7]:-}"
   case "$mode" in
     global)
       state_dir="$HOME/.twf"
