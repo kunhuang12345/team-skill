@@ -1124,31 +1124,158 @@ PY
       fi
     fi
 
-    if ! lower_bool "$twf_use_lb" && [[ -n "$profile_final" ]]; then
-      codex_cmd="$(python3 - "$profile_final" "$codex_cmd" <<'PY'
-import shlex, sys
-profile = sys.argv[1].strip()
-cmd = sys.argv[2]
+    # Force resume command to follow CURRENT config file:
+    # - always override model/model_reasoning_effort
+    # - when LB=true, profile is disabled (no -p/--profile)
+    # - when LB=false, profile follows twf_profile (empty => remove)
+    readarray -t _cmd_cfg < <(
+      python3 - "$config_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+cfg_path = Path(sys.argv[1]).expanduser()
+raw = ""
+try:
+  if cfg_path.exists():
+    raw = cfg_path.read_text(encoding="utf-8")
+except Exception:
+  raw = ""
+
+def parse_yaml(text: str) -> dict:
+  out: dict[str, str] = {}
+  for line in text.splitlines():
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+      continue
+    if ":" not in stripped:
+      continue
+    key, value = stripped.split(":", 1)
+    key = key.strip()
+    if not key:
+      continue
+    value = value.strip()
+    if not value:
+      out[key] = ""
+      continue
+    if value[0] in {"'", '"'}:
+      q = value[0]
+      if value.endswith(q) and len(value) >= 2:
+        out[key] = value[1:-1]
+      else:
+        out[key] = value[1:]
+      continue
+    if "#" in value:
+      for i, ch in enumerate(value):
+        if ch == "#" and (i == 0 or value[i - 1].isspace()):
+          value = value[:i].strip()
+          break
+    out[key] = value.strip()
+  return out
+
+data = {}
+try:
+  if raw.lstrip().startswith("{"):
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+      data = {}
+  else:
+    data = parse_yaml(raw)
+except Exception:
+  data = parse_yaml(raw)
+
+model = data.get("model") if isinstance(data.get("model"), str) else ""
+effort = data.get("model_reasoning_effort") if isinstance(data.get("model_reasoning_effort"), str) else ""
+print((model or "").strip())
+print((effort or "").strip())
+PY
+    )
+    _model_cfg="${_cmd_cfg[0]:-}"
+    _effort_cfg="${_cmd_cfg[1]:-}"
+
+    _desired_profile="$profile_final"
+    if lower_bool "$twf_use_lb"; then
+      _desired_profile=""
+    fi
+
+    codex_cmd="$(python3 - "$codex_cmd" "$_model_cfg" "$_effort_cfg" "$_desired_profile" <<'PY'
+import shlex
+import sys
+
+cmd = sys.argv[1]
+model = sys.argv[2].strip()
+effort = sys.argv[3].strip()
+profile = sys.argv[4].strip()
+
 try:
     parts = shlex.split(cmd)
 except Exception:
     print(cmd)
     raise SystemExit(0)
-if not parts or parts[0] != "codex" or not profile:
+
+if not parts or parts[0] != "codex":
     print(cmd)
     raise SystemExit(0)
-for flag in ("-p", "--profile"):
-    if flag in parts:
-        i = parts.index(flag)
-        if i + 1 < len(parts):
-            parts[i + 1] = profile
-        print(" ".join(shlex.quote(p) for p in parts))
-        raise SystemExit(0)
-parts = [parts[0], "-p", profile] + parts[1:]
+
+def strip_flag_with_value(argv: list[str], flags: tuple[str, ...]) -> list[str]:
+    out: list[str] = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in flags:
+            # Drop flag and its following value (if any).
+            i += 1
+            if i < len(argv):
+                i += 1
+            continue
+        out.append(a)
+        i += 1
+    return out
+
+# Profile: always strip existing; re-add only when profile is non-empty.
+parts = strip_flag_with_value(parts, ("-p", "--profile"))
+
+def insert_after_codex(argv: list[str], extra: list[str]) -> list[str]:
+    if not argv or argv[0] != "codex":
+        return argv
+    return [argv[0]] + extra + argv[1:]
+
+if profile:
+    parts = insert_after_codex(parts, ["-p", profile])
+
+# Model: force override if configured.
+if model:
+    parts = strip_flag_with_value(parts, ("-m", "--model"))
+    # Insert after profile if present.
+    insert_at = 1
+    if len(parts) >= 3 and parts[1] == "-p":
+        insert_at = 3
+    parts = parts[:insert_at] + ["-m", model] + parts[insert_at:]
+
+# Reasoning effort: force override if configured.
+if effort:
+    effort_arg = f'model_reasoning_effort=\"{effort}\"'
+    out: list[str] = []
+    i = 0
+    replaced = False
+    while i < len(parts):
+        a = parts[i]
+        if a in ("--config", "-c") and i + 1 < len(parts):
+            v = parts[i + 1]
+            if isinstance(v, str) and v.startswith("model_reasoning_effort="):
+                out.extend([a, effort_arg])
+                replaced = True
+                i += 2
+                continue
+        out.append(a)
+        i += 1
+    parts = out
+    if not replaced:
+        parts.extend(["--config", effort_arg])
+
 print(" ".join(shlex.quote(p) for p in parts))
 PY
 )"
-    fi
 
     echo "🔧 Syncing CODEX_HOME -> $codex_home (excluding sessions/log/history.jsonl)" >&2
     python3 "$script_dir/sync_codex_home.py" --src "$codex_home_src_final" --dst "$codex_home" >/dev/null
