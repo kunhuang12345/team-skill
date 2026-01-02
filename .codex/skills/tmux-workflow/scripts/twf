@@ -122,6 +122,13 @@ try:
 except Exception:
   data = parse_yaml(raw)
 
+allow_env_overrides = data.get("twf_allow_env_overrides", "false")
+if isinstance(allow_env_overrides, bool):
+  allow_env_overrides = "true" if allow_env_overrides else "false"
+elif not isinstance(allow_env_overrides, str):
+  allow_env_overrides = "false"
+allow_env_overrides = allow_env_overrides.strip().lower() or "false"
+
 mode = data.get("twf_state_dir_mode", "auto")
 if not isinstance(mode, str):
   mode = "auto"
@@ -171,6 +178,7 @@ print(profile)
 print(auth_src)
 print(auth_team_dir)
 print(auth_team_glob)
+print(allow_env_overrides)
 PY
 }
 
@@ -183,6 +191,7 @@ twf_profile_cfg="${state_cfg[4]:-}"
 twf_auth_src_cfg="${state_cfg[5]:-}"
 twf_auth_team_dir_cfg="${state_cfg[6]:-}"
 twf_auth_team_glob_cfg="${state_cfg[7]:-}"
+twf_allow_env_overrides="${state_cfg[8]:-false}"
 
 state_dir="${TWF_STATE_DIR:-}"
 if [[ -z "$state_dir" ]]; then
@@ -213,6 +222,31 @@ lower_bool() {
   v="$(echo "$v" | tr '[:upper:]' '[:lower:]')"
   v="${v//[[:space:]]/}"
   [[ "$v" == "1" || "$v" == "true" || "$v" == "yes" || "$v" == "y" || "$v" == "on" ]]
+}
+
+warn_ignored_env_overrides_once() {
+  if lower_bool "$twf_allow_env_overrides"; then
+    return 0
+  fi
+  if [[ -n "${TWF__WARNED_IGNORED_ENV_OVERRIDES:-}" ]]; then
+    return 0
+  fi
+  if [[ -n "${TWF_AUTH_SRC:-}" || -n "${TWF_CODEX_HOME_SRC:-}" || -n "${TWF_CODEX_PROFILE:-}" ]]; then
+    echo "ℹ️  ignoring env overrides (twf_allow_env_overrides=false): TWF_AUTH_SRC/TWF_CODEX_HOME_SRC/TWF_CODEX_PROFILE" >&2
+    echo "   Tip: if you previously did 'tmux set-environment -g TWF_AUTH_SRC ...', clear it with:" >&2
+    echo "        tmux set-environment -gu TWF_AUTH_SRC; tmux set-environment -gu TWF_CODEX_HOME_SRC; tmux set-environment -gu TWF_CODEX_PROFILE" >&2
+  fi
+  TWF__WARNED_IGNORED_ENV_OVERRIDES="1"
+}
+
+get_env_override() {
+  local name="$1"
+  if ! lower_bool "$twf_allow_env_overrides"; then
+    echo ""
+    return 0
+  fi
+  # Indirect expansion; empty if unset.
+  echo "${!name:-}"
 }
 
 resolve_lb_cmd() {
@@ -644,12 +678,16 @@ start_worker() {
   fi
 
   local session_file="$state_dir/$worker.json"
-  local home_src="${TWF_CODEX_HOME_SRC:-}"
+  warn_ignored_env_overrides_once
+
+  local home_src
+  home_src="$(get_env_override TWF_CODEX_HOME_SRC)"
   if [[ -z "$home_src" ]] && lower_bool "$twf_use_lb"; then
     home_src="$(pick_codex_home_src "$worker" "$base")"
   fi
 
-  local auth_src="${TWF_AUTH_SRC:-}"
+  local auth_src
+  auth_src="$(get_env_override TWF_AUTH_SRC)"
   if [[ -z "$auth_src" ]] && lower_bool "$twf_use_lb"; then
     auth_src="$(pick_auth_src "$worker" "$base")"
   fi
@@ -657,22 +695,27 @@ start_worker() {
     auth_src="$(auth_src_default)"
   fi
 
-  if [[ -n "$home_src" || -n "$auth_src" ]]; then
-    local env_args=()
-    if [[ -n "$home_src" ]]; then
-      env_args+=("TWF_CODEX_HOME_SRC=$home_src")
-    fi
-    if [[ -n "$auth_src" ]]; then
-      env_args+=("TWF_AUTH_SRC=$auth_src")
-    fi
-    # Only apply profile when load balancer is disabled.
-    if ! lower_bool "$twf_use_lb" && [[ -n "$twf_profile_cfg" ]]; then
-      env_args+=("TWF_CODEX_PROFILE=$twf_profile_cfg")
-    fi
-    env "${env_args[@]}" bash "$script_dir/codex_up_tmux.sh" --session "$worker" --session-file "$session_file" "$@" 1>&2
-  else
-    bash "$script_dir/codex_up_tmux.sh" --session "$worker" --session-file "$session_file" "$@" 1>&2
+  local profile_final
+  profile_final="$(get_env_override TWF_CODEX_PROFILE)"
+  # Only apply profile when load balancer is disabled.
+  if lower_bool "$twf_use_lb"; then
+    profile_final=""
+  elif [[ -z "$profile_final" ]]; then
+    profile_final="$twf_profile_cfg"
   fi
+
+  local env_args=()
+  if [[ -n "$home_src" ]]; then
+    env_args+=("TWF_CODEX_HOME_SRC=$home_src")
+  fi
+  if [[ -n "$auth_src" ]]; then
+    env_args+=("TWF_AUTH_SRC=$auth_src")
+  fi
+  if [[ -n "$profile_final" ]]; then
+    env_args+=("TWF_CODEX_PROFILE=$profile_final")
+  fi
+  # Always clear any inherited overrides (tmux server/global env can leak these).
+  env -u TWF_CODEX_HOME_SRC -u TWF_AUTH_SRC -u TWF_CODEX_PROFILE "${env_args[@]}" bash "$script_dir/codex_up_tmux.sh" --session "$worker" --session-file "$session_file" "$@" 1>&2
   echo "$session_file"
 }
 
@@ -1247,7 +1290,9 @@ PY
   local resume_id="${meta[6]:-}"
   local codex_home_src_final=""
   local auth_src_final=""
-  local profile_final="${TWF_CODEX_PROFILE:-}"
+  warn_ignored_env_overrides_once
+  local profile_final
+  profile_final="$(get_env_override TWF_CODEX_PROFILE)"
 
   if [[ -z "$codex_home" ]]; then
     echo "❌ codex_home missing in state: $session_file" >&2
@@ -1268,19 +1313,22 @@ PY
     # Always resolve template/auth from CURRENT config (not stale state), so operators
     # can stop -> toggle twf_use_load_balancer/team dir -> resume and have it apply.
     if lower_bool "$twf_use_lb"; then
-      codex_home_src_final="${TWF_CODEX_HOME_SRC:-}"
+      codex_home_src_final="$(get_env_override TWF_CODEX_HOME_SRC)"
       if [[ -z "$codex_home_src_final" ]]; then
         codex_home_src_final="$(pick_codex_home_src "$tmux_session" "$(base_from_full "$tmux_session")")"
       fi
 
-      auth_src_final="${TWF_AUTH_SRC:-}"
+      auth_src_final="$(get_env_override TWF_AUTH_SRC)"
       if [[ -z "$auth_src_final" ]]; then
         auth_src_final="$(pick_auth_src "$tmux_session" "$(base_from_full "$tmux_session")")"
       fi
     else
-      codex_home_src_final="${TWF_CODEX_HOME_SRC:-$HOME/.codex}"
+      codex_home_src_final="$(get_env_override TWF_CODEX_HOME_SRC)"
+      if [[ -z "$codex_home_src_final" ]]; then
+        codex_home_src_final="$HOME/.codex"
+      fi
 
-      auth_src_final="${TWF_AUTH_SRC:-}"
+      auth_src_final="$(get_env_override TWF_AUTH_SRC)"
       if [[ -z "$profile_final" ]]; then
         profile_final="$twf_profile_cfg"
       fi
