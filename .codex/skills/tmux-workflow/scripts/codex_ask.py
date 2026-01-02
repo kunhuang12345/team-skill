@@ -650,14 +650,14 @@ def main(argv: list[str]) -> int:
         submit_delay = _env_float(
             "TWF_SUBMIT_DELAY",
             "TWF_TMUX_ENTER_DELAY",
-            default=1.0,
+            default=0.5,
         )
         _inject_text(str(tmux_target), text, submit_delay_s=submit_delay)
     except subprocess.CalledProcessError as exc:
         eprint(f"❌ tmux injection failed: {exc}")
         return EXIT_ERROR
 
-    submit_nudge_after = float(os.environ.get("TWF_SUBMIT_NUDGE_AFTER", "2.0"))
+    submit_nudge_after = float(os.environ.get("TWF_SUBMIT_NUDGE_AFTER", "0.7"))
     submit_nudge_max = int(os.environ.get("TWF_SUBMIT_NUDGE_MAX", "3"))
     if submit_nudge_after < 0:
         submit_nudge_after = 0.0
