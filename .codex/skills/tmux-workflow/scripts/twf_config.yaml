@@ -12,7 +12,7 @@
 
 # Codex model selection
 model: gpt-5.2
-model_reasoning_effort: medium
+model_reasoning_effort: high
 
 # twf worker state directory mode (where twf writes its worker state JSON files):
 # - auto:   <skill_root>/.twf/  (default; for project installs: ./.codex/skills/tmux-workflow/.twf/)
