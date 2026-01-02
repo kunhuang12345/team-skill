@@ -588,6 +588,45 @@ def _poll_for_reply(
             watcher.close()
 
 
+def _scan_for_user_message(
+    log_path: Path, offset: int, *, sent_after_utc: datetime, expected_text_norm: str
+) -> tuple[bool, int]:
+    """Scan appended jsonl entries for the exact user_message we injected."""
+    current_offset = offset
+    try:
+        with log_path.open("rb") as f:
+            f.seek(max(0, current_offset))
+            while True:
+                pos_before = f.tell()
+                raw = f.readline()
+                if not raw:
+                    break
+                if not raw.endswith(b"\n"):
+                    f.seek(pos_before)
+                    break
+                current_offset = f.tell()
+                line = raw.decode("utf-8", errors="ignore").strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+
+                ts = _parse_ts(entry.get("timestamp"))
+                if ts is not None and ts < sent_after_utc:
+                    continue
+
+                user_text = _extract_user_text(entry)
+                if user_text is not None and user_text.strip() == expected_text_norm:
+                    return True, current_offset
+    except OSError:
+        return False, current_offset
+    return False, current_offset
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Send a prompt to Codex running in tmux and wait for the next reply from Codex session logs.")
     parser.add_argument("text", nargs="?", help="Prompt text. If omitted, read from stdin.")
@@ -677,6 +716,25 @@ def main(argv: list[str]) -> int:
             after_s=submit_nudge_after,
             count=submit_nudge_max,
         )
+
+    # Confirm Codex actually recorded our user message. Without this, broadcast can misattribute
+    # an unrelated in-flight reply as "success" even if Enter never submitted.
+    expected_text_norm = text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n").strip()
+    confirm_deadline = time.time() + 20.0
+    confirmed = False
+    confirm_offset = offset
+    while time.time() < confirm_deadline:
+        confirmed, confirm_offset = _scan_for_user_message(
+            log_path, confirm_offset, sent_after_utc=sent_after, expected_text_norm=expected_text_norm
+        )
+        if confirmed:
+            offset = confirm_offset
+            break
+        time.sleep(0.25)
+
+    if not confirmed:
+        eprint("❌ submit not confirmed in session log (user_message not observed).")
+        return EXIT_ERROR
 
     reply, used_log_path, _new_offset = _poll_for_reply(
         log_path,
