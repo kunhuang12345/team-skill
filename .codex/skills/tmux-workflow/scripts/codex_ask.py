@@ -339,6 +339,17 @@ def _send_enter(tmux_target: str) -> None:
     _tmux_cmd(["send-keys", "-t", resolved, "C-m"])
 
 
+def _clear_input(tmux_target: str) -> None:
+    """Clear Codex input buffer (Ctrl+U works in Codex TUI)."""
+    resolved = _resolve_pane_target(tmux_target)
+    try:
+        _tmux_cmd(["send-keys", "-t", resolved, "C-u"])
+        time.sleep(0.05)
+        _tmux_cmd(["send-keys", "-t", resolved, "C-u"])
+    except Exception:
+        return
+
+
 class _InotifyWatcher:
     _IN_MODIFY = 0x00000002
     _IN_ATTRIB = 0x00000004
@@ -727,6 +738,7 @@ def main(argv: list[str]) -> int:
         # Fixed submit timings (avoid env overrides causing non-deterministic behavior).
         submit_delay = 1.0
         _wait_for_tui_idle(str(tmux_target), timeout_s=30.0, poll_s=0.5)
+        _clear_input(str(tmux_target))
         _inject_text(str(tmux_target), text, submit_delay_s=submit_delay)
     except subprocess.CalledProcessError as exc:
         eprint(f"❌ tmux injection failed: {exc}")
