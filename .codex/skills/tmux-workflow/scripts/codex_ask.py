@@ -274,25 +274,36 @@ def _resolve_pane_target(tmux_target: str) -> str:
     session = t.split(":", 1)[0] if ":" in t else t
     try:
         out = subprocess.check_output(
-            ["tmux", "list-panes", "-t", session, "-F", "#{pane_id}\t#{pane_current_command}\t#{pane_active}"],
+            [
+                "tmux",
+                "list-panes",
+                "-t",
+                session,
+                "-F",
+                "#{pane_id}\t#{pane_current_command}\t#{pane_start_command}\t#{pane_active}",
+            ],
             text=True,
         )
     except Exception:
         return tmux_target
 
-    panes: list[tuple[str, str, str]] = []
+    panes: list[tuple[str, str, str, str]] = []
     for line in out.splitlines():
         parts = line.split("\t")
-        if len(parts) != 3:
+        if len(parts) != 4:
             continue
-        pane_id, cmd, active = (p.strip() for p in parts)
+        pane_id, cmd, start_cmd, active = (p.strip() for p in parts)
         if pane_id:
-            panes.append((pane_id, cmd, active))
+            panes.append((pane_id, cmd, start_cmd, active))
 
-    for pane_id, cmd, _active in panes:
+    for pane_id, cmd, start_cmd, _active in panes:
         if cmd == "codex":
             return pane_id
-    for pane_id, _cmd, active in panes:
+        # Codex CLI entrypoint is often `node` (wrapper) rather than `codex`.
+        tokens = start_cmd.replace('"', "").split()
+        if "codex" in tokens:
+            return pane_id
+    for pane_id, _cmd, _start_cmd, active in panes:
         if active == "1":
             return pane_id
     return panes[0][0] if panes else tmux_target
@@ -647,35 +658,22 @@ def main(argv: list[str]) -> int:
 
     sent_after = datetime.now(timezone.utc) - timedelta(seconds=0.5)
     try:
-        submit_delay = _env_float(
-            "TWF_SUBMIT_DELAY",
-            "TWF_TMUX_ENTER_DELAY",
-            default=0.5,
-        )
+        # Fixed submit timings (avoid env overrides causing non-deterministic behavior).
+        submit_delay = 0.5
         _inject_text(str(tmux_target), text, submit_delay_s=submit_delay)
     except subprocess.CalledProcessError as exc:
         eprint(f"❌ tmux injection failed: {exc}")
         return EXIT_ERROR
 
-    submit_nudge_after = float(os.environ.get("TWF_SUBMIT_NUDGE_AFTER", "0.7"))
-    submit_nudge_max = int(os.environ.get("TWF_SUBMIT_NUDGE_MAX", "3"))
-    if submit_nudge_after < 0:
-        submit_nudge_after = 0.0
-    submit_nudge_max = max(0, submit_nudge_max)
-
-    # Guarantee submit nudges run regardless of log detection.
-    nudge_thread = None
+    submit_nudge_after = 0.7
+    submit_nudge_max = 3
     if tmux_target and submit_nudge_max > 0:
-        import threading
-
-        base_time_s = time.time()
-        nudge_thread = threading.Thread(
-            target=_send_submit_nudges,
-            args=(str(tmux_target),),
-            kwargs={"base_time_s": base_time_s, "after_s": submit_nudge_after, "count": submit_nudge_max},
+        _send_submit_nudges(
+            str(tmux_target),
+            base_time_s=time.time(),
+            after_s=submit_nudge_after,
+            count=submit_nudge_max,
         )
-        nudge_thread.daemon = False
-        nudge_thread.start()
 
     reply, used_log_path, _new_offset = _poll_for_reply(
         log_path,
@@ -689,9 +687,6 @@ def main(argv: list[str]) -> int:
         poll_s=min(0.5, max(0.01, args.poll)),
         tmux_target=str(tmux_target) if tmux_target else None,
     )
-
-    if nudge_thread is not None:
-        nudge_thread.join()
 
     if reply is None:
         eprint("⏳ Timeout: no reply.")
