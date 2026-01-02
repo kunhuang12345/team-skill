@@ -1190,7 +1190,10 @@ def cmd_report_up(args: argparse.Namespace) -> int:
     body = _read_report_body(args.message)
     msg = _format_report(sender=sender, to_full=parent_full, body=body)
 
-    res2 = _run_twf(twf, ["ask", parent_full, msg])
+    # Default to fire-and-forget so reporters don't stall if the recipient is
+    # busy. Use --wait to collect a reply.
+    twf_subcmd = "ask" if bool(getattr(args, "wait", False)) else "send"
+    res2 = _run_twf(twf, [twf_subcmd, parent_full, msg])
     sys.stdout.write(res2.stdout)
     sys.stderr.write(res2.stderr)
     return res2.returncode
@@ -1226,7 +1229,8 @@ def cmd_report_to(args: argparse.Namespace) -> int:
     body = _read_report_body(args.message)
     msg = _format_report(sender=sender, to_full=to_full, body=body)
 
-    res2 = _run_twf(twf, ["ask", to_full, msg])
+    twf_subcmd = "ask" if bool(getattr(args, "wait", False)) else "send"
+    res2 = _run_twf(twf, [twf_subcmd, to_full, msg])
     sys.stdout.write(res2.stdout)
     sys.stderr.write(res2.stderr)
     return res2.returncode
@@ -1808,6 +1812,28 @@ def cmd_stop(args: argparse.Namespace) -> int:
         if res.returncode != 0:
             failures.append(full)
 
+    # Default: reset local load-balancer state so auth-team changes (add/remove)
+    # take effect immediately on next resume/init.
+    try:
+        clb_share = _skill_dir().parent / "codex-load-balancer" / "share"
+        clb_state = clb_share / "state.json"
+        clb_lock = clb_share / "state.json.lock"
+        try:
+            clb_state.unlink()
+        except Exception:
+            pass
+        try:
+            clb_lock.unlink()
+        except Exception:
+            pass
+        try:
+            if clb_share.is_dir() and not any(clb_share.iterdir()):
+                clb_share.rmdir()
+        except Exception:
+            pass
+    except Exception:
+        pass
+
     if failures:
         _eprint(f"❌ stop failures: {len(failures)} targets")
         return 1
@@ -2216,10 +2242,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     rup = sub.add_parser("report-up", help="send a completion/progress report to your parent (inside tmux)")
     rup.add_argument("message", nargs="?")
+    rup.add_argument("--wait", action="store_true", help="wait for a reply (uses twf ask)")
 
     rto = sub.add_parser("report-to", help="send a report to a target member or role (inside tmux)")
     rto.add_argument("target", help="full|base|role (role: pm|arch|prod|dev|qa|ops|coord|liaison)")
     rto.add_argument("message", nargs="?")
+    rto.add_argument("--wait", action="store_true", help="wait for a reply (uses twf ask)")
 
     sub.add_parser("self", help="print current tmux session name")
 
