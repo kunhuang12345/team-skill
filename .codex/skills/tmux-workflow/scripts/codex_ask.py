@@ -254,6 +254,30 @@ def _tmux_cmd(args: list[str], *, input_text: Optional[str] = None) -> None:
     subprocess.run(["tmux", *args], input=data, check=True)
 
 
+def _capture_tail(tmux_target: str, *, lines: int = 60) -> str:
+    resolved = _resolve_pane_target(tmux_target)
+    try:
+        return subprocess.check_output(
+            ["tmux", "capture-pane", "-p", "-t", resolved, "-S", f"-{max(1, int(lines))}"],
+            text=True,
+            errors="ignore",
+        )
+    except Exception:
+        return ""
+
+
+def _wait_for_tui_idle(tmux_target: str, *, timeout_s: float = 30.0, poll_s: float = 0.5) -> None:
+    """Best-effort: avoid injecting while Codex is streaming output (prone to lost/garbled keys)."""
+    deadline = time.time() + max(0.0, timeout_s)
+    while time.time() < deadline:
+        tail = _capture_tail(tmux_target, lines=60)
+        # Codex TUI renders a "Working (... • esc to interrupt)" status line while streaming.
+        busy = ("Working (" in tail) and ("esc to interrupt" in tail)
+        if not busy:
+            return
+        time.sleep(max(0.05, poll_s))
+
+
 def _resolve_pane_target(tmux_target: str) -> str:
     """
     Resolve a stable tmux pane target to avoid sending keys to the wrong pane when:
@@ -702,6 +726,7 @@ def main(argv: list[str]) -> int:
     try:
         # Fixed submit timings (avoid env overrides causing non-deterministic behavior).
         submit_delay = 1.0
+        _wait_for_tui_idle(str(tmux_target), timeout_s=30.0, poll_s=0.5)
         _inject_text(str(tmux_target), text, submit_delay_s=submit_delay)
     except subprocess.CalledProcessError as exc:
         eprint(f"❌ tmux injection failed: {exc}")
