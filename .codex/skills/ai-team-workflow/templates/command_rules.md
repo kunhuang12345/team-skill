@@ -8,6 +8,8 @@ This rule applies to **every role** in this AI team.
   - Broadcast: `bash .codex/skills/ai-team-workflow/scripts/atwf broadcast ...`
   - Direct message: `bash .codex/skills/ai-team-workflow/scripts/atwf ask ...` or `bash .codex/skills/tmux-workflow/scripts/twf ask ...`
   - Fire-and-forget (no waiting): `bash .codex/skills/tmux-workflow/scripts/twf send ...`
+- Any progress/completion/design conclusion **must** be reported via `atwf report-up` (or `atwf report-to coord|liaison`) to count as “reported”; otherwise the parent may treat it as “not received”.
+  - 任何进度/完成/设计结论 **必须** 用 `atwf report-up`（或 `report-to coord/liaison`）才算“已上报”，否则父节点可以视为“未收到”。
 
 ## Forbidden (do NOT do this)
 
