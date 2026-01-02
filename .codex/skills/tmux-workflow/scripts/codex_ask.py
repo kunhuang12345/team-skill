@@ -311,7 +311,8 @@ def _resolve_pane_target(tmux_target: str) -> str:
 
 def _send_enter(tmux_target: str) -> None:
     resolved = _resolve_pane_target(tmux_target)
-    _tmux_cmd(["send-keys", "-t", resolved, "Enter"])
+    # Send an explicit carriage return to submit.
+    _tmux_cmd(["send-keys", "-t", resolved, "C-m"])
 
 
 class _InotifyWatcher:
@@ -458,8 +459,9 @@ def _inject_text(tmux_target: str, text: str, *, submit_delay_s: float) -> None:
         buf = f"twf-ask-{os.getpid()}"
         _tmux_cmd(["load-buffer", "-b", buf, "-"], input_text=text)
         try:
-            # -p: wrap in bracketed paste (if supported by app); -r: keep LF as-is.
-            _tmux_cmd(["paste-buffer", "-t", resolved, "-b", buf, "-p", "-r"])
+            # Avoid bracketed paste (-p): Codex TUI may treat it as a paste-burst and ignore immediate submits.
+            # -r: keep LF as-is.
+            _tmux_cmd(["paste-buffer", "-t", resolved, "-b", buf, "-r"])
         finally:
             subprocess.run(["tmux", "delete-buffer", "-b", buf], check=False)
     else:
@@ -608,9 +610,10 @@ def main(argv: list[str]) -> int:
 
     tmux_target = (
         os.environ.get("TWF_TMUX_TARGET")
-        or session.get("pane_id")
         or session.get("tmux_target")
         or session.get("tmux_session")
+        # pane_id can go stale after tmux restarts/resume; keep as last fallback only.
+        or session.get("pane_id")
     )
     if not tmux_target:
         eprint(f"❌ tmux target not configured. Run codex_up_tmux.sh first to create {session_file}.")
