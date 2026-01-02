@@ -25,3 +25,8 @@ Reason: it is unreliable (can target the wrong pane, Enter can become newline, p
 - Ask **Coordinator** first and wait for approval.
 - If approved, document the exact command and outcome in `{{TEAM_DIR}}/design/<your-full>.md` so the team can reproduce/debug.
 
+## Reply latency (required etiquette)
+
+- After you send a message, the recipient may be busy processing other work/messages.
+- If you need a reply, **wait patiently**. Do **not** spam/re-send the same message multiple times.
+- If you suspect the message did not land, ask **Coordinator** to verify delivery using logs (do not self-invent new tmux paste scripts).
