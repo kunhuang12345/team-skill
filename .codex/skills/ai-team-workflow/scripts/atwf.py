@@ -1564,6 +1564,22 @@ def cmd_design_init_self(args: argparse.Namespace) -> int:
 
 
 def _git_root() -> Path:
+    # Prefer the "common" git dir so worktree commands behave consistently even
+    # when invoked from inside a linked worktree (where --show-toplevel returns
+    # the worktree path, not the project root).
+    res = _run(["git", "rev-parse", "--git-common-dir"])
+    if res.returncode == 0:
+        raw = res.stdout.strip()
+        if raw:
+            common_dir = Path(raw)
+            if not common_dir.is_absolute():
+                common_dir = (Path.cwd() / common_dir).resolve()
+            else:
+                common_dir = common_dir.resolve()
+            root = common_dir.parent.resolve()
+            if root.is_dir():
+                return root
+
     res = _run(["git", "rev-parse", "--show-toplevel"])
     if res.returncode != 0:
         raise SystemExit("❌ not a git repository (needed for worktree commands)")

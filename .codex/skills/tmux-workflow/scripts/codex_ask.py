@@ -280,13 +280,15 @@ def _wait_for_tui_idle(tmux_target: str, *, timeout_s: float = 30.0, poll_s: flo
 
 
 def _resolve_pane_target(tmux_target: str) -> str:
-    """
-    Resolve a stable tmux pane target to avoid sending keys to the wrong pane when:
+    """Return a stable tmux pane target for injection.
+
+    Handles cases where:
+    - tmux_target is already a pane_id (starts with '%'), or
     - tmux_target is a session name (targets active pane), or
     - users created additional windows/panes in the session.
 
     Preference order:
-    1) any pane whose current command is `codex`
+    1) any pane whose current command is `codex` OR whose start command includes `codex`
     2) active pane
     3) first pane in session
     """
@@ -536,11 +538,25 @@ def _schedule_submit_nudges_bg(
         nudge_count = 0
 
     resolved = _resolve_pane_target(tmux_target)
-    # Schedule submits inside tmux so the Python process can exit immediately (important for broadcast fan-out).
     parts: list[str] = []
-    parts.append(f"sleep {submit_delay_s:.3f}; tmux send-keys -t {shlex.quote(resolved)} C-m")
-    for _ in range(nudge_count):
-        parts.append(f"sleep {nudge_after_s:.3f}; tmux send-keys -t {shlex.quote(resolved)} C-m")
+
+    parts.append(
+        " ; ".join(
+            [
+                f"sleep {submit_delay_s:.3f}",
+                f"tmux send-keys -t {shlex.quote(resolved)} C-m",
+            ]
+        )
+    )
+    for i in range(nudge_count):
+        parts.append(
+            " ; ".join(
+                [
+                    f"sleep {nudge_after_s:.3f}",
+                    f"tmux send-keys -t {shlex.quote(resolved)} C-m",
+                ]
+            )
+        )
     script = " ; ".join(parts)
     subprocess.run(["tmux", "run-shell", "-b", script], check=True)
 
@@ -661,96 +677,6 @@ def _poll_for_reply(
             watcher.close()
 
 
-def _scan_for_user_message(
-    log_path: Path, offset: int, *, sent_after_utc: datetime, expected_text_norm: str
-) -> tuple[bool, int]:
-    """Scan appended jsonl entries for the exact user_message we injected."""
-    current_offset = offset
-    try:
-        with log_path.open("rb") as f:
-            f.seek(max(0, current_offset))
-            while True:
-                pos_before = f.tell()
-                raw = f.readline()
-                if not raw:
-                    break
-                if not raw.endswith(b"\n"):
-                    f.seek(pos_before)
-                    break
-                current_offset = f.tell()
-                line = raw.decode("utf-8", errors="ignore").strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(entry, dict):
-                    continue
-
-                ts = _parse_ts(entry.get("timestamp"))
-                if ts is not None and ts < sent_after_utc:
-                    continue
-
-                user_text = _extract_user_text(entry)
-                if user_text is not None:
-                    user_norm = user_text.replace("\r\n", "\n").replace("\r", "\n").strip()
-                    if expected_text_norm and expected_text_norm in user_norm:
-                        return True, current_offset
-    except OSError:
-        return False, current_offset
-    return False, current_offset
-
-
-def _confirm_user_message(
-    log_path: Path,
-    offset: int,
-    *,
-    allow_rescan: bool,
-    per_worker_root: bool,
-    sessions_root: Path,
-    expected_cwd_norm: str,
-    sent_after_utc: datetime,
-    expected_text_norm: str,
-    timeout_s: float = 20.0,
-) -> tuple[bool, Path, int]:
-    """Confirm our message was submitted by observing it in session logs.
-
-    Codex may rotate to a new jsonl file; in that case we rescan and switch.
-    """
-    deadline = time.time() + max(0.0, timeout_s)
-    current_path = log_path
-    current_offset = offset
-    confirm_offset = offset
-    last_rescan = time.time()
-    rescan_interval = min(2.0, max(0.2, timeout_s / 2.0 if timeout_s > 0 else 0.2))
-
-    while time.time() < deadline:
-        ok, confirm_offset = _scan_for_user_message(
-            current_path,
-            confirm_offset,
-            sent_after_utc=sent_after_utc,
-            expected_text_norm=expected_text_norm,
-        )
-        if ok:
-            return True, current_path, confirm_offset
-
-        now = time.time()
-        if allow_rescan and now - last_rescan >= rescan_interval:
-            if per_worker_root:
-                candidate = _scan_latest_log(sessions_root)
-            else:
-                candidate = _find_log_for_cwd(expected_cwd_norm)
-            if candidate and candidate.exists() and candidate != current_path:
-                current_path = candidate
-                current_offset = 0
-                confirm_offset = 0
-            last_rescan = now
-
-        time.sleep(0.25)
-
-    return False, current_path, confirm_offset
-
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Send a prompt to Codex running in tmux and wait for the next reply from Codex session logs.")
     parser.add_argument("text", nargs="?", help="Prompt text. If omitted, read from stdin.")
@@ -792,13 +718,11 @@ def main(argv: list[str]) -> int:
     per_worker_root = bool(session.get("codex_home") or session.get("codex_session_root"))
     sessions_root = _sessions_root_for_session(session)
 
-    # Fixed submit timings (avoid env overrides causing non-deterministic behavior).
     submit_delay = 1.5
     submit_nudge_after = 2.0
     submit_nudge_max = 3
 
     if args.send_only:
-        # Fire-and-forget mode: do not wait for TUI idle, do not scan logs, do not confirm.
         try:
             _clear_input(str(tmux_target))
             _inject_text_only(str(tmux_target), text)
@@ -831,7 +755,7 @@ def main(argv: list[str]) -> int:
         wait_s = min(10.0, max(0.0, args.timeout))
         deadline = time.time() + wait_s
         while time.time() < deadline:
-            time.sleep(min(0.5, max(0.0, args.poll)))
+            time.sleep(min(0.5, max(0.05, args.poll)))
             if per_worker_root:
                 log_path = _scan_latest_log(sessions_root)
             else:
