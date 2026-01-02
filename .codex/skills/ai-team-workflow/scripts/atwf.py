@@ -958,12 +958,22 @@ def _bootstrap_worker(
     registry: Path,
     team_dir: Path,
 ) -> None:
+    pieces: list[str] = []
+
+    rules_path = _templates_dir() / "command_rules.md"
+    if rules_path.is_file():
+        rules_raw = rules_path.read_text(encoding="utf-8")
+        pieces.append(_render_template(rules_raw, role=role, full=full, base=base, registry=registry, team_dir=team_dir).strip())
+
     template_path = _template_for_role(role)
     raw = template_path.read_text(encoding="utf-8")
-    msg = _render_template(raw, role=role, full=full, base=base, registry=registry, team_dir=team_dir)
-    res = _run_twf(twf, ["ask", name, msg])
+    pieces.append(_render_template(raw, role=role, full=full, base=base, registry=registry, team_dir=team_dir).strip())
+
+    msg = "\n\n---\n\n".join(pieces).strip() + "\n"
+    # Bootstrap should never block on a reply.
+    res = _run_twf(twf, ["send", name, msg])
     if res.returncode != 0:
-        _eprint(res.stderr.strip() or f"⚠️ twf ask failed (code {res.returncode})")
+        _eprint(res.stderr.strip() or f"⚠️ twf send failed (code {res.returncode})")
 
 
 def cmd_up(args: argparse.Namespace) -> int:
