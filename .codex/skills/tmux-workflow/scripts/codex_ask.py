@@ -311,8 +311,9 @@ def _submit_mode_for_text(text: str) -> str:
         mode = "auto"
     if mode != "auto":
         return mode
-    # Heuristic: when the prompt is multiline, prefer esc-enter submit.
-    return "esc-enter" if "\n" in text else "enter"
+    # Default: treat Enter as submit (Codex TUI may still accept multiline input).
+    # If your Codex build uses a different submit chord, set TWF_SUBMIT_MODE.
+    return "enter"
 
 
 def _send_submit(tmux_target: str, *, mode: str) -> None:
