@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -1866,14 +1867,23 @@ def cmd_broadcast(args: argparse.Namespace) -> int:
             uniq.append(t)
 
     failures: list[str] = []
-    for full in uniq:
-        sys.stdout.write(f"--- {full} ---\n")
-        # Broadcast is send-only: do not wait for replies (workers may be busy and would stall the broadcast).
-        res = _run_twf(twf, ["send", full, msg])
-        sys.stdout.write(res.stdout)
-        sys.stderr.write(res.stderr)
-        if res.returncode != 0:
-            failures.append(full)
+    # Broadcast is fire-and-forget: fan out sends in parallel and do not wait for replies/confirmations.
+    max_workers = min(16, max(1, len(uniq)))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_run_twf, twf, ["send", full, msg]): full for full in uniq}
+        for fut in as_completed(futures):
+            full = futures[fut]
+            sys.stdout.write(f"--- {full} ---\n")
+            try:
+                res = fut.result()
+            except Exception as exc:
+                sys.stderr.write(f"❌ broadcast failed: {full}: {exc}\n")
+                failures.append(full)
+                continue
+            sys.stdout.write(res.stdout)
+            sys.stderr.write(res.stderr)
+            if res.returncode != 0:
+                failures.append(full)
 
     if failures:
         _eprint(f"❌ broadcast failures: {len(failures)} targets")

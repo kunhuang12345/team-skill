@@ -6,6 +6,7 @@ import ctypes
 import ctypes.util
 import json
 import os
+import shlex
 import select
 import subprocess
 import sys
@@ -507,6 +508,43 @@ def _inject_text(tmux_target: str, text: str, *, submit_delay_s: float) -> None:
     _send_enter(tmux_target)
 
 
+def _inject_text_only(tmux_target: str, text: str) -> None:
+    text = text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
+    resolved = _resolve_pane_target(tmux_target)
+    # Use buffer paste for large/multiline to avoid argv limits.
+    if "\n" in text or len(text) > 200:
+        buf = f"twf-ask-{os.getpid()}"
+        _tmux_cmd(["load-buffer", "-b", buf, "-"], input_text=text)
+        try:
+            # Avoid bracketed paste (-p): Codex TUI may treat it as a paste-burst and ignore immediate submits.
+            # -r: keep LF as-is.
+            _tmux_cmd(["paste-buffer", "-t", resolved, "-b", buf, "-r"])
+        finally:
+            subprocess.run(["tmux", "delete-buffer", "-b", buf], check=False)
+    else:
+        _tmux_cmd(["send-keys", "-t", resolved, "-l", text])
+
+
+def _schedule_submit_nudges_bg(
+    tmux_target: str, *, submit_delay_s: float, nudge_after_s: float, nudge_count: int
+) -> None:
+    if submit_delay_s < 0:
+        submit_delay_s = 0.0
+    if nudge_after_s < 0:
+        nudge_after_s = 0.0
+    if nudge_count < 0:
+        nudge_count = 0
+
+    resolved = _resolve_pane_target(tmux_target)
+    # Schedule submits inside tmux so the Python process can exit immediately (important for broadcast fan-out).
+    parts: list[str] = []
+    parts.append(f"sleep {submit_delay_s:.3f}; tmux send-keys -t {shlex.quote(resolved)} C-m")
+    for _ in range(nudge_count):
+        parts.append(f"sleep {nudge_after_s:.3f}; tmux send-keys -t {shlex.quote(resolved)} C-m")
+    script = " ; ".join(parts)
+    subprocess.run(["tmux", "run-shell", "-b", script], check=True)
+
+
 def _send_submit_nudges(tmux_target: str, *, base_time_s: float, after_s: float, count: int) -> None:
     if count <= 0:
         return
@@ -664,6 +702,55 @@ def _scan_for_user_message(
     return False, current_offset
 
 
+def _confirm_user_message(
+    log_path: Path,
+    offset: int,
+    *,
+    allow_rescan: bool,
+    per_worker_root: bool,
+    sessions_root: Path,
+    expected_cwd_norm: str,
+    sent_after_utc: datetime,
+    expected_text_norm: str,
+    timeout_s: float = 20.0,
+) -> tuple[bool, Path, int]:
+    """Confirm our message was submitted by observing it in session logs.
+
+    Codex may rotate to a new jsonl file; in that case we rescan and switch.
+    """
+    deadline = time.time() + max(0.0, timeout_s)
+    current_path = log_path
+    current_offset = offset
+    confirm_offset = offset
+    last_rescan = time.time()
+    rescan_interval = min(2.0, max(0.2, timeout_s / 2.0 if timeout_s > 0 else 0.2))
+
+    while time.time() < deadline:
+        ok, confirm_offset = _scan_for_user_message(
+            current_path,
+            confirm_offset,
+            sent_after_utc=sent_after_utc,
+            expected_text_norm=expected_text_norm,
+        )
+        if ok:
+            return True, current_path, confirm_offset
+
+        now = time.time()
+        if allow_rescan and now - last_rescan >= rescan_interval:
+            if per_worker_root:
+                candidate = _scan_latest_log(sessions_root)
+            else:
+                candidate = _find_log_for_cwd(expected_cwd_norm)
+            if candidate and candidate.exists() and candidate != current_path:
+                current_path = candidate
+                current_offset = 0
+                confirm_offset = 0
+            last_rescan = now
+
+        time.sleep(0.25)
+
+    return False, current_path, confirm_offset
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Send a prompt to Codex running in tmux and wait for the next reply from Codex session logs.")
     parser.add_argument("text", nargs="?", help="Prompt text. If omitted, read from stdin.")
@@ -675,7 +762,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--send-only",
         action="store_true",
-        help="Only submit the message (confirm user_message in jsonl) and exit without waiting for an assistant reply.",
+        help="Submit the message and exit without waiting for an assistant reply (no submit confirmation).",
     )
     args = parser.parse_args(argv[1:])
 
@@ -705,6 +792,27 @@ def main(argv: list[str]) -> int:
     per_worker_root = bool(session.get("codex_home") or session.get("codex_session_root"))
     sessions_root = _sessions_root_for_session(session)
 
+    # Fixed submit timings (avoid env overrides causing non-deterministic behavior).
+    submit_delay = 1.0
+    submit_nudge_after = 2.0
+    submit_nudge_max = 3
+
+    if args.send_only:
+        # Fire-and-forget mode: do not wait for TUI idle, do not scan logs, do not confirm.
+        try:
+            _clear_input(str(tmux_target))
+            _inject_text_only(str(tmux_target), text)
+            _schedule_submit_nudges_bg(
+                str(tmux_target),
+                submit_delay_s=submit_delay,
+                nudge_after_s=submit_nudge_after,
+                nudge_count=submit_nudge_max,
+            )
+        except subprocess.CalledProcessError as exc:
+            eprint(f"❌ tmux injection failed: {exc}")
+            return EXIT_ERROR
+        return EXIT_OK
+
     log_path: Optional[Path]
     if args.log:
         log_path = Path(args.log).expanduser()
@@ -723,7 +831,7 @@ def main(argv: list[str]) -> int:
         wait_s = min(10.0, max(0.0, args.timeout))
         deadline = time.time() + wait_s
         while time.time() < deadline:
-            time.sleep(min(0.5, max(0.05, args.poll)))
+            time.sleep(min(0.5, max(0.0, args.poll)))
             if per_worker_root:
                 log_path = _scan_latest_log(sessions_root)
             else:
@@ -742,47 +850,18 @@ def main(argv: list[str]) -> int:
 
     sent_after = datetime.now(timezone.utc) - timedelta(seconds=0.5)
     try:
-        # Fixed submit timings (avoid env overrides causing non-deterministic behavior).
-        submit_delay = 1.0
         _wait_for_tui_idle(str(tmux_target), timeout_s=30.0, poll_s=0.5)
         _clear_input(str(tmux_target))
-        _inject_text(str(tmux_target), text, submit_delay_s=submit_delay)
+        _inject_text_only(str(tmux_target), text)
+        _schedule_submit_nudges_bg(
+            str(tmux_target),
+            submit_delay_s=submit_delay,
+            nudge_after_s=submit_nudge_after,
+            nudge_count=submit_nudge_max,
+        )
     except subprocess.CalledProcessError as exc:
         eprint(f"❌ tmux injection failed: {exc}")
         return EXIT_ERROR
-
-    submit_nudge_after = 2.0
-    submit_nudge_max = 3
-    if tmux_target and submit_nudge_max > 0:
-        _send_submit_nudges(
-            str(tmux_target),
-            base_time_s=time.time(),
-            after_s=submit_nudge_after,
-            count=submit_nudge_max,
-        )
-
-    # Confirm Codex actually recorded our user message. Without this, broadcast can misattribute
-    # an unrelated in-flight reply as "success" even if Enter never submitted.
-    expected_text_norm = text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n").strip()
-    confirm_deadline = time.time() + 20.0
-    confirmed = False
-    confirm_offset = offset
-    while time.time() < confirm_deadline:
-        confirmed, confirm_offset = _scan_for_user_message(
-            log_path, confirm_offset, sent_after_utc=sent_after, expected_text_norm=expected_text_norm
-        )
-        if confirmed:
-            offset = confirm_offset
-            break
-        time.sleep(0.25)
-
-    if not confirmed:
-        eprint("❌ submit not confirmed in session log (user_message not observed).")
-        return EXIT_ERROR
-
-    if args.send_only:
-        # Success: message was submitted and recorded. Do not wait for a reply.
-        return EXIT_OK
 
     reply, used_log_path, _new_offset = _poll_for_reply(
         log_path,
