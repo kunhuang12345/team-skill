@@ -623,8 +623,8 @@ def main(argv: list[str]) -> int:
 
     tmux_target = (
         os.environ.get("TWF_TMUX_TARGET")
-        or session.get("tmux_target")
         or session.get("pane_id")
+        or session.get("tmux_target")
         or session.get("tmux_session")
     )
     if not tmux_target:
