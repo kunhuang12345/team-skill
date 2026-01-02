@@ -254,6 +254,50 @@ def _tmux_cmd(args: list[str], *, input_text: Optional[str] = None) -> None:
     subprocess.run(["tmux", *args], input=data, check=True)
 
 
+def _resolve_pane_target(tmux_target: str) -> str:
+    """
+    Resolve a stable tmux pane target to avoid sending keys to the wrong pane when:
+    - tmux_target is a session name (targets active pane), or
+    - users created additional windows/panes in the session.
+
+    Preference order:
+    1) any pane whose current command is `codex`
+    2) active pane
+    3) first pane in session
+    """
+    t = (tmux_target or "").strip()
+    if not t:
+        return tmux_target
+    if t.startswith("%"):
+        return t
+
+    session = t.split(":", 1)[0] if ":" in t else t
+    try:
+        out = subprocess.check_output(
+            ["tmux", "list-panes", "-t", session, "-F", "#{pane_id}\t#{pane_current_command}\t#{pane_active}"],
+            text=True,
+        )
+    except Exception:
+        return tmux_target
+
+    panes: list[tuple[str, str, str]] = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 3:
+            continue
+        pane_id, cmd, active = (p.strip() for p in parts)
+        if pane_id:
+            panes.append((pane_id, cmd, active))
+
+    for pane_id, cmd, _active in panes:
+        if cmd == "codex":
+            return pane_id
+    for pane_id, _cmd, active in panes:
+        if active == "1":
+            return pane_id
+    return panes[0][0] if panes else tmux_target
+
+
 def _submit_mode_for_text(text: str) -> str:
     """
     Codex's TUI may treat Enter as newline in multiline compose mode.
@@ -272,15 +316,16 @@ def _submit_mode_for_text(text: str) -> str:
 
 
 def _send_submit(tmux_target: str, *, mode: str) -> None:
+    resolved = _resolve_pane_target(tmux_target)
     if mode == "enter":
-        _tmux_cmd(["send-keys", "-t", tmux_target, "Enter"])
+        _tmux_cmd(["send-keys", "-t", resolved, "Enter"])
         return
     if mode == "esc-enter":
-        _tmux_cmd(["send-keys", "-t", tmux_target, "Escape", "Enter"])
+        _tmux_cmd(["send-keys", "-t", resolved, "Escape", "Enter"])
         return
     # both
-    _tmux_cmd(["send-keys", "-t", tmux_target, "Enter"])
-    _tmux_cmd(["send-keys", "-t", tmux_target, "Escape", "Enter"])
+    _tmux_cmd(["send-keys", "-t", resolved, "Enter"])
+    _tmux_cmd(["send-keys", "-t", resolved, "Escape", "Enter"])
 
 
 class _InotifyWatcher:
@@ -422,17 +467,18 @@ class _InotifyWatcher:
 def _inject_text(tmux_target: str, text: str, *, submit_delay_s: float) -> None:
     text = text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
     submit_mode = _submit_mode_for_text(text)
+    resolved = _resolve_pane_target(tmux_target)
     # Use buffer paste for large/multiline to avoid argv limits.
     if "\n" in text or len(text) > 200:
         buf = f"twf-ask-{os.getpid()}"
         _tmux_cmd(["load-buffer", "-b", buf, "-"], input_text=text)
         try:
             # -p: wrap in bracketed paste (if supported by app); -r: keep LF as-is.
-            _tmux_cmd(["paste-buffer", "-t", tmux_target, "-b", buf, "-p", "-r"])
+            _tmux_cmd(["paste-buffer", "-t", resolved, "-b", buf, "-p", "-r"])
         finally:
             subprocess.run(["tmux", "delete-buffer", "-b", buf], check=False)
     else:
-        _tmux_cmd(["send-keys", "-t", tmux_target, "-l", text])
+        _tmux_cmd(["send-keys", "-t", resolved, "-l", text])
 
     if submit_delay_s > 0:
         time.sleep(submit_delay_s)
