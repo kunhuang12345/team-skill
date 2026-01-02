@@ -20,11 +20,12 @@ Do **NOT** use raw tmux keystroke injection to “send” chat messages, includi
 
 Reason: it is unreliable (can target the wrong pane, Enter can become newline, paste can be dropped), and it breaks team consistency/debuggability.
 
-## Reply latency (required etiquette)
+## Messaging etiquette (required)
 
-- After you send a message, the recipient may be busy processing other work/messages.
-- If you need a reply, **wait patiently**. Do **not** spam/re-send the same message multiple times.
-- If you suspect the message did not land, ask **Coordinator** to verify delivery using logs (do not self-invent new tmux paste scripts).
+- Recipients may be busy; replies can be delayed.
+- Do not spam: if you need a reply, wait; do not re-send the same message repeatedly.
+- Do not stall: unless you *must* have the recipient’s input to proceed, keep working on parallel tasks in your own scope (design/docs/tests/verification/notes) while you wait.
+- If you suspect delivery failed, ask **Coordinator** to verify via logs; do not invent new raw tmux paste/send scripts.
 
 ## If you think an exception is needed
 
