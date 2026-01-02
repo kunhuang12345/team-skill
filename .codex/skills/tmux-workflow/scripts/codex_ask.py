@@ -655,8 +655,10 @@ def _scan_for_user_message(
                     continue
 
                 user_text = _extract_user_text(entry)
-                if user_text is not None and user_text.strip() == expected_text_norm:
-                    return True, current_offset
+                if user_text is not None:
+                    user_norm = user_text.replace("\r\n", "\n").replace("\r", "\n").strip()
+                    if expected_text_norm and expected_text_norm in user_norm:
+                        return True, current_offset
     except OSError:
         return False, current_offset
     return False, current_offset
