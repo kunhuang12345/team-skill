@@ -298,35 +298,9 @@ def _resolve_pane_target(tmux_target: str) -> str:
     return panes[0][0] if panes else tmux_target
 
 
-def _submit_mode_for_text(text: str) -> str:
-    """
-    Codex's TUI may treat Enter as newline in multiline compose mode.
-    In those cases, "Escape Enter" (aka Alt-Enter) is commonly the submit key.
-
-    Env override:
-      TWF_SUBMIT_MODE = auto|enter|esc-enter|both
-    """
-    mode = (os.environ.get("TWF_SUBMIT_MODE") or "auto").strip().lower()
-    if mode not in {"auto", "enter", "esc-enter", "both"}:
-        mode = "auto"
-    if mode != "auto":
-        return mode
-    # Default: treat Enter as submit (Codex TUI may still accept multiline input).
-    # If your Codex build uses a different submit chord, set TWF_SUBMIT_MODE.
-    return "enter"
-
-
-def _send_submit(tmux_target: str, *, mode: str) -> None:
+def _send_enter(tmux_target: str) -> None:
     resolved = _resolve_pane_target(tmux_target)
-    if mode == "enter":
-        _tmux_cmd(["send-keys", "-t", resolved, "Enter"])
-        return
-    if mode == "esc-enter":
-        _tmux_cmd(["send-keys", "-t", resolved, "Escape", "Enter"])
-        return
-    # both
     _tmux_cmd(["send-keys", "-t", resolved, "Enter"])
-    _tmux_cmd(["send-keys", "-t", resolved, "Escape", "Enter"])
 
 
 class _InotifyWatcher:
@@ -467,7 +441,6 @@ class _InotifyWatcher:
 
 def _inject_text(tmux_target: str, text: str, *, submit_delay_s: float) -> None:
     text = text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
-    submit_mode = _submit_mode_for_text(text)
     resolved = _resolve_pane_target(tmux_target)
     # Use buffer paste for large/multiline to avoid argv limits.
     if "\n" in text or len(text) > 200:
@@ -483,10 +456,10 @@ def _inject_text(tmux_target: str, text: str, *, submit_delay_s: float) -> None:
 
     if submit_delay_s > 0:
         time.sleep(submit_delay_s)
-    _send_submit(tmux_target, mode=submit_mode)
+    _send_enter(tmux_target)
 
 
-def _send_submit_nudges(tmux_target: str, *, mode: str, base_time_s: float, after_s: float, count: int) -> None:
+def _send_submit_nudges(tmux_target: str, *, base_time_s: float, after_s: float, count: int) -> None:
     if count <= 0:
         return
     if after_s < 0:
@@ -497,7 +470,7 @@ def _send_submit_nudges(tmux_target: str, *, mode: str, base_time_s: float, afte
         if sleep_s > 0:
             time.sleep(sleep_s)
         try:
-            _send_submit(tmux_target, mode=mode)
+            _send_enter(tmux_target)
         except Exception:
             pass
 
@@ -679,8 +652,6 @@ def main(argv: list[str]) -> int:
             "TWF_TMUX_ENTER_DELAY",
             default=1.0,
         )
-        normalized_text = text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
-        submit_mode = _submit_mode_for_text(normalized_text)
         _inject_text(str(tmux_target), text, submit_delay_s=submit_delay)
     except subprocess.CalledProcessError as exc:
         eprint(f"❌ tmux injection failed: {exc}")
@@ -701,12 +672,7 @@ def main(argv: list[str]) -> int:
         nudge_thread = threading.Thread(
             target=_send_submit_nudges,
             args=(str(tmux_target),),
-            kwargs={
-                "mode": submit_mode,
-                "base_time_s": base_time_s,
-                "after_s": submit_nudge_after,
-                "count": submit_nudge_max,
-            },
+            kwargs={"base_time_s": base_time_s, "after_s": submit_nudge_after, "count": submit_nudge_max},
         )
         nudge_thread.daemon = False
         nudge_thread.start()
