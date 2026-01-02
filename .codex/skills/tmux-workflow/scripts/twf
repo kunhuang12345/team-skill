@@ -12,6 +12,7 @@ Usage:
   twf <name> "<message>"           # ask the latest worker for <name> (auto-up if missing)
   twf up <name> [up-args...]        # explicit start (forwards args to codex_up_tmux.sh)
   twf ask <name> [message]          # explicit ask (reads stdin if message omitted)
+  twf send <name> [message]         # send-only: submit message without waiting for reply
   twf pend <name> [N]               # show latest reply / last N Q&A
   twf ping <name>                   # health check
   twf self                          # print current worker full name (tmux session name)
@@ -766,6 +767,33 @@ ask_worker() {
     python3 "$script_dir/codex_ask.py" --session-file "$session_file" "$msg"
   else
     python3 "$script_dir/codex_ask.py" --session-file "$session_file"
+  fi
+}
+
+send_worker() {
+  local name="$1"
+  shift || true
+
+  local session_file=""
+  if is_ts_name "$name"; then
+    session_file="$state_dir/$name.json"
+    if [[ ! -f "$session_file" ]]; then
+      echo "❌ session not found: $session_file" >&2
+      exit 1
+    fi
+  else
+    session_file="$(latest_session_file "$name" 2>/dev/null || true)"
+    if [[ -z "$session_file" ]]; then
+      session_file="$(start_worker "$name")"
+    fi
+  fi
+
+  if [[ $# -gt 0 ]]; then
+    local msg
+    msg="$*"
+    python3 "$script_dir/codex_ask.py" --send-only --session-file "$session_file" "$msg"
+  else
+    python3 "$script_dir/codex_ask.py" --send-only --session-file "$session_file"
   fi
 }
 
@@ -1942,6 +1970,11 @@ case "$cmd" in
     [[ $# -ge 2 ]] || { echo "❌ missing name" >&2; usage; exit 1; }
     shift
     ask_worker "$@"
+    ;;
+  send)
+    [[ $# -ge 2 ]] || { echo "❌ missing name" >&2; usage; exit 1; }
+    shift
+    send_worker "$@"
     ;;
   pend)
     [[ $# -ge 2 ]] || { echo "❌ missing name" >&2; usage; exit 1; }

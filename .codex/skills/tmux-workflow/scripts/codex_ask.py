@@ -672,6 +672,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--timeout", type=float, default=float(os.environ.get("TWF_TIMEOUT", "3600")))
     parser.add_argument("--poll", type=float, default=float(os.environ.get("TWF_POLL_INTERVAL", "0.05")))
     parser.add_argument("--no-write-session", action="store_true", help="Do not update session file with discovered log binding.")
+    parser.add_argument(
+        "--send-only",
+        action="store_true",
+        help="Only submit the message (confirm user_message in jsonl) and exit without waiting for an assistant reply.",
+    )
     args = parser.parse_args(argv[1:])
 
     text = args.text
@@ -774,6 +779,10 @@ def main(argv: list[str]) -> int:
     if not confirmed:
         eprint("❌ submit not confirmed in session log (user_message not observed).")
         return EXIT_ERROR
+
+    if args.send_only:
+        # Success: message was submitted and recorded. Do not wait for a reply.
+        return EXIT_OK
 
     reply, used_log_path, _new_offset = _poll_for_reply(
         log_path,

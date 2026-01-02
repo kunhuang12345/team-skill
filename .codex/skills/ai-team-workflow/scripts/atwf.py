@@ -1868,7 +1868,8 @@ def cmd_broadcast(args: argparse.Namespace) -> int:
     failures: list[str] = []
     for full in uniq:
         sys.stdout.write(f"--- {full} ---\n")
-        res = _run_twf(twf, ["ask", full, msg])
+        # Broadcast is send-only: do not wait for replies (workers may be busy and would stall the broadcast).
+        res = _run_twf(twf, ["send", full, msg])
         sys.stdout.write(res.stdout)
         sys.stderr.write(res.stderr)
         if res.returncode != 0:
