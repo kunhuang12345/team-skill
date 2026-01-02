@@ -793,7 +793,7 @@ def main(argv: list[str]) -> int:
     sessions_root = _sessions_root_for_session(session)
 
     # Fixed submit timings (avoid env overrides causing non-deterministic behavior).
-    submit_delay = 1.0
+    submit_delay = 1.5
     submit_nudge_after = 2.0
     submit_nudge_max = 3
 
