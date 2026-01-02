@@ -659,13 +659,13 @@ def main(argv: list[str]) -> int:
     sent_after = datetime.now(timezone.utc) - timedelta(seconds=0.5)
     try:
         # Fixed submit timings (avoid env overrides causing non-deterministic behavior).
-        submit_delay = 0.5
+        submit_delay = 1.0
         _inject_text(str(tmux_target), text, submit_delay_s=submit_delay)
     except subprocess.CalledProcessError as exc:
         eprint(f"❌ tmux injection failed: {exc}")
         return EXIT_ERROR
 
-    submit_nudge_after = 0.7
+    submit_nudge_after = 2.0
     submit_nudge_max = 3
     if tmux_target and submit_nudge_max > 0:
         _send_submit_nudges(
