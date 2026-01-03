@@ -1318,6 +1318,20 @@ PY
   local resume_id="${meta[6]:-}"
   local codex_home_src_final=""
   local auth_src_final=""
+  local auth_pinned=""
+  auth_pinned="$(python3 - "$session_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+try:
+  data = json.loads(p.read_text(encoding="utf-8"))
+except Exception:
+  data = {}
+print("true" if bool(data.get("auth_pinned", False)) else "")
+PY
+)"
   warn_ignored_env_overrides_once
   local profile_final
   profile_final="$(get_env_override TWF_CODEX_PROFILE)"
@@ -1346,9 +1360,13 @@ PY
         codex_home_src_final="$(pick_codex_home_src "$tmux_session" "$(base_from_full "$tmux_session")")"
       fi
 
-      auth_src_final="$(get_env_override TWF_AUTH_SRC)"
-      if [[ -z "$auth_src_final" ]]; then
-        auth_src_final="$(pick_auth_src "$tmux_session" "$(base_from_full "$tmux_session")")"
+      if [[ -n "$auth_pinned" ]] && [[ -n "$auth_src" ]] && [[ -f "$auth_src" ]]; then
+        auth_src_final="$auth_src"
+      else
+        auth_src_final="$(get_env_override TWF_AUTH_SRC)"
+        if [[ -z "$auth_src_final" ]]; then
+          auth_src_final="$(pick_auth_src "$tmux_session" "$(base_from_full "$tmux_session")")"
+        fi
       fi
     else
       codex_home_src_final="$(get_env_override TWF_CODEX_HOME_SRC)"
