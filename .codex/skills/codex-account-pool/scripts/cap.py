@@ -1231,6 +1231,7 @@ def cmd_watch_team(args: argparse.Namespace) -> int:
     )
 
     registry = _resolve_registry_path(getattr(args, "registry", None))
+    pause_marker = registry.parent / ".paused"
     interval_s = float(getattr(args, "interval", 180.0))
     grace_s = float(getattr(args, "grace", 300.0))
     max_retries = int(getattr(args, "max_retries", 10) or 10)
@@ -1241,6 +1242,13 @@ def cmd_watch_team(args: argparse.Namespace) -> int:
         msg = "Task continues. If you are waiting for a reply, please ignore this message."
 
     while True:
+        if pause_marker.exists():
+            _eprint(f"⏸️ team paused ({pause_marker}); skipping rotation check")
+            if bool(getattr(args, "once", False)):
+                return 0
+            time.sleep(max(5.0, interval_s))
+            continue
+
         members = _load_team_members(registry)
         if not members:
             _eprint(f"⚠️ no members found in registry: {registry}")

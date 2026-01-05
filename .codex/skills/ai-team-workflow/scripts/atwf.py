@@ -314,6 +314,36 @@ def _default_team_dir() -> Path:
     return skill_dir / "share"
 
 
+def _paused_marker_path(team_dir: Path) -> Path:
+    return team_dir / ".paused"
+
+
+def _set_paused(team_dir: Path, *, reason: str) -> None:
+    team_dir.mkdir(parents=True, exist_ok=True)
+    content = f"paused_at: {_now()}\n"
+    reason = reason.strip()
+    if reason:
+        content += f"reason: {reason}\n"
+    _write_text_atomic(_paused_marker_path(team_dir), content)
+
+
+def _clear_paused(team_dir: Path) -> None:
+    try:
+        _paused_marker_path(team_dir).unlink()
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+
+
+def _read_optional_message(args: argparse.Namespace, *, attr: str) -> str:
+    msg = str(getattr(args, attr, "") or "").strip()
+    if msg:
+        return msg
+    stdin_msg = _forward_stdin()
+    return (stdin_msg or "").strip()
+
+
 def _registry_path(team_dir: Path) -> Path:
     override = os.environ.get("AITWF_REGISTRY", "").strip()
     return _expand_path(override) if override else team_dir / "registry.json"
@@ -2795,6 +2825,26 @@ def cmd_stop(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_pause(args: argparse.Namespace) -> int:
+    """
+    Human-facing pause:
+    - writes a shared marker to disable watcher actions (`share/.paused`)
+    - stops workers (same selection rules as `stop`)
+    """
+    team_dir = _default_team_dir()
+    reason = _read_optional_message(args, attr="reason")
+    _set_paused(team_dir, reason=reason)
+    _eprint(f"⏸️ paused: {_paused_marker_path(team_dir)}")
+    return cmd_stop(
+        argparse.Namespace(
+            targets=getattr(args, "targets", None),
+            role=getattr(args, "role", None),
+            subtree=getattr(args, "subtree", None),
+            dry_run=getattr(args, "dry_run", False),
+        )
+    )
+
+
 def cmd_resume(args: argparse.Namespace) -> int:
     twf = _resolve_twf()
     team_dir = _default_team_dir()
@@ -2802,6 +2852,50 @@ def cmd_resume(args: argparse.Namespace) -> int:
     data = _load_registry(registry)
 
     _ensure_cap_watch_team(twf=twf, team_dir=team_dir, registry=registry)
+
+    targets = _select_targets_for_team_op(
+        data,
+        targets=getattr(args, "targets", None),
+        role=getattr(args, "role", None),
+        subtree=getattr(args, "subtree", None),
+    )
+    if not targets:
+        print("(no targets)")
+        return 0
+
+    if getattr(args, "dry_run", False):
+        print("\n".join(targets))
+        return 0
+
+    failures: list[str] = []
+    for full in targets:
+        sys.stdout.write(f"--- resume {full} ---\n")
+        res = _run_twf(twf, ["resume", full, "--no-tree"])
+        sys.stdout.write(res.stdout)
+        sys.stderr.write(res.stderr)
+        if res.returncode != 0:
+            failures.append(full)
+
+    if failures:
+        _eprint(f"❌ resume failures: {len(failures)} targets")
+        return 1
+    return 0
+
+
+def cmd_unpause(args: argparse.Namespace) -> int:
+    """
+    Human-facing unpause:
+    - clears the pause marker (`share/.paused`)
+    - resumes workers (same selection rules as `resume`)
+    - does NOT start/recover watcher processes (so non-rotation mode stays inert)
+    """
+    twf = _resolve_twf()
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    _clear_paused(team_dir)
+    _eprint(f"▶️ unpaused: {_paused_marker_path(team_dir)}")
 
     targets = _select_targets_for_team_op(
         data,
@@ -3347,6 +3441,19 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument("--subtree", help="resume all members under a root (full|base|role)")
     resume.add_argument("--dry-run", action="store_true", help="print what would be resumed")
 
+    pause = sub.add_parser("pause", help="pause workers and disable watcher actions (recommended for humans)")
+    pause.add_argument("targets", nargs="*", help="optional targets (full|base|role)")
+    pause.add_argument("--role", choices=enabled_roles, help="pause all members of a role")
+    pause.add_argument("--subtree", help="pause all members under a root (full|base|role)")
+    pause.add_argument("--dry-run", action="store_true", help="print what would be paused (still writes marker)")
+    pause.add_argument("--reason", default="", help="optional pause reason (if omitted, read stdin)")
+
+    unpause = sub.add_parser("unpause", help="unpause workers (resume) without restarting watcher")
+    unpause.add_argument("targets", nargs="*", help="optional targets (full|base|role)")
+    unpause.add_argument("--role", choices=enabled_roles, help="unpause all members of a role")
+    unpause.add_argument("--subtree", help="unpause all members under a root (full|base|role)")
+    unpause.add_argument("--dry-run", action="store_true", help="print what would be resumed")
+
     bc = sub.add_parser("broadcast", help="send the same message to multiple workers (sequential)")
     bc.add_argument("targets", nargs="*", help="targets (full|base|role). Ignored when --role/--subtree is used.")
     bc.add_argument("--role", choices=enabled_roles, help="broadcast to all members of a role")
@@ -3462,6 +3569,10 @@ def main(argv: list[str]) -> int:
         return cmd_stop(args)
     if args.cmd == "resume":
         return cmd_resume(args)
+    if args.cmd == "pause":
+        return cmd_pause(args)
+    if args.cmd == "unpause":
+        return cmd_unpause(args)
     if args.cmd == "broadcast":
         return cmd_broadcast(args)
     if args.cmd == "resolve":
