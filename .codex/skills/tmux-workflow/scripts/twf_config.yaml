@@ -73,7 +73,7 @@ twf:
     # This is consumed by ai-team-workflow, which will start a background `cap watch-team`
     # tmux session when account_pool is enabled.
     watch_team:
-      enabled: true
+      enabled: false
       interval: 180
       grace: 300
       max_retries: 10

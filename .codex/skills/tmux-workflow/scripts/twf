@@ -763,6 +763,10 @@ start_worker() {
   if [[ -z "$profile_final" ]]; then
     profile_final="$twf_profile_cfg"
   fi
+  # Hard constraint: do not allow codex profile when account pool is enabled.
+  if lower_bool "$twf_use_account_pool"; then
+    profile_final=""
+  fi
 
   local env_args=()
   if [[ -n "$home_src" ]]; then
@@ -1571,6 +1575,9 @@ PY
     _effort_cfg="${_cmd_cfg[1]:-}"
 
 	    _desired_profile="$profile_final"
+	    if lower_bool "$twf_use_account_pool"; then
+	      _desired_profile=""
+	    fi
 
     codex_cmd="$(python3 - "$codex_cmd" "$_model_cfg" "$_effort_cfg" "$_desired_profile" <<'PY'
 import shlex
