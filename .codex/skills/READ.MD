@@ -4,7 +4,7 @@
 
 - `ai-team-workflow/`：团队协作工作流（PM/Coordinator/Liaison + 下属），对外统一入口是 `atwf`
 - `tmux-workflow/`：tmux 多 worker 管理器，底层入口是 `twf`
-- `codex-load-balancer/`：多账号/多 auth 负载均衡器，入口是 `clb`
+- `codex-account-pool/`：多账号/多 auth 账号池/轮换器，入口是 `cap`
 
 ---
 
@@ -61,22 +61,24 @@
   - `manual`：state 写在 `twf_state_dir`
 - `TWF_STATE_DIR`：环境变量强制覆盖 state 目录（最高优先级）。
 - `TWF_WORKERS_DIR`：环境变量覆盖 worker home 根目录（默认 `~/.codex-workers`）。
-- `twf_profile`、`twf_auth_src`（仅当 `twf_use_load_balancer: false` 时生效）：
+- `twf_profile`、`twf_auth_src`（仅当 `twf_use_account_pool: false` 时生效）：
   - `twf_profile`：等价于给启动命令加 `codex -p <profile>`。
   - `twf_auth_src`：指定一个“任意文件名”的 auth 文件路径，启动时把它复制成每个 worker 的 `CODEX_HOME/auth.json`（Codex 只认 `auth.json` 这个文件名）。
   - 若 `twf_auth_src` 配了但文件不存在，`twf up` 会直接报错（避免你以为生效但实际没生效）。
 
-### 负载均衡相关（依赖 codex-load-balancer）
+### 账号池相关（依赖 codex-account-pool）
 
-当 `twf_use_load_balancer: true` 时：
+当 `twf_use_account_pool: true` 时：
 
-- 启动 worker 会调用 `clb pick-auth` 从 team 目录里挑一个 auth 文件，然后复制成 worker `CODEX_HOME/auth.json`。
-- 选择策略是“最少使用优先；同次数随机”。
+- 启动 worker 会调用 `cap pick-auth` 从 team 目录里挑一个 auth 文件，然后复制成 worker `CODEX_HOME/auth.json`。
+- 选择策略由 `twf_auth_team_strategy`（或嵌套配置 `twf.account_pool.auth_team.strategy`）决定：
+  - `balanced`：最少使用优先；同次数随机
+  - `team_cycle`：全团队共享一个 auth，只有在你执行 `cap auth-advance` / `cap watch-team` 时才轮换到下一个
 
 相关配置项：
 
-- `twf_use_load_balancer: true|false`
-- `twf_load_balancer_cmd`：可选，显式指定 `clb` 路径；为空则自动探测（优先当前仓库 sibling skill）。
+- `twf_use_account_pool: true|false`
+- `twf_account_pool_cmd`：可选，显式指定 `cap` 路径；为空则自动探测（优先当前仓库 sibling skill）。
 - `twf_auth_team_dir`：team auth 目录（如 `/root/.codex/team-2`）
 - `twf_auth_team_glob`：匹配哪些文件（如 `auth.json*`）
 
@@ -96,16 +98,16 @@
 
 ---
 
-## 3) codex-load-balancer（clb）
+## 3) codex-account-pool（cap）
 
 ### 作用
 
 - 提供 `pick`/`pick-auth` 等能力，给 `tmux-workflow` 分配多账号/多 auth。
-- 记录使用计数，避免所有 worker 都用同一个登录。
+- 支持团队共享 auth（`team_cycle`）与监控轮换（`watch-team`），避免“每个角色绑死一个账号”导致浪费。
 
-### 关键配置（clb_config.yaml）
+### 关键配置（cap_config.yaml）
 
-配置文件：`.codex/skills/codex-load-balancer/scripts/clb_config.yaml`
+配置文件：`.codex/skills/codex-account-pool/scripts/cap_config.yaml`
 
 - `sources`：CODEX_HOME 模板目录（默认空=回退 `~/.codex`）。
 - `strategy`：`round_robin`（默认）或 `hash`
@@ -113,12 +115,12 @@
 
 `pick-auth` 的 team 目录与 glob 主要由 `tmux-workflow` 通过环境变量传入：
 
-- `CLB_AUTH_TEAM_DIR`（或 `AUTH_TEAM_DIR`）
-- `CLB_AUTH_TEAM_GLOB`
+- `CAP_AUTH_TEAM_DIR`（或 `AUTH_TEAM_DIR`）
+- `CAP_AUTH_TEAM_GLOB`
 
 ### 状态文件（share/state.json）
 
-默认位置：`.codex/skills/codex-load-balancer/share/state.json`
+默认位置：`.codex/skills/codex-account-pool/share/state.json`
 
 - `counter`：`pick` 的 round robin 计数
 - `auth_counts`：`pick-auth` 的使用计数（key=auth 文件绝对路径）
@@ -128,7 +130,7 @@
 
 用于对某个 team 目录下每个 auth 执行一次 `/status`，并输出“/status 的框内容”：
 
-- `bash .codex/skills/codex-load-balancer/scripts/clb status /root/.codex/team-1`
+- `bash .codex/skills/codex-account-pool/scripts/cap status /root/.codex/team-1`
 
 可选参数：
 
@@ -151,6 +153,8 @@
   - `bash .codex/skills/ai-team-workflow/scripts/atwf reset --dry-run`
 - 真正执行清理：
   - `bash .codex/skills/ai-team-workflow/scripts/atwf reset`
+- 同时清空账号池状态（会重置轮换指针/排序）：
+  - `bash .codex/skills/ai-team-workflow/scripts/atwf reset --wipe-account-pool`
 
 ### 会删除哪些内容
 
@@ -166,9 +170,10 @@
 
 - 删除 `.codex/skills/ai-team-workflow/share/`（registry/task/design 等全部）
 
-3) **codex-load-balancer 的本地计数**
+3) **codex-account-pool 的本地计数**
 
-- 删除 `.codex/skills/codex-load-balancer/share/state.json`（计数归零）
+- 默认 **保留** `.codex/skills/codex-account-pool/share/state.json`（保留轮换指针/排序）
+- 传 `--wipe-account-pool` 才会删除
 
 ### 注意事项
 

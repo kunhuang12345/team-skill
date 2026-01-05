@@ -4,10 +4,14 @@ This rule applies to **every role** in this AI team.
 
 ## Allowed messaging path (required)
 
-- **Send messages only via** `atwf` / `twf` wrappers:
-  - Broadcast: `bash .codex/skills/ai-team-workflow/scripts/atwf broadcast ...`
-  - Direct message: `bash .codex/skills/ai-team-workflow/scripts/atwf ask ...` or `bash .codex/skills/tmux-workflow/scripts/twf ask ...`
-  - Fire-and-forget (no waiting): `bash .codex/skills/tmux-workflow/scripts/twf send ...`
+- **Send messages only via** `atwf` wrappers (policy-enforced):
+  - Broadcast (usually only `coord`): `bash .codex/skills/ai-team-workflow/scripts/atwf broadcast ...`
+  - Direct message (wait for reply): `bash .codex/skills/ai-team-workflow/scripts/atwf ask ...`
+  - Direct message (no waiting): `bash .codex/skills/ai-team-workflow/scripts/atwf send ...`
+  - Handoff/authorization (avoid relaying): `bash .codex/skills/ai-team-workflow/scripts/atwf handoff ...`
+- Check hard permissions any time:
+  - `bash .codex/skills/ai-team-workflow/scripts/atwf policy`
+  - `bash .codex/skills/ai-team-workflow/scripts/atwf perms-self`
 - Any progress/completion/design conclusion **must** be reported via `atwf report-up` (or `atwf report-to coord|liaison`) to count as “reported”; otherwise the parent may treat it as “not received”.
 
 ## Forbidden (do NOT do this)
@@ -20,6 +24,9 @@ Do **NOT** use raw tmux keystroke injection to “send” chat messages, includi
 - any custom shell loop that pastes into sessions/panes and presses Enter
 
 Reason: it is unreliable (can target the wrong pane, Enter can become newline, paste can be dropped), and it breaks team consistency/debuggability.
+
+Also do **NOT** bypass policy by using `twf ask/send` directly for inter-role messaging.
+If you must debug a delivery issue, ask **Coordinator** for approval and document the exact commands.
 
 ## Messaging etiquette (required)
 

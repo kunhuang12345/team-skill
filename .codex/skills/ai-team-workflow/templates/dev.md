@@ -34,15 +34,16 @@ Scaling:
 - If overloaded, you may spawn an intern dev:
   - Inside tmux (recommended): `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self dev intern --scope "..."`
     - This keeps `{{REGISTRY_PATH}}` in sync (registers + bootstraps the child).
-  - If you used `twf spawn-self ...` directly, also register/update scope in `{{REGISTRY_PATH}}`.
+  - Do not use `twf spawn-self` directly; it bypasses policy checks.
 
 Conflict resolution (ordered loop, for design/merge conflicts):
 - When N people have conflicting changes, the parent selects participants and assigns order `1..N`.
 - Token passing: only the current number speaks; after speaking, message the next number and include:
   - `ROUND=<k>` and `NEXT=<n>`
 - After `N` speaks, loop back to `1`. If `1` declares resolved, `1` summarizes and reports up; otherwise continue.
-- Use `bash .codex/skills/ai-team-workflow/scripts/atwf broadcast <targets...> --message "..."`
-  to keep the whole group in sync.
+- Broadcast may be restricted to Coordinator by policy. Ask Coordinator to broadcast key sync messages
+  (or use direct messages within allowed pairs / via a handoff):
+  - `bash .codex/skills/ai-team-workflow/scripts/atwf send coord "[REQUEST-BROADCAST] <targets...>\\n...message..."`
 
 Development rules (after PM says START DEV):
 - Do **not** develop on the current branch/worktree.

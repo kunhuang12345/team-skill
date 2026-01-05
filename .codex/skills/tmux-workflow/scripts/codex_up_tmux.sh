@@ -77,19 +77,49 @@ def parse_yaml(text: str) -> dict:
         out[key] = value.strip()
     return out
 
-data = {}
-try:
-    if raw.lstrip().startswith("{"):
-        data = json.loads(raw)
-        if not isinstance(data, dict):
-            data = {}
-    else:
-        data = parse_yaml(raw)
-except Exception:
-    data = parse_yaml(raw)
+def load_cfg(text: str) -> dict:
+    raw_s = text.strip()
+    if not raw_s:
+        return {}
 
-model = data.get("model") if isinstance(data.get("model"), str) else "gpt-5.2"
-effort = data.get("model_reasoning_effort") if isinstance(data.get("model_reasoning_effort"), str) else "xhigh"
+    if raw_s.startswith("{"):
+        try:
+            data = json.loads(raw_s)
+        except Exception:
+            data = None
+        if isinstance(data, dict):
+            return data
+
+    try:
+        import yaml  # type: ignore
+
+        data = yaml.safe_load(text)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+
+    return parse_yaml(text)
+
+cfg = load_cfg(raw)
+
+def get_path(data: dict, path: list[str]):
+    cur = data
+    for k in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(k)
+    return cur
+
+def get_str(*paths: list[str], default: str = "") -> str:
+    for p in paths:
+        v = get_path(cfg, p)
+        if isinstance(v, str):
+            return v.strip()
+    return default
+
+model = get_str(["codex", "model"], ["model"], default="gpt-5.2")
+effort = get_str(["codex", "model_reasoning_effort"], ["model_reasoning_effort"], default="xhigh")
 
 model = model.strip()
 effort = effort.strip()

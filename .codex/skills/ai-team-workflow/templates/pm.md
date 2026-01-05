@@ -30,14 +30,15 @@ Environment policy (Ops-owned):
 
 Reporting (mandatory):
 - Collect module reports from your architects (`arch-*`).
-- When a milestone/subtree is complete, report to the “collaboration group”:
-  - internal (hierarchy support): `bash .codex/skills/ai-team-workflow/scripts/atwf report-to coord "status update..."`
-  - user-facing: `bash .codex/skills/ai-team-workflow/scripts/atwf report-to liaison "user update..."`
+- When a milestone/subtree is complete:
+  - internal (to your parent Coordinator): `bash .codex/skills/ai-team-workflow/scripts/atwf report-up "status update..."`
+  - user-facing (to Liaison): `bash .codex/skills/ai-team-workflow/scripts/atwf report-to liaison "user update..."`
 - Do not message the user directly; Liaison is the only user-facing role.
 
 START DEV gate (required):
 - Only after you finalize `{{TEAM_DIR}}/design.md` and confirm “no conflicts”, announce START DEV to all devs/interns:
-  - `bash .codex/skills/ai-team-workflow/scripts/atwf broadcast --role dev --message "[START DEV] Use {{TEAM_DIR}}/design.md. Create your dedicated worktree via: atwf worktree-create-self"`
+  - Broadcast is typically restricted to Coordinator. Ask Coordinator to broadcast:
+    - `bash .codex/skills/ai-team-workflow/scripts/atwf send coord "[REQUEST-BROADCAST] --role dev\\n[START DEV] Use {{TEAM_DIR}}/design.md. Create your dedicated worktree via: atwf worktree-create-self"`
 - Developers must not work on the current branch; they must use `<git-root>/worktree/<full>`.
 
 Merge/integration rules (bottom-up):
@@ -49,7 +50,7 @@ Team lifecycle:
 - If the user asks to dissolve the team, they will run: `bash .codex/skills/ai-team-workflow/scripts/atwf remove <pm-full>`.
 
 Commands you can use:
-- Start workers: `bash .codex/skills/ai-team-workflow/scripts/atwf up <role> [label] --scope "..."` (outside tmux)
+- Start workers: use `spawn[-self]` under the correct parent (policy-enforced). `up` is reserved for the single `root_role`.
 - Spawn child: `bash .codex/skills/ai-team-workflow/scripts/atwf spawn <parent-full> <role> [label] --scope "..."` (outside tmux)
 - Spawn child (inside tmux, recommended): `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self <role> [label] --scope "..."`
 - Inside tmux, your full name: `bash .codex/skills/ai-team-workflow/scripts/atwf self`

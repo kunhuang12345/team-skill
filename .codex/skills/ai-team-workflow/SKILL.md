@@ -25,20 +25,20 @@ Default path: `<skill_root>/share/registry.json` (project install example: `./.c
 Overrides (highest → lowest):
 - `AITWF_REGISTRY`
 - `AITWF_DIR`
-- `scripts/atwf_config.yaml` → `share_dir`
+- `scripts/atwf_config.yaml` → `share.dir` (legacy: `share_dir`)
 - default `<skill_root>/share`
 
 Print the resolved paths:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf where`
 
 It records, per worker:
-- `role`: `pm|arch|prod|dev|qa|ops|coord|liaison`
+- `role`: one of the project-enabled roles (see `atwf policy` / `scripts/atwf_config.yaml` → `team.policy.enabled_roles`)
 - `scope`: what this worker owns (used for routing)
 - `parent` / `children`: org tree links (mirrors `twf spawn`)
 
 ## Shared artifacts (task + designs)
 
-Within the same `share_dir` as `registry.json`, this skill also standardizes:
+Within the same share dir as `registry.json`, this skill also standardizes:
 - Shared task: `share/task.md` (written by `atwf init ...`)
 - Per-member designs: `share/design/<full>.md` (create via `atwf design-init[-self]`)
 - Consolidated design: `share/design.md` (PM owns the final merged version)
@@ -50,7 +50,8 @@ Within the same `share_dir` as `registry.json`, this skill also standardizes:
 
 Initialize + start the initial trio + send task to PM:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf init "任务描述：/path/to/task.md"`
-  - starts: `pm-main`, `coord-main`, `liaison-main`
+  - starts root: `coord-main`
+  - spawns under root: `pm-main`, `liaison-main`
   - copies the task into `share/task.md`, sends PM the shared path, and prints PM's first reply
 
 Enter a role (avoid `tmux a` attaching the wrong session):
@@ -97,9 +98,9 @@ Completion/progress must flow upward:
 Helpers (run inside tmux worker):
 - `bash .codex/skills/ai-team-workflow/scripts/atwf parent-self`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf report-up "done summary..."`
-- Root PM has no parent in the registry; PM reports to the “collaboration group”:
-  - internal: `bash .codex/skills/ai-team-workflow/scripts/atwf report-to coord "status update..."`
-  - user-facing: `bash .codex/skills/ai-team-workflow/scripts/atwf report-to liaison "status update for user..."`
+- PM reports upward to Coordinator via `report-up`; user-facing updates are sent to Liaison:
+  - internal (to parent): `bash .codex/skills/ai-team-workflow/scripts/atwf report-up "status update..."`
+  - user-facing (to liaison): `bash .codex/skills/ai-team-workflow/scripts/atwf report-to liaison "status update for user..."`
 
 ## Operating rules (role protocol)
 
@@ -107,8 +108,9 @@ Helpers (run inside tmux worker):
 - When blocked:
   1. Ask **Coordinator**: “Who should I talk to?” / “Is this internal or user-facing?”
   2. Coordinator routes to the best owner using `registry.json` (`atwf route ...`).
-  3. Only if unresolved, Coordinator forwards a crisp question to **Liaison**.
-  4. Liaison asks the user, then reports back to Coordinator (who distributes).
+  3. If cross-branch communication is needed, Coordinator creates a **handoff** so the two members talk directly (avoid relaying): `atwf handoff ...`
+  4. Only if a real **user decision** is required, Coordinator escalates a crisp question to **Liaison**.
+  5. Liaison asks the user, then reports back to Coordinator (who distributes).
 
 User “bounce” rule (assistant is a relay):
 - If the user responds with “I don’t understand / shouldn’t this be answerable from docs?”, Liaison does **not** validate internally.
@@ -134,13 +136,13 @@ For design conflicts or merge conflicts within a subtree:
 - Parent selects the conflicting participants (N people) and assigns an order `1..N`.
 - Use a strict “token passing” loop: only the current number speaks; after speaking they message the next number.
 - When the last (`N`) finishes, loop back to `1`. If `1` declares the conflict resolved, `1` summarizes and reports up; otherwise continue the loop.
-- Use `atwf broadcast` to keep everyone in sync.
+- Keep everyone in sync. If broadcast is restricted by policy, ask Coordinator to broadcast key sync messages (or use direct messages / handoff).
 
 ## Commands
 
 All commands are wrappers around `twf` plus registry management:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf init ["task"] [--task-file PATH] [--registry-only]`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf up <role> [label] --scope "..."` (start + register + bootstrap)
+- `bash .codex/skills/ai-team-workflow/scripts/atwf up <role> [label] --scope "..."` (root_role only; start + register + bootstrap)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf spawn <parent-full> <role> [label] --scope "..."` (spawn child + register + bootstrap)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self <role> [label] --scope "..."` (inside tmux; uses current worker as parent)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf parent <name|full>`
@@ -151,6 +153,8 @@ All commands are wrappers around `twf` plus registry management:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf report-to <full|base|role> ["message"]` (inside tmux; stdin supported)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf list`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf where`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf policy`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf perms-self`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf tree [root]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf design-path <full|base|role>`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf design-init <full|base|role> [--force]`
@@ -166,6 +170,8 @@ All commands are wrappers around `twf` plus registry management:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf attach <full|base|role>`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf route "<query>" [--role <role>]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf ask <full|base|role> ["message"]` (stdin supported)
+- `bash .codex/skills/ai-team-workflow/scripts/atwf send <full|base|role> ["message"]` (stdin supported; no waiting)
+- `bash .codex/skills/ai-team-workflow/scripts/atwf handoff <a> <b> [--reason "..."] [--ttl SECONDS]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf pend <full|base|role> [N]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf ping <full|base|role>`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf remove <pm-full>` (disband team; clears registry)
@@ -175,4 +181,4 @@ All commands are wrappers around `twf` plus registry management:
 - `AITWF_TWF`: path to `twf` (if not installed next to this skill)
 - `AITWF_DIR`: override shared state dir
 - `AITWF_REGISTRY`: override registry file path
-- Config file: `.codex/skills/ai-team-workflow/scripts/atwf_config.yaml` (`share_dir`)
+- Config file: `.codex/skills/ai-team-workflow/scripts/atwf_config.yaml` (`share.dir`, legacy: `share_dir`; team policy under `team.policy`)

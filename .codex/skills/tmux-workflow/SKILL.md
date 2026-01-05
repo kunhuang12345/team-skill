@@ -36,11 +36,11 @@ This skill is a self-contained toolkit under `scripts/` (copy this whole folder 
 - `remove` always requires **full name** to avoid deleting the wrong worker.
 
 State directory:
-- default: configured via `scripts/twf_config.yaml` (`twf_state_dir_mode`, default `auto`)
+- default: configured via `scripts/twf_config.yaml` (`twf.state_dir.mode`, default `auto`; legacy: `twf_state_dir_mode`)
   - `auto`: `<skill_root>/.twf/` (project install default: `./.codex/skills/tmux-workflow/.twf/`)
   - `global`: `~/.twf/`
-  - `manual`: `twf_state_dir` (must be set in config; relative paths resolve from current directory)
-- override: `TWF_STATE_DIR=/some/path` (highest priority; ignores `twf_state_dir_mode`)
+  - `manual`: `twf.state_dir.dir` (must be set in config; relative paths resolve from current directory; legacy: `twf_state_dir`)
+- override: `TWF_STATE_DIR=/some/path` (highest priority; ignores `twf.state_dir.mode` / `twf_state_dir_mode`)
 
 ### Core commands
 
@@ -97,18 +97,16 @@ Safety:
 
 - `TWF_SESSION_FILE`: session file path (default: `./.codex-tmux-session.json`).
 - `TWF_TMUX_SESSION`: override tmux session name (default: `codex-<hash(cwd)>`).
-- `TWF_CODEX_CMD_CONFIG`: YAML config path (default: `scripts/twf_config.yaml` in this skill). Keys:
-  - `model` (default `gpt-5.2`)
-  - `model_reasoning_effort` (default `xhigh`)
-  - `twf_state_dir_mode` (default `auto`; `auto|global|manual`)
-  - `twf_state_dir` (required when `twf_state_dir_mode=manual`)
-  - `twf_use_load_balancer` (default `false`; when `true`, asks `codex-load-balancer` to choose a `CODEX_HOME` source per worker)
-  - `twf_load_balancer_cmd` (optional path override to the load balancer command; otherwise auto-detected)
+- `TWF_CODEX_CMD_CONFIG`: YAML/JSON config path (default: `scripts/twf_config.yaml`). Nested keys (legacy flat keys also supported):
+  - `codex.model`, `codex.model_reasoning_effort`, `codex.profile`
+  - `twf.state_dir.mode`, `twf.state_dir.dir`
+  - `twf.account_pool.enabled`, `twf.account_pool.cmd`, `twf.account_pool.auth_team.dir`, `twf.account_pool.auth_team.glob`, `twf.account_pool.auth_team.strategy`
+  - `twf.auth.src`, `twf.env.allow_overrides`
 - `TWF_CODEX_CMD`: override the full command used inside tmux (if unset, it is built from `TWF_CODEX_CMD_CONFIG`).
 - `TWF_WORKERS_DIR`: per-worker `CODEX_HOME` base dir (default: `~/.codex-workers`).
 - `TWF_CODEX_HOME_SRC`: source `CODEX_HOME` to copy from (default: `~/.codex`).
 - `TWF_AUTH_SRC`: optional auth file to copy into worker as `auth.json` (overrides synced `auth.json`).
-- `TWF_LOAD_BALANCER_CMD`: optional path to `codex-load-balancer/scripts/clb` (takes precedence over `twf_load_balancer_cmd`).
+- `TWF_ACCOUNT_POOL_CMD`: optional path to `codex-account-pool/scripts/cap` (takes precedence over `twf_account_pool_cmd`).
 - `TWF_CODEX_SESSION_ROOT` / `CODEX_SESSION_ROOT` / `CODEX_HOME`: where to scan logs (default: `~/.codex/sessions`).
 - `TWF_WATCH_MODE` (default `auto`):
   - `auto`: on Linux/WSL use `inotify` to block until the log file changes; otherwise fall back to polling.

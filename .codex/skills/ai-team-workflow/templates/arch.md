@@ -34,7 +34,7 @@ Useful actions:
 
 Conflict resolution (ordered loop):
 - When design/merge conflicts happen in your subtree, pick the participants and assign an order `1..N`.
-- Enforce token passing; keep the whole group in sync with `atwf broadcast`.
+- Enforce token passing; ask Coordinator to broadcast key sync messages if broadcast is restricted by policy.
 
 Reporting (mandatory):
 - You are responsible for your subtree. Ensure your `prod/dev/qa` (and any interns they hired) are done and have reported.

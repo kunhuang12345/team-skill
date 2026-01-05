@@ -1,9 +1,75 @@
 # ai-team-workflow config
 #
-# If `share_dir` is set (non-empty), it overrides the default shared state directory.
+# This file is YAML (or JSON) and is parsed via `yaml.safe_load` when available.
+#
+# Share dir (where registry/task/design/ops live):
+# - If set (non-empty), it overrides the default shared state directory.
 # - Recommended: absolute path
 # - Relative paths are resolved from the skill root (`.codex/skills/ai-team-workflow/`)
 #
 # Default when unset/empty: <skill_root>/share
-share_dir: ""
+share:
+  dir: ""
 
+# Backward-compatible (older scripts):
+# share_dir: ""
+
+# Team policy (hard constraints)
+#
+# Notes:
+# - 权限/可雇佣关系写在 policy（硬约束）里，不写在角色模板里。
+# - 组织树（谁雇佣谁、开几个 dev/qa）由 PM 在运行时决定，但必须满足下面的规则。
+team:
+  policy:
+    # Root role (single root). Non-root roles must be created via spawn (must have a parent).
+    root_role: "coord"
+
+    # Project-enabled roles (must have a matching templates/<role>.md).
+    enabled_roles:
+      - coord
+      - pm
+      - liaison
+      - arch
+      - dev
+      - qa
+      - prod
+      - ops
+
+    # Hiring policy (who can spawn which roles). PM decides actual org by spawning,
+    # but the role types must be allowed here.
+    can_hire:
+      coord: [pm, liaison]
+      pm: [arch, dev, qa, prod, ops]
+      arch: [dev, qa, prod]
+      # Optional self-scaling (interns/assistants) by role label (e.g. dev-intern):
+      dev: [dev]
+      qa: [qa]
+      prod: [prod]
+      ops: [ops]
+
+    # Broadcast governance
+    broadcast:
+      allowed_roles: [coord]
+      # Default internal broadcast audience should exclude liaison unless explicitly targeted.
+      exclude_roles: [liaison]
+
+    # Direct communication governance (who can DM/ask whom without handoff)
+    comm:
+      # Allow parent<->child communications regardless of role.
+      allow_parent_child: true
+
+      # Role-to-role direct communication matrix (bidirectional).
+      # Example: dev (including dev interns) can talk to prod/qa directly.
+      direct_allow:
+        # Anyone can ask coord for routing/authorization.
+        coord: [pm, arch, dev, qa, prod, ops, liaison]
+        pm: [liaison]
+        dev: [prod, qa]
+        qa: [prod, dev]
+        prod: [dev, qa]
+
+      # Otherwise, cross-branch conversations require a handoff/permit (to avoid relaying).
+      require_handoff: true
+
+      # Who can create handoffs/permits.
+      handoff_creators: [coord, pm, arch]

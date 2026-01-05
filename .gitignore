@@ -8,7 +8,7 @@ __pycache__/
 .claude-session
 .claude/
 .codex/skills/ai-team-workflow/share/
-.codex/skills/codex-load-balancer/share/
+.codex/skills/codex-account-pool/share/
 *.mp4
 tmp/
 compare_with_mcp/

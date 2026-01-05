@@ -40,7 +40,7 @@ Env:
   TWF_CODEX_HOME_SRC  Default: ~/.codex             (forwarded to codex_up_tmux.sh)
   TWF_AUTH_SRC        Optional: auth file to copy into worker as `auth.json` (overrides synced auth.json)
   TWF_CODEX_PROFILE   Optional: codex profile (equivalent to `codex -p <profile>`)
-  TWF_LOAD_BALANCER_CMD  Optional: path to `codex-load-balancer/scripts/clb` (used when twf_use_load_balancer=true)
+  TWF_ACCOUNT_POOL_CMD  Optional: path to `codex-account-pool/scripts/cap` (used when twf_use_account_pool=true)
   TWF_CODEX_CMD_CONFIG  Default: scripts/twf_config.yaml (model + model_reasoning_effort + twf_state_dir_mode)
   TWF_CODEX_CMD       Override full codex command (forwarded to codex_up_tmux.sh)
 USAGE
@@ -112,73 +112,109 @@ def parse_yaml(text: str) -> dict:
     out[key] = value.strip()
   return out
 
-data = {}
-try:
-  if raw.lstrip().startswith("{"):
-    data = json.loads(raw)
-    if not isinstance(data, dict):
-      data = {}
-  else:
-    data = parse_yaml(raw)
-except Exception:
-  data = parse_yaml(raw)
+def load_cfg(text: str) -> dict:
+  raw_s = text.strip()
+  if not raw_s:
+    return {}
 
-allow_env_overrides = data.get("twf_allow_env_overrides", "false")
+  if raw_s.startswith("{"):
+    try:
+      data = json.loads(raw_s)
+    except Exception:
+      data = None
+    if isinstance(data, dict):
+      return data
+
+  try:
+    import yaml  # type: ignore
+
+    data = yaml.safe_load(text)
+    if isinstance(data, dict):
+      return data
+  except Exception:
+    pass
+
+  return parse_yaml(text)
+
+data = load_cfg(raw)
+
+def get_path(data: dict, path: list[str]):
+  cur = data
+  for k in path:
+    if not isinstance(cur, dict):
+      return None
+    cur = cur.get(k)
+  return cur
+
+def get_any(*paths: list[str], default=None):
+  for p in paths:
+    v = get_path(data, p)
+    if v is not None:
+      return v
+  return default
+
+allow_env_overrides = get_any(["twf", "env", "allow_overrides"], ["twf_allow_env_overrides"], default="false")
 if isinstance(allow_env_overrides, bool):
   allow_env_overrides = "true" if allow_env_overrides else "false"
 elif not isinstance(allow_env_overrides, str):
   allow_env_overrides = "false"
 allow_env_overrides = allow_env_overrides.strip().lower() or "false"
 
-mode = data.get("twf_state_dir_mode", "auto")
+mode = get_any(["twf", "state_dir", "mode"], ["twf_state_dir_mode"], default="auto")
 if not isinstance(mode, str):
   mode = "auto"
 mode = mode.strip().lower() or "auto"
-manual_dir = data.get("twf_state_dir", "")
+manual_dir = get_any(["twf", "state_dir", "dir"], ["twf_state_dir"], default="")
 if not isinstance(manual_dir, str):
   manual_dir = ""
 manual_dir = manual_dir.strip()
 
-use_lb = data.get("twf_use_load_balancer", "false")
-if isinstance(use_lb, bool):
-  use_lb = "true" if use_lb else "false"
-elif not isinstance(use_lb, str):
-  use_lb = "false"
-use_lb = use_lb.strip().lower() or "false"
+use_account_pool = get_any(["twf", "account_pool", "enabled"], ["twf_use_account_pool"], default="false")
+if isinstance(use_account_pool, bool):
+  use_account_pool = "true" if use_account_pool else "false"
+elif not isinstance(use_account_pool, str):
+  use_account_pool = "false"
+use_account_pool = use_account_pool.strip().lower() or "false"
 
-lb_cmd = data.get("twf_load_balancer_cmd", "")
-if not isinstance(lb_cmd, str):
-  lb_cmd = ""
-lb_cmd = lb_cmd.strip()
+account_pool_cmd = get_any(["twf", "account_pool", "cmd"], ["twf_account_pool_cmd"], default="")
+if not isinstance(account_pool_cmd, str):
+  account_pool_cmd = ""
+account_pool_cmd = account_pool_cmd.strip()
 
-profile = data.get("twf_profile", "")
+profile = get_any(["codex", "profile"], ["twf_profile"], default="")
 if not isinstance(profile, str):
   profile = ""
 profile = profile.strip()
 
-auth_src = data.get("twf_auth_src", "")
+auth_src = get_any(["twf", "auth", "src"], ["twf_auth_src"], default="")
 if not isinstance(auth_src, str):
   auth_src = ""
 auth_src = auth_src.strip()
 
-auth_team_dir = data.get("twf_auth_team_dir", "")
+auth_team_dir = get_any(["twf", "account_pool", "auth_team", "dir"], ["twf_auth_team_dir"], default="")
 if not isinstance(auth_team_dir, str):
   auth_team_dir = ""
 auth_team_dir = auth_team_dir.strip()
 
-auth_team_glob = data.get("twf_auth_team_glob", "")
+auth_team_glob = get_any(["twf", "account_pool", "auth_team", "glob"], ["twf_auth_team_glob"], default="")
 if not isinstance(auth_team_glob, str):
   auth_team_glob = ""
 auth_team_glob = auth_team_glob.strip()
 
+auth_team_strategy = get_any(["twf", "account_pool", "auth_team", "strategy"], ["twf_auth_team_strategy"], default="")
+if not isinstance(auth_team_strategy, str):
+  auth_team_strategy = ""
+auth_team_strategy = auth_team_strategy.strip()
+
 print(mode)
 print(manual_dir)
-print(use_lb)
-print(lb_cmd)
+print(use_account_pool)
+print(account_pool_cmd)
 print(profile)
 print(auth_src)
 print(auth_team_dir)
 print(auth_team_glob)
+print(auth_team_strategy)
 print(allow_env_overrides)
 PY
 }
@@ -186,13 +222,14 @@ PY
 readarray -t state_cfg < <(read_state_dir_config)
 mode="${state_cfg[0]:-auto}"
 manual_dir="${state_cfg[1]:-}"
-twf_use_lb="${state_cfg[2]:-false}"
-twf_lb_cmd_cfg="${state_cfg[3]:-}"
+twf_use_account_pool="${state_cfg[2]:-false}"
+twf_account_pool_cmd_cfg="${state_cfg[3]:-}"
 twf_profile_cfg="${state_cfg[4]:-}"
 twf_auth_src_cfg="${state_cfg[5]:-}"
 twf_auth_team_dir_cfg="${state_cfg[6]:-}"
 twf_auth_team_glob_cfg="${state_cfg[7]:-}"
-twf_allow_env_overrides="${state_cfg[8]:-false}"
+twf_auth_team_strategy_cfg="${state_cfg[8]:-}"
+twf_allow_env_overrides="${state_cfg[9]:-false}"
 
 state_dir="${TWF_STATE_DIR:-}"
 if [[ -z "$state_dir" ]]; then
@@ -250,10 +287,10 @@ get_env_override() {
   echo "${!name:-}"
 }
 
-resolve_lb_cmd() {
-  local cmd="${TWF_LOAD_BALANCER_CMD:-}"
+resolve_account_pool_cmd() {
+  local cmd="${TWF_ACCOUNT_POOL_CMD:-}"
   if [[ -z "$cmd" ]]; then
-    cmd="$twf_lb_cmd_cfg"
+    cmd="$twf_account_pool_cmd_cfg"
   fi
 
   if [[ -n "$cmd" ]]; then
@@ -274,13 +311,13 @@ PY
     return 0
   fi
 
-  local sibling="$skill_dir/../codex-load-balancer/scripts/clb"
+  local sibling="$skill_dir/../codex-account-pool/scripts/cap"
   if [[ -f "$sibling" ]]; then
     echo "$sibling"
     return 0
   fi
 
-  local global="$HOME/.codex/skills/codex-load-balancer/scripts/clb"
+  local global="$HOME/.codex/skills/codex-account-pool/scripts/cap"
   if [[ -f "$global" ]]; then
     echo "$global"
     return 0
@@ -314,10 +351,10 @@ pick_codex_home_src() {
   local base="$2"
 
   local cmd
-  cmd="$(resolve_lb_cmd)"
+  cmd="$(resolve_account_pool_cmd)"
   if [[ -z "$cmd" || ! -f "$cmd" ]]; then
-    echo "❌ twf_use_load_balancer=true but codex-load-balancer not found." >&2
-    echo "   Install sibling skill: ./.codex/skills/codex-load-balancer/, or set twf_load_balancer_cmd / TWF_LOAD_BALANCER_CMD." >&2
+    echo "❌ twf_use_account_pool=true but codex-account-pool not found." >&2
+    echo "   Install sibling skill: ./.codex/skills/codex-account-pool/, or set twf_account_pool_cmd / TWF_ACCOUNT_POOL_CMD." >&2
     exit 1
   fi
 
@@ -325,11 +362,11 @@ pick_codex_home_src() {
   src="$(bash "$cmd" pick --worker "$worker" --base "$base")"
   src="$(echo "$src" | tail -n 1 | xargs)"
   if [[ -z "$src" ]]; then
-    echo "❌ load balancer returned empty CODEX_HOME source for worker=$worker" >&2
+    echo "❌ account pool returned empty CODEX_HOME source for worker=$worker" >&2
     exit 1
   fi
   if [[ ! -d "$src" ]]; then
-    echo "❌ load balancer CODEX_HOME source does not exist: $src" >&2
+    echo "❌ account pool CODEX_HOME source does not exist: $src" >&2
     exit 1
   fi
   echo "$src"
@@ -340,10 +377,10 @@ pick_auth_src() {
   local base="$2"
 
   local cmd
-  cmd="$(resolve_lb_cmd)"
+  cmd="$(resolve_account_pool_cmd)"
   if [[ -z "$cmd" || ! -f "$cmd" ]]; then
-    echo "❌ twf_use_load_balancer=true but codex-load-balancer not found." >&2
-    echo "   Install sibling skill: ./.codex/skills/codex-load-balancer/, or set twf_load_balancer_cmd / TWF_LOAD_BALANCER_CMD." >&2
+    echo "❌ twf_use_account_pool=true but codex-account-pool not found." >&2
+    echo "   Install sibling skill: ./.codex/skills/codex-account-pool/, or set twf_account_pool_cmd / TWF_ACCOUNT_POOL_CMD." >&2
     exit 1
   fi
 
@@ -363,10 +400,13 @@ if not p.is_absolute():
 print(str(p))
 PY
 )"
-    env_args+=("CLB_AUTH_TEAM_DIR=$auth_dir")
+    env_args+=("CAP_AUTH_TEAM_DIR=$auth_dir")
   fi
   if [[ -n "$twf_auth_team_glob_cfg" ]]; then
-    env_args+=("CLB_AUTH_TEAM_GLOB=$twf_auth_team_glob_cfg")
+    env_args+=("CAP_AUTH_TEAM_GLOB=$twf_auth_team_glob_cfg")
+  fi
+  if [[ -n "$twf_auth_team_strategy_cfg" ]]; then
+    env_args+=("CAP_AUTH_STRATEGY=$twf_auth_team_strategy_cfg")
   fi
   if [[ ${#env_args[@]} -gt 0 ]]; then
     src="$(env "${env_args[@]}" bash "$cmd" pick-auth --worker "$worker" --base "$base")"
@@ -375,11 +415,11 @@ PY
   fi
   src="$(echo "$src" | tail -n 1 | xargs)"
   if [[ -z "$src" ]]; then
-    echo "❌ load balancer returned empty auth source for worker=$worker" >&2
+    echo "❌ account pool returned empty auth source for worker=$worker" >&2
     exit 1
   fi
   if [[ ! -f "$src" ]]; then
-    echo "❌ load balancer auth source does not exist: $src" >&2
+    echo "❌ account pool auth source does not exist: $src" >&2
     exit 1
   fi
   echo "$src"
@@ -421,9 +461,9 @@ PY
   return 1
 }
 
-reset_load_balancer_state_if_all_stopped() {
+reset_account_pool_state_if_all_stopped() {
   local cmd
-  cmd="$(resolve_lb_cmd)"
+  cmd="$(resolve_account_pool_cmd)"
   if [[ -z "$cmd" || ! -f "$cmd" ]]; then
     return 0
   fi
@@ -435,7 +475,7 @@ reset_load_balancer_state_if_all_stopped() {
   # Best-effort: the state file is only a fairness counter, so failure here
   # must not block stop/resume flows.
   if bash "$cmd" reset-state >/dev/null 2>&1; then
-    echo "🧹 reset load balancer state" >&2
+    echo "🧹 reset account pool state" >&2
   fi
   return 0
 }
@@ -647,8 +687,8 @@ PY
 }
 
 auth_src_default() {
-  # Only used when load balancer is disabled AND no env override is provided.
-  if lower_bool "$twf_use_lb"; then
+  # Only used when account pool is disabled AND no env override is provided.
+  if lower_bool "$twf_use_account_pool"; then
     echo ""
     return 0
   fi
@@ -683,23 +723,23 @@ start_worker() {
 
   local home_src
   home_src="$(get_env_override TWF_CODEX_HOME_SRC)"
-  if [[ -z "$home_src" ]] && lower_bool "$twf_use_lb"; then
+  if [[ -z "$home_src" ]] && lower_bool "$twf_use_account_pool"; then
     home_src="$(pick_codex_home_src "$worker" "$base")"
   fi
 
   local auth_src
   auth_src="$(get_env_override TWF_AUTH_SRC)"
-  if [[ -z "$auth_src" ]] && lower_bool "$twf_use_lb"; then
+  if [[ -z "$auth_src" ]] && lower_bool "$twf_use_account_pool"; then
     auth_src="$(pick_auth_src "$worker" "$base")"
   fi
-  if [[ -z "$auth_src" ]] && ! lower_bool "$twf_use_lb"; then
+  if [[ -z "$auth_src" ]] && ! lower_bool "$twf_use_account_pool"; then
     auth_src="$(auth_src_default)"
   fi
 
   local profile_final
   profile_final="$(get_env_override TWF_CODEX_PROFILE)"
-  # Only apply profile when load balancer is disabled.
-  if lower_bool "$twf_use_lb"; then
+  # Only apply profile when account pool is disabled.
+  if lower_bool "$twf_use_account_pool"; then
     profile_final=""
   elif [[ -z "$profile_final" ]]; then
     profile_final="$twf_profile_cfg"
@@ -1157,7 +1197,7 @@ tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="
 tmp.replace(p)
 PY
 
-  reset_load_balancer_state_if_all_stopped || true
+  reset_account_pool_state_if_all_stopped || true
 }
 
 resume_worker_inner() {
@@ -1241,19 +1281,49 @@ def parse_yaml(text: str) -> dict:
         out[key] = value.strip()
     return out
 
-cfg = {}
-try:
-    if raw_cfg.lstrip().startswith("{"):
-        cfg = json.loads(raw_cfg)
-        if not isinstance(cfg, dict):
-            cfg = {}
-    else:
-        cfg = parse_yaml(raw_cfg)
-except Exception:
-    cfg = parse_yaml(raw_cfg)
+def load_cfg(text: str) -> dict:
+    raw_s = text.strip()
+    if not raw_s:
+        return {}
 
-model = cfg.get("model") if isinstance(cfg.get("model"), str) else "gpt-5.2"
-effort = cfg.get("model_reasoning_effort") if isinstance(cfg.get("model_reasoning_effort"), str) else "xhigh"
+    if raw_s.startswith("{"):
+        try:
+            data = json.loads(raw_s)
+        except Exception:
+            data = None
+        if isinstance(data, dict):
+            return data
+
+    try:
+        import yaml  # type: ignore
+
+        data = yaml.safe_load(text)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+
+    return parse_yaml(text)
+
+cfg = load_cfg(raw_cfg)
+
+def get_path(data: dict, path: list[str]):
+    cur = data
+    for k in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(k)
+    return cur
+
+def get_str(*paths: list[str], default: str = "") -> str:
+    for p in paths:
+        v = get_path(cfg, p)
+        if isinstance(v, str):
+            return v.strip()
+    return default
+
+model = get_str(["codex", "model"], ["model"], default="gpt-5.2")
+effort = get_str(["codex", "model_reasoning_effort"], ["model_reasoning_effort"], default="xhigh")
 model = model.strip()
 effort = effort.strip()
 
@@ -1353,8 +1423,8 @@ PY
     fi
 
     # Always resolve template/auth from CURRENT config (not stale state), so operators
-    # can stop -> toggle twf_use_load_balancer/team dir -> resume and have it apply.
-    if lower_bool "$twf_use_lb"; then
+    # can stop -> toggle twf_use_account_pool/team dir -> resume and have it apply.
+    if lower_bool "$twf_use_account_pool"; then
       codex_home_src_final="$(get_env_override TWF_CODEX_HOME_SRC)"
       if [[ -z "$codex_home_src_final" ]]; then
         codex_home_src_final="$(pick_codex_home_src "$tmux_session" "$(base_from_full "$tmux_session")")"
@@ -1385,8 +1455,8 @@ PY
 
     # Force resume command to follow CURRENT config file:
     # - always override model/model_reasoning_effort
-    # - when LB=true, profile is disabled (no -p/--profile)
-    # - when LB=false, profile follows twf_profile (empty => remove)
+    # - when account_pool=true, profile is disabled (no -p/--profile)
+    # - when account_pool=false, profile follows twf_profile (empty => remove)
     readarray -t _cmd_cfg < <(
       python3 - "$config_file" <<'PY'
 import json
@@ -1432,30 +1502,60 @@ def parse_yaml(text: str) -> dict:
     out[key] = value.strip()
   return out
 
-data = {}
-try:
-  if raw.lstrip().startswith("{"):
-    data = json.loads(raw)
-    if not isinstance(data, dict):
-      data = {}
-  else:
-    data = parse_yaml(raw)
-except Exception:
-  data = parse_yaml(raw)
+def load_cfg(text: str) -> dict:
+  raw_s = text.strip()
+  if not raw_s:
+    return {}
 
-model = data.get("model") if isinstance(data.get("model"), str) else ""
-effort = data.get("model_reasoning_effort") if isinstance(data.get("model_reasoning_effort"), str) else ""
-print((model or "").strip())
-print((effort or "").strip())
+  if raw_s.startswith("{"):
+    try:
+      data = json.loads(raw_s)
+    except Exception:
+      data = None
+    if isinstance(data, dict):
+      return data
+
+  try:
+    import yaml  # type: ignore
+
+    data = yaml.safe_load(text)
+    if isinstance(data, dict):
+      return data
+  except Exception:
+    pass
+
+  return parse_yaml(text)
+
+data = load_cfg(raw)
+
+def get_path(data: dict, path: list[str]):
+  cur = data
+  for k in path:
+    if not isinstance(cur, dict):
+      return None
+    cur = cur.get(k)
+  return cur
+
+def get_str(*paths: list[str], default: str = "") -> str:
+  for p in paths:
+    v = get_path(data, p)
+    if isinstance(v, str):
+      return v.strip()
+  return default
+
+model = get_str(["codex", "model"], ["model"], default="")
+effort = get_str(["codex", "model_reasoning_effort"], ["model_reasoning_effort"], default="")
+print(model)
+print(effort)
 PY
     )
     _model_cfg="${_cmd_cfg[0]:-}"
     _effort_cfg="${_cmd_cfg[1]:-}"
 
-    _desired_profile="$profile_final"
-    if lower_bool "$twf_use_lb"; then
-      _desired_profile=""
-    fi
+	    _desired_profile="$profile_final"
+	    if lower_bool "$twf_use_account_pool"; then
+	      _desired_profile=""
+	    fi
 
     codex_cmd="$(python3 - "$codex_cmd" "$_model_cfg" "$_effort_cfg" "$_desired_profile" <<'PY'
 import shlex

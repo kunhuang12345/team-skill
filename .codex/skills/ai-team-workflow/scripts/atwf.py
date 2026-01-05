@@ -2,26 +2,29 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import shutil
+import shlex
 import subprocess
 import sys
+from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 
-SUPPORTED_ROLES = ("pm", "arch", "prod", "dev", "qa", "ops", "coord", "liaison")
-INITIAL_TRIO = (
-    ("coord", "main", "internal routing + escalation triage"),
-    ("liaison", "main", "user communication + clarifications"),
-    ("pm", "main", "overall delivery / milestone planning"),
-)
+DEFAULT_ROLES = ("pm", "arch", "prod", "dev", "qa", "ops", "coord", "liaison")
+DEFAULT_ROLE_SCOPES: dict[str, str] = {
+    "coord": "internal routing + escalation triage",
+    "liaison": "user communication + clarifications",
+    "pm": "overall delivery / milestone planning",
+}
 FULL_NAME_RE = re.compile(r"^.+-[0-9]{8}-[0-9]{6}-[0-9]+$")
 
 
@@ -51,14 +54,7 @@ def _config_file() -> Path:
     return Path(__file__).resolve().with_name("atwf_config.yaml")
 
 
-def _read_simple_yaml_kv(path: Path) -> dict[str, str]:
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return {}
-    except OSError:
-        return {}
-
+def _parse_simple_yaml_kv(raw: str) -> dict[str, str]:
     out: dict[str, str] = {}
     for line in raw.splitlines():
         stripped = line.strip()
@@ -90,14 +86,228 @@ def _read_simple_yaml_kv(path: Path) -> dict[str, str]:
     return out
 
 
+def _read_simple_yaml_kv(path: Path) -> dict[str, str]:
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        return {}
+
+    return _parse_simple_yaml_kv(raw)
+
+
+def _read_yaml_or_json(path: Path) -> dict[str, Any]:
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        return {}
+
+    raw_s = raw.strip()
+    if not raw_s:
+        return {}
+
+    # Config files may be provided as JSON (twf supports *.json fallback) or
+    # YAML. Prefer JSON when it clearly looks like JSON.
+    if raw_s.startswith("{"):
+        try:
+            parsed = json.loads(raw_s)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            return parsed
+
+    try:
+        import yaml  # type: ignore
+
+        parsed = yaml.safe_load(raw)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    # Best-effort fallback for environments without PyYAML or invalid YAML.
+    return _parse_simple_yaml_kv(raw)
+
+
+def _cfg_get(cfg: dict[str, Any], path: tuple[str, ...]) -> Any:
+    cur: Any = cfg
+    for key in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return cur
+
+
+def _cfg_get_str(cfg: dict[str, Any], *paths: tuple[str, ...], default: str = "") -> str:
+    for p in paths:
+        v = _cfg_get(cfg, p)
+        if isinstance(v, str):
+            return v.strip()
+    return default
+
+
+@dataclass(frozen=True)
+class TeamPolicy:
+    root_role: str
+    enabled_roles: frozenset[str]
+    can_hire: dict[str, frozenset[str]]
+
+    broadcast_allowed_roles: frozenset[str]
+    broadcast_exclude_roles: frozenset[str]
+
+    comm_allow_parent_child: bool
+    comm_direct_allow: dict[str, frozenset[str]]
+    comm_require_handoff: bool
+    comm_handoff_creators: frozenset[str]
+
+
+def _norm_role(raw: Any) -> str:
+    if not isinstance(raw, str):
+        return ""
+    return raw.strip().lower()
+
+
+def _role_set(raw: Any) -> set[str]:
+    if isinstance(raw, str):
+        parts = [p.strip() for p in raw.split(",")]
+        return {p.lower() for p in parts if p}
+    if isinstance(raw, list):
+        out: set[str] = set()
+        for item in raw:
+            r = _norm_role(item)
+            if r:
+                out.add(r)
+        return out
+    return set()
+
+
+def _available_template_roles() -> set[str]:
+    td = _templates_dir()
+    if not td.is_dir():
+        return set()
+    roles: set[str] = set()
+    for p in td.glob("*.md"):
+        if p.name == "command_rules.md":
+            continue
+        stem = p.stem.strip().lower()
+        if stem:
+            roles.add(stem)
+    return roles
+
+
+def _role_map(raw: Any) -> dict[str, set[str]]:
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, set[str]] = {}
+    for k, v in raw.items():
+        key = _norm_role(k)
+        if not key:
+            continue
+        out[key] = _role_set(v)
+    return out
+
+
+@lru_cache(maxsize=1)
+def _policy() -> TeamPolicy:
+    cfg = _read_yaml_or_json(_config_file())
+
+    templates = _available_template_roles()
+    default_enabled = set(DEFAULT_ROLES) & templates if templates else set(DEFAULT_ROLES)
+
+    enabled = _role_set(_cfg_get(cfg, ("team", "policy", "enabled_roles")))
+    if not enabled:
+        enabled = set(default_enabled)
+
+    root_role = _norm_role(_cfg_get_str(cfg, ("team", "policy", "root_role"), default="coord")) or "coord"
+
+    if enabled and root_role not in enabled:
+        raise SystemExit(f"❌ policy.root_role={root_role!r} is not in enabled_roles")
+
+    if templates:
+        missing_templates = sorted(r for r in enabled if (td := (_templates_dir() / f"{r}.md")) and not td.is_file())
+        if missing_templates:
+            raise SystemExit(f"❌ enabled_roles missing templates/*.md: {', '.join(missing_templates)}")
+
+    can_hire_raw = _role_map(_cfg_get(cfg, ("team", "policy", "can_hire")))
+    can_hire: dict[str, frozenset[str]] = {}
+    for parent_role, children in can_hire_raw.items():
+        if parent_role not in enabled:
+            continue
+        filtered = {c for c in children if c in enabled}
+        can_hire[parent_role] = frozenset(sorted(filtered))
+
+    bc_allowed = _role_set(_cfg_get(cfg, ("team", "policy", "broadcast", "allowed_roles")))
+    if not bc_allowed:
+        bc_allowed = {root_role}
+    bc_allowed = {r for r in bc_allowed if r in enabled}
+
+    bc_exclude = _role_set(_cfg_get(cfg, ("team", "policy", "broadcast", "exclude_roles")))
+    bc_exclude = {r for r in bc_exclude if r in enabled}
+
+    comm_allow_parent_child = _cfg_get(cfg, ("team", "policy", "comm", "allow_parent_child"))
+    if not isinstance(comm_allow_parent_child, bool):
+        comm_allow_parent_child = True
+
+    comm_require_handoff = _cfg_get(cfg, ("team", "policy", "comm", "require_handoff"))
+    if not isinstance(comm_require_handoff, bool):
+        comm_require_handoff = True
+
+    handoff_creators = _role_set(_cfg_get(cfg, ("team", "policy", "comm", "handoff_creators")))
+    if not handoff_creators:
+        handoff_creators = {root_role}
+    handoff_creators = {r for r in handoff_creators if r in enabled}
+
+    direct_allow_raw = _role_map(_cfg_get(cfg, ("team", "policy", "comm", "direct_allow")))
+    direct_allow: dict[str, set[str]] = {r: set() for r in enabled}
+    for a, bs in direct_allow_raw.items():
+        if a not in enabled:
+            continue
+        for b in bs:
+            if b not in enabled:
+                continue
+            direct_allow.setdefault(a, set()).add(b)
+            direct_allow.setdefault(b, set()).add(a)
+
+    pairs_raw = _cfg_get(cfg, ("team", "policy", "comm", "direct_allow_pairs"))
+    if isinstance(pairs_raw, list):
+        for item in pairs_raw:
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                continue
+            a = _norm_role(item[0])
+            b = _norm_role(item[1])
+            if not a or not b or a not in enabled or b not in enabled:
+                continue
+            direct_allow.setdefault(a, set()).add(b)
+            direct_allow.setdefault(b, set()).add(a)
+
+    direct_allow_frozen: dict[str, frozenset[str]] = {}
+    for r in enabled:
+        direct_allow_frozen[r] = frozenset(sorted(direct_allow.get(r, set())))
+
+    return TeamPolicy(
+        root_role=root_role,
+        enabled_roles=frozenset(sorted(enabled)),
+        can_hire=can_hire,
+        broadcast_allowed_roles=frozenset(sorted(bc_allowed)),
+        broadcast_exclude_roles=frozenset(sorted(bc_exclude)),
+        comm_allow_parent_child=bool(comm_allow_parent_child),
+        comm_direct_allow=direct_allow_frozen,
+        comm_require_handoff=bool(comm_require_handoff),
+        comm_handoff_creators=frozenset(sorted(handoff_creators)),
+    )
+
+
 def _default_team_dir() -> Path:
     env_dir = os.environ.get("AITWF_DIR", "").strip()
     if env_dir:
         return _expand_path(env_dir)
 
     skill_dir = _skill_dir()
-    cfg = _read_simple_yaml_kv(_config_file())
-    share_dir = cfg.get("share_dir", "").strip()
+    cfg = _read_yaml_or_json(_config_file())
+    share_dir = _cfg_get_str(cfg, ("share", "dir"), ("share_dir",))
     if share_dir:
         return _expand_path_from(skill_dir, share_dir)
 
@@ -140,6 +350,21 @@ def _resolve_twf() -> Path:
     )
 
 
+def _resolve_twf_config_path(twf: Path) -> Path | None:
+    tmux_skill_dir = twf.resolve().parents[1]
+    cfg_override = os.environ.get("TWF_CODEX_CMD_CONFIG", "").strip()
+    if cfg_override:
+        cfg_path = _expand_path(cfg_override)
+    else:
+        cfg_path = tmux_skill_dir / "scripts" / "twf_config.yaml"
+        if not cfg_path.is_file():
+            json_fallback = tmux_skill_dir / "scripts" / "twf_config.json"
+            if json_fallback.is_file():
+                cfg_path = json_fallback
+
+    return cfg_path if cfg_path.is_file() else None
+
+
 def _resolve_twf_state_dir(twf: Path) -> Path:
     # Mirror twf's state dir resolution (subset):
     # - env override: TWF_STATE_DIR
@@ -149,10 +374,10 @@ def _resolve_twf_state_dir(twf: Path) -> Path:
         return _expand_path(override)
 
     tmux_skill_dir = twf.resolve().parents[1]
-    cfg_path = tmux_skill_dir / "scripts" / "twf_config.yaml"
-    cfg = _read_simple_yaml_kv(cfg_path)
+    cfg_path = _resolve_twf_config_path(twf)
+    cfg = _read_yaml_or_json(cfg_path) if cfg_path else {}
 
-    mode = (cfg.get("twf_state_dir_mode", "") or "auto").strip().lower()
+    mode = (_cfg_get_str(cfg, ("twf", "state_dir", "mode"), ("twf_state_dir_mode",), default="auto") or "auto").lower()
     if mode not in {"auto", "global", "manual"}:
         mode = "auto"
 
@@ -160,12 +385,225 @@ def _resolve_twf_state_dir(twf: Path) -> Path:
         return Path.home() / ".twf"
 
     if mode == "manual":
-        raw = (cfg.get("twf_state_dir", "") or "").strip()
+        raw = _cfg_get_str(cfg, ("twf", "state_dir", "dir"), ("twf_state_dir",))
         if not raw:
             raise SystemExit(f"❌ twf_state_dir_mode=manual but twf_state_dir is empty in: {cfg_path}")
         return _expand_path(raw)
 
     return tmux_skill_dir / ".twf"
+
+
+_TRUE_STRINGS = frozenset({"1", "true", "yes", "y", "on"})
+
+
+def _as_bool(value: object, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in _TRUE_STRINGS
+    return default
+
+
+def _cfg_get_boolish(cfg: dict[str, Any], *paths: tuple[str, ...], default: bool = False) -> bool:
+    for p in paths:
+        v = _cfg_get(cfg, p)
+        if v is None:
+            continue
+        return _as_bool(v, default=default)
+    return default
+
+
+def _cfg_get_floatish(cfg: dict[str, Any], *paths: tuple[str, ...], default: float) -> float:
+    for p in paths:
+        v = _cfg_get(cfg, p)
+        if v is None:
+            continue
+        try:
+            return float(v)  # type: ignore[arg-type]
+        except Exception:
+            return float(default)
+    return float(default)
+
+
+def _cfg_get_intish(cfg: dict[str, Any], *paths: tuple[str, ...], default: int) -> int:
+    for p in paths:
+        v = _cfg_get(cfg, p)
+        if v is None:
+            continue
+        try:
+            return int(v)  # type: ignore[arg-type]
+        except Exception:
+            return int(default)
+    return int(default)
+
+
+def _cap_watch_session_name(project_root: Path) -> str:
+    base = re.sub(r"[^a-zA-Z0-9_-]+", "-", project_root.name or "project").strip("-") or "project"
+    digest = hashlib.sha1(str(project_root).encode("utf-8")).hexdigest()[:8]
+    # Keep it short-ish; tmux session names show up everywhere.
+    return f"cap-watch-{base[:24]}-{digest}"
+
+
+def _resolve_cap_cmd(*, twf: Path, twf_cfg: dict[str, Any]) -> Path | None:
+    raw = os.environ.get("TWF_ACCOUNT_POOL_CMD", "").strip() or _cfg_get_str(
+        twf_cfg,
+        ("twf", "account_pool", "cmd"),
+        ("twf_account_pool_cmd",),
+        default="",
+    )
+    tmux_skill_dir = twf.resolve().parents[1]
+
+    if raw:
+        p = Path(os.path.expanduser(raw))
+        if not p.is_absolute():
+            p = (tmux_skill_dir / p).resolve()
+        else:
+            p = p.resolve()
+        if p.is_file():
+            return p
+
+    skills_dir = tmux_skill_dir.parent
+    sibling = skills_dir / "codex-account-pool" / "scripts" / "cap"
+    if sibling.is_file():
+        return sibling.resolve()
+
+    global_path = Path.home() / ".codex" / "skills" / "codex-account-pool" / "scripts" / "cap"
+    if global_path.is_file():
+        return global_path.resolve()
+
+    return None
+
+
+def _normalize_auth_strategy(raw: str) -> str:
+    s = (raw or "").strip().lower()
+    if s in {"rr", "round_robin", "round-robin"}:
+        return "team_cycle"
+    if s in {"least_used", "least-used"}:
+        return "balanced"
+    return s
+
+
+def _ensure_cap_watch_team(*, twf: Path, team_dir: Path, registry: Path) -> None:
+    """
+    Start a background `cap watch-team` tmux session when:
+    - twf.account_pool.enabled=true
+    - twf.account_pool.auth_team.strategy=team_cycle
+    """
+    reg = _load_registry(registry)
+    members = reg.get("members")
+    if not isinstance(members, list) or not any(isinstance(m, dict) and str(m.get("full", "")).strip() for m in members):
+        return
+
+    try:
+        twf_cfg_path = _resolve_twf_config_path(twf)
+        twf_cfg = _read_yaml_or_json(twf_cfg_path) if twf_cfg_path else {}
+    except Exception:
+        twf_cfg = {}
+
+    enabled = _cfg_get_boolish(twf_cfg, ("twf", "account_pool", "enabled"), ("twf_use_account_pool",), default=False)
+    if not enabled:
+        return
+
+    strategy_raw = _cfg_get_str(
+        twf_cfg,
+        ("twf", "account_pool", "auth_team", "strategy"),
+        ("twf_auth_team_strategy",),
+        default="",
+    )
+    strategy = _normalize_auth_strategy(strategy_raw)
+    if strategy != "team_cycle":
+        return
+
+    watch_enabled = _cfg_get_boolish(twf_cfg, ("twf", "account_pool", "watch_team", "enabled"), default=True)
+    if not watch_enabled:
+        return
+
+    auth_dir_raw = _cfg_get_str(
+        twf_cfg,
+        ("twf", "account_pool", "auth_team", "dir"),
+        ("twf_auth_team_dir",),
+        default="",
+    )
+    if not auth_dir_raw:
+        _eprint("⚠️ account_pool enabled but auth_team.dir is empty; not starting cap watch-team")
+        return
+    auth_dir = _expand_path(auth_dir_raw)
+    if not auth_dir.is_dir():
+        _eprint(f"⚠️ auth_team.dir is not a directory: {auth_dir} (not starting cap watch-team)")
+        return
+
+    auth_glob = _cfg_get_str(
+        twf_cfg,
+        ("twf", "account_pool", "auth_team", "glob"),
+        ("twf_auth_team_glob",),
+        default="auth.json*",
+    )
+
+    interval = _cfg_get_floatish(twf_cfg, ("twf", "account_pool", "watch_team", "interval"), default=180.0)
+    grace = _cfg_get_floatish(twf_cfg, ("twf", "account_pool", "watch_team", "grace"), default=300.0)
+    max_retries = _cfg_get_intish(twf_cfg, ("twf", "account_pool", "watch_team", "max_retries"), default=10)
+    needle = _cfg_get_str(
+        twf_cfg,
+        ("twf", "account_pool", "watch_team", "needle"),
+        default="You've hit your usage limit.",
+    )
+    message = _cfg_get_str(
+        twf_cfg,
+        ("twf", "account_pool", "watch_team", "message"),
+        default="Task continues. If you are waiting for a reply, please ignore this message.",
+    )
+
+    cap_cmd = _resolve_cap_cmd(twf=twf, twf_cfg=twf_cfg)
+    if not cap_cmd:
+        _eprint("⚠️ account_pool enabled but codex-account-pool/cap not found; not starting cap watch-team")
+        return
+
+    session = _cap_watch_session_name(_expected_project_root())
+    if _tmux_running(session):
+        return
+
+    exports: list[str] = []
+    exports.append(f"export CAP_STATUS_SESSION_PREFIX={shlex.quote(session)};")
+    for k in ("CAP_STATE_FILE", "CAP_SOURCES", "CAP_STRATEGY"):
+        v = os.environ.get(k, "").strip()
+        if v:
+            exports.append(f"export {k}={shlex.quote(v)};")
+
+    cmd_parts = [
+        "bash",
+        str(cap_cmd),
+        "watch-team",
+        str(auth_dir),
+        "--glob",
+        auth_glob,
+        "--registry",
+        str(registry),
+        "--interval",
+        str(interval),
+        "--grace",
+        str(grace),
+        "--max-retries",
+        str(max_retries),
+        "--needle",
+        needle,
+        "--message",
+        message,
+    ]
+    cmd_line = " ".join(shlex.quote(p) for p in cmd_parts)
+    launch = "".join(exports) + f"exec {cmd_line}"
+
+    res = subprocess.run(
+        ["tmux", "new-session", "-d", "-s", session, "-c", str(_expected_project_root()), "bash", "-lc", launch],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if res.returncode != 0:
+        _eprint(f"⚠️ failed to start cap watch-team tmux session: {session}")
+        return
+    _eprint(f"🛰️ cap watch-team started: {session}")
 
 
 def _rm_tree(path: Path) -> None:
@@ -190,10 +628,14 @@ def cmd_reset(args: argparse.Namespace) -> int:
     Reset current environment by deleting all local temp/state artifacts:
     - ai-team-workflow share dir (registry/task/design)
     - tmux-workflow workers for this project (tmux sessions, state files, worker homes)
-    - codex-load-balancer local state.json
+    - codex-account-pool local state.json (optional)
     """
     expected_root = _expected_project_root()
     twf = _resolve_twf()
+    # Stop the account-pool watcher early to avoid races during reset.
+    watch_session = _cap_watch_session_name(expected_root)
+    _tmux_kill_session(watch_session)
+    _tmux_kill_session(f"{watch_session}-status")
 
     # 1) Stop/remove tmux-workflow workers for this project.
     state_dir = _resolve_twf_state_dir(twf)
@@ -225,8 +667,12 @@ def cmd_reset(args: argparse.Namespace) -> int:
                 print(f"  codex_home: {codex_home}")
         team_dir = _default_team_dir()
         print(f"ai_team_share_dir: {team_dir}")
-        lb_state = (_skill_dir().parent / "codex-load-balancer" / "share" / "state.json").resolve()
-        print(f"clb_state: {lb_state}")
+        pool_state = (_skill_dir().parent / "codex-account-pool" / "share" / "state.json").resolve()
+        print(f"cap_watch_session: {_cap_watch_session_name(expected_root)}")
+        if getattr(args, "wipe_account_pool", False):
+            print(f"cap_state: {pool_state}")
+        else:
+            print(f"cap_state: {pool_state} (preserved; pass --wipe-account-pool to delete)")
         return 0
 
     for p, data in worker_candidates:
@@ -265,24 +711,25 @@ def cmd_reset(args: argparse.Namespace) -> int:
     team_dir = _default_team_dir()
     _rm_tree(team_dir)
 
-    # 3) Remove local codex-load-balancer state (per-project).
-    clb_share = _skill_dir().parent / "codex-load-balancer" / "share"
-    clb_state = clb_share / "state.json"
-    clb_lock = clb_share / "state.json.lock"
-    try:
-        clb_state.unlink()
-    except Exception:
-        pass
-    try:
-        clb_lock.unlink()
-    except Exception:
-        pass
-    # If share becomes empty, remove it.
-    try:
-        if clb_share.is_dir() and not any(clb_share.iterdir()):
-            clb_share.rmdir()
-    except Exception:
-        pass
+    # 3) Optionally wipe local codex-account-pool state (per-project).
+    if getattr(args, "wipe_account_pool", False):
+        cap_share = _skill_dir().parent / "codex-account-pool" / "share"
+        cap_state = cap_share / "state.json"
+        cap_lock = cap_share / "state.json.lock"
+        try:
+            cap_state.unlink()
+        except Exception:
+            pass
+        try:
+            cap_lock.unlink()
+        except Exception:
+            pass
+        # If share becomes empty, remove it.
+        try:
+            if cap_share.is_dir() and not any(cap_share.iterdir()):
+                cap_share.rmdir()
+        except Exception:
+            pass
 
     _eprint("✅ reset complete")
     return 0
@@ -305,8 +752,9 @@ def _run_twf(twf: Path, args: list[str], *, input_text: str | None = None) -> su
 
 def _require_role(role: str) -> str:
     r = role.strip().lower()
-    if r not in SUPPORTED_ROLES:
-        raise SystemExit(f"❌ unsupported role: {role} (supported: {', '.join(SUPPORTED_ROLES)})")
+    enabled = _policy().enabled_roles
+    if r not in enabled:
+        raise SystemExit(f"❌ unsupported role: {role} (enabled: {', '.join(sorted(enabled))})")
     return r
 
 
@@ -370,9 +818,17 @@ def _locked(lock_path: Path):
 def _load_registry(registry: Path) -> dict[str, Any]:
     data = _read_json(registry)
     if not data:
-        return {"version": 1, "created_at": _now(), "updated_at": _now(), "members": []}
+        return {
+            "version": 1,
+            "created_at": _now(),
+            "updated_at": _now(),
+            "members": [],
+            "permits": [],
+        }
     if not isinstance(data.get("members"), list):
         data["members"] = []
+    if not isinstance(data.get("permits"), list):
+        data["permits"] = []
     if not isinstance(data.get("version"), int):
         data["version"] = 1
     if not isinstance(data.get("created_at"), str):
@@ -790,8 +1246,9 @@ def _resolve_target_full(data: dict[str, Any], target: str) -> str | None:
         full = str(m.get("full", "")).strip()
         return full or None
 
-    if target in SUPPORTED_ROLES:
-        m2 = _resolve_latest_by_role(data, target)
+    maybe_role = target.lower()
+    if maybe_role in _policy().enabled_roles:
+        m2 = _resolve_latest_by_role(data, maybe_role)
         if m2:
             full = str(m2.get("full", "")).strip()
             return full or None
@@ -800,6 +1257,197 @@ def _resolve_target_full(data: dict[str, Any], target: str) -> str | None:
         return target
 
     return None
+
+
+def _tmux_self_full() -> str | None:
+    pane = os.environ.get("TMUX_PANE", "").strip()
+    if pane:
+        res = _run(["tmux", "display-message", "-p", "-t", pane, "#S"])
+        if res.returncode == 0:
+            name = res.stdout.strip()
+            if name:
+                return name
+
+    res2 = _run(["tmux", "display-message", "-p", "#S"])
+    if res2.returncode != 0:
+        return None
+    name2 = res2.stdout.strip()
+    return name2 or None
+
+
+def _resolve_actor_full(data: dict[str, Any], *, as_target: str | None) -> str:
+    if as_target:
+        full = _resolve_target_full(data, as_target)
+        if not full:
+            raise SystemExit(f"❌ --as target not found in registry: {as_target}")
+        return full
+
+    full = _tmux_self_full()
+    if full:
+        return full
+    raise SystemExit("❌ this command must run inside tmux or pass --as <full|base|role>")
+
+
+def _member_role(m: dict[str, Any] | None) -> str:
+    if not isinstance(m, dict):
+        return ""
+    return str(m.get("role", "")).strip()
+
+
+def _member_base(m: dict[str, Any] | None) -> str:
+    if not isinstance(m, dict):
+        return ""
+    base = str(m.get("base", "")).strip()
+    full = str(m.get("full", "")).strip()
+    return base or full
+
+
+def _is_direct_parent_child(data: dict[str, Any], a_full: str, b_full: str) -> bool:
+    ma = _resolve_member(data, a_full)
+    mb = _resolve_member(data, b_full)
+    if not ma or not mb:
+        return False
+    pa = str(ma.get("parent", "")).strip() if isinstance(ma.get("parent"), str) else ""
+    pb = str(mb.get("parent", "")).strip() if isinstance(mb.get("parent"), str) else ""
+    return pa == b_full or pb == a_full
+
+
+def _permit_allows(data: dict[str, Any], *, a_base: str, b_base: str) -> bool:
+    permits = data.get("permits")
+    if not isinstance(permits, list):
+        return False
+    a_base = a_base.strip()
+    b_base = b_base.strip()
+    if not a_base or not b_base:
+        return False
+
+    now = datetime.now()
+    for p in permits:
+        if not isinstance(p, dict):
+            continue
+        a = str(p.get("a", "")).strip()
+        b = str(p.get("b", "")).strip()
+        if not a or not b:
+            continue
+        if not ((a == a_base and b == b_base) or (a == b_base and b == a_base)):
+            continue
+        exp = str(p.get("expires_at", "")).strip()
+        if exp:
+            try:
+                if datetime.fromisoformat(exp) <= now:
+                    continue
+            except Exception:
+                # If expires_at is malformed, treat as non-expiring.
+                pass
+        return True
+    return False
+
+
+def _add_handoff_permit(
+    data: dict[str, Any],
+    *,
+    a_base: str,
+    b_base: str,
+    created_by: str,
+    created_by_role: str,
+    reason: str,
+    ttl_seconds: int | None,
+) -> dict[str, Any]:
+    permits = data.get("permits")
+    if not isinstance(permits, list):
+        permits = []
+        data["permits"] = permits
+
+    a_base = a_base.strip()
+    b_base = b_base.strip()
+    if not a_base or not b_base:
+        raise SystemExit("❌ invalid handoff endpoints (missing base)")
+    if a_base == b_base:
+        raise SystemExit("❌ handoff endpoints must be different")
+
+    now = datetime.now()
+    created_at = now.isoformat(timespec="seconds")
+    expires_at = ""
+    if isinstance(ttl_seconds, int) and ttl_seconds > 0:
+        expires_at = (now + timedelta(seconds=ttl_seconds)).isoformat(timespec="seconds")
+
+    permit_id = f"handoff-{now.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}-{len(permits) + 1}"
+    payload: dict[str, Any] = {
+        "id": permit_id,
+        "a": a_base,
+        "b": b_base,
+        "created_by": created_by,
+        "created_by_role": created_by_role,
+        "created_at": created_at,
+    }
+    if expires_at:
+        payload["expires_at"] = expires_at
+    if reason.strip():
+        payload["reason"] = reason.strip()
+    permits.append(payload)
+    return payload
+
+
+def _comm_allowed(
+    policy: TeamPolicy,
+    data: dict[str, Any],
+    *,
+    actor_full: str,
+    target_full: str,
+) -> tuple[bool, str]:
+    if actor_full == target_full:
+        return True, "self"
+
+    actor_m = _resolve_member(data, actor_full)
+    target_m = _resolve_member(data, target_full)
+    if not actor_m:
+        return False, f"actor not registered: {actor_full}"
+    if not target_m:
+        return False, f"target not registered: {target_full}"
+
+    actor_role = _member_role(actor_m)
+    target_role = _member_role(target_m)
+    if actor_role not in policy.enabled_roles:
+        return False, f"actor role not enabled: {actor_role or '(missing)'}"
+    if target_role not in policy.enabled_roles:
+        return False, f"target role not enabled: {target_role or '(missing)'}"
+
+    if policy.comm_allow_parent_child and _is_direct_parent_child(data, actor_full, target_full):
+        return True, "parent-child"
+
+    allowed_roles = policy.comm_direct_allow.get(actor_role, frozenset())
+    if target_role in allowed_roles:
+        return True, "direct-allow"
+
+    if not policy.comm_require_handoff:
+        return True, "handoff-not-required"
+
+    actor_base = _member_base(actor_m)
+    target_base = _member_base(target_m)
+    if _permit_allows(data, a_base=actor_base, b_base=target_base):
+        return True, "handoff-permit"
+
+    return False, f"handoff required for {actor_role}->{target_role} (no permit)"
+
+
+def _require_comm_allowed(
+    policy: TeamPolicy,
+    data: dict[str, Any],
+    *,
+    actor_full: str,
+    target_full: str,
+) -> None:
+    ok, reason = _comm_allowed(policy, data, actor_full=actor_full, target_full=target_full)
+    if ok:
+        return
+    root = policy.root_role
+    raise SystemExit(
+        "❌ communication not permitted by policy.\n"
+        f"   actor:  {actor_full}\n"
+        f"   target: {target_full}\n"
+        f"   reason: {reason}\n"
+        f"   hint: request a handoff via `{root}` (or run: atwf handoff --as {root} <from> <to> --reason \"...\")"
+    )
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -825,20 +1473,25 @@ def cmd_init(args: argparse.Namespace) -> int:
         no_bootstrap=bool(args.no_bootstrap),
     )
 
+    root_role = _policy().root_role
     pm_full = trio.get("pm", "")
     if not pm_full:
         raise SystemExit("❌ failed to resolve PM worker")
 
-    coord_full = trio.get("coord", "")
+    root_full = trio.get(root_role, "")
     liaison_full = trio.get("liaison", "")
-    _eprint("✅ initial trio ready:")
+    _eprint("✅ initial team ready:")
     if pm_full:
         _eprint(f"   pm:      {pm_full}")
-    if coord_full:
-        _eprint(f"   coord:   {coord_full}")
+    if root_full:
+        _eprint(f"   {root_role}:   {root_full}")
     if liaison_full:
         _eprint(f"   liaison: {liaison_full}")
-    _eprint("   tip: enter a role via: atwf attach pm|coord|liaison")
+    _eprint(f"   tip: enter a role via: atwf attach pm|{root_role}|liaison")
+
+    # If account_pool is enabled in twf_config and team_cycle is selected,
+    # start a background watcher that rotates the whole team when limits are hit.
+    _ensure_cap_watch_team(twf=twf, team_dir=team_dir, registry=registry)
 
     if task_path:
         msg = "[TASK]\n" f"Shared task file: {task_path}\n" "Please read it and proceed.\n"
@@ -861,52 +1514,63 @@ def _init_trio(
 ) -> dict[str, str]:
     expected_root = _expected_project_root()
 
+    policy = _policy()
+    root_role = policy.root_role
+
+    want_pm = "pm"
+    want_liaison = "liaison"
+    required = {root_role, want_pm, want_liaison}
+    missing = sorted(r for r in required if r not in policy.enabled_roles)
+    if missing:
+        raise SystemExit(f"❌ init requires enabled_roles to include: {', '.join(missing)}")
+
+    base_root = _base_name(root_role, "main")
+
+    child_roles = [r for r in [want_pm, want_liaison] if r != root_role]
+    for child_role in child_roles:
+        if child_role not in policy.can_hire.get(root_role, frozenset()):
+            raise SystemExit(f"❌ policy.can_hire: {root_role} cannot hire {child_role} (init needs it)")
+
+    init_children: list[tuple[str, str, str]] = []
+    for child_role in child_roles:
+        init_children.append(
+            (
+                child_role,
+                _base_name(child_role, "main"),
+                DEFAULT_ROLE_SCOPES.get(child_role, ""),
+            )
+        )
+
     out: dict[str, str] = {}
-    for role, label, scope in INITIAL_TRIO:
-        base = _base_name(role, label)
 
-        existing_full: str | None = None
-        if not force_new:
-            data = _load_registry(registry)
-            m = _find_latest_member_by(data, role=role, base=base)
-            if m:
-                candidate = str(m.get("full", "")).strip() or None
-                state_file = _member_state_file(m)
-                if (
-                    candidate
-                    and state_file
-                    and state_file.is_file()
-                    and _state_file_matches_project(state_file, expected_root)
-                ):
-                    if not _tmux_running(candidate):
-                        # Best effort: resume if the state file exists but tmux session is stopped.
-                        _run_twf(twf, ["resume", candidate, "--no-tree"])
-                    if _tmux_running(candidate):
-                        existing_full = candidate
+    def reuse_full(*, role: str, base: str) -> str | None:
+        data0 = _load_registry(registry)
+        m0 = _find_latest_member_by(data0, role=role, base=base)
+        if not m0:
+            return None
+        candidate = str(m0.get("full", "")).strip() or None
+        state_file = _member_state_file(m0)
+        if not (candidate and state_file and state_file.is_file() and _state_file_matches_project(state_file, expected_root)):
+            return None
+        if not _tmux_running(candidate):
+            _run_twf(twf, ["resume", candidate, "--no-tree"])
+        return candidate if _tmux_running(candidate) else None
 
-        if existing_full:
-            # Keep registry clean: remove duplicates for the same role/base.
-            lock = team_dir / ".lock"
-            with _locked(lock):
-                data = _load_registry(registry)
-                _prune_members_by(data, role=role, base=base, keep_full=existing_full)
-                _write_json_atomic(registry, data)
-            out[role] = existing_full
-            continue
-
-        # Remove stale role/base entries before creating a new worker.
+    def prune_role_base(*, role: str, base: str, keep_full: str | None) -> None:
         lock = team_dir / ".lock"
         with _locked(lock):
-            data = _load_registry(registry)
-            _prune_members_by(data, role=role, base=base, keep_full=None)
-            _write_json_atomic(registry, data)
+            data1 = _load_registry(registry)
+            _prune_members_by(data1, role=role, base=base, keep_full=keep_full)
+            _write_json_atomic(registry, data1)
 
+    def up_root(*, role: str, base: str, scope: str) -> tuple[str, Path]:
+        prune_role_base(role=role, base=base, keep_full=None)
         full, session_path = _start_worker(twf, base=base, up_args=[])
-
+        lock = team_dir / ".lock"
         with _locked(lock):
-            data = _load_registry(registry)
+            data2 = _load_registry(registry)
             _ensure_member(
-                data,
+                data2,
                 full=full,
                 base=base,
                 role=role,
@@ -914,12 +1578,66 @@ def _init_trio(
                 parent=None,
                 state_file=str(session_path),
             )
-            _write_json_atomic(registry, data)
-
+            _write_json_atomic(registry, data2)
         if not no_bootstrap:
             _bootstrap_worker(twf, name=full, role=role, full=full, base=base, registry=registry, team_dir=team_dir)
+        return full, session_path
 
-        out[role] = full
+    def spawn_child(*, parent_full: str, role: str, base: str, scope: str) -> tuple[str, Path]:
+        prune_role_base(role=role, base=base, keep_full=None)
+        full, session_path = _spawn_worker(twf, parent_full=parent_full, child_base=base, up_args=[])
+        lock = team_dir / ".lock"
+        with _locked(lock):
+            data3 = _load_registry(registry)
+            _ensure_member(
+                data3,
+                full=full,
+                base=base,
+                role=role,
+                scope=scope,
+                parent=parent_full,
+                state_file=str(session_path),
+            )
+            _add_child(data3, parent_full=parent_full, child_full=full)
+            _write_json_atomic(registry, data3)
+        if not no_bootstrap:
+            _bootstrap_worker(twf, name=full, role=role, full=full, base=base, registry=registry, team_dir=team_dir)
+        return full, session_path
+
+    # 1) Root role via up (single root).
+    root_full: str | None = None
+    if not force_new:
+        root_full = reuse_full(role=root_role, base=base_root)
+    if root_full:
+        prune_role_base(role=root_role, base=base_root, keep_full=root_full)
+        lock = team_dir / ".lock"
+        with _locked(lock):
+            data_root = _load_registry(registry)
+            _ensure_member(data_root, full=root_full, base=base_root, role=root_role, scope=DEFAULT_ROLE_SCOPES.get(root_role, ""), parent=None)
+            _write_json_atomic(registry, data_root)
+        out[root_role] = root_full
+    else:
+        root_full, _ = up_root(role=root_role, base=base_root, scope=DEFAULT_ROLE_SCOPES.get(root_role, ""))
+        out[root_role] = root_full
+
+    # 2) Children under root (PM + Liaison).
+    for role, base, scope in init_children:
+        child_full: str | None = None
+        if not force_new:
+            child_full = reuse_full(role=role, base=base)
+        if child_full:
+            prune_role_base(role=role, base=base, keep_full=child_full)
+            lock = team_dir / ".lock"
+            with _locked(lock):
+                data_child = _load_registry(registry)
+                _ensure_member(data_child, full=child_full, base=base, role=role, scope=scope, parent=root_full)
+                _add_child(data_child, parent_full=root_full, child_full=child_full)
+                _write_json_atomic(registry, data_child)
+            out[role] = child_full
+            continue
+
+        child_full, _ = spawn_child(parent_full=root_full, role=role, base=base, scope=scope)
+        out[role] = child_full
 
     return out
 
@@ -981,6 +1699,24 @@ def cmd_up(args: argparse.Namespace) -> int:
     team_dir = _default_team_dir()
     registry = _registry_path(team_dir)
     role = _require_role(args.role)
+    policy = _policy()
+    if role != policy.root_role:
+        raise SystemExit(f"❌ up only allowed for root_role={policy.root_role}. Use `atwf spawn` / `atwf spawn-self`.")
+
+    data0 = _load_registry(registry)
+    existing_roots = []
+    for m in data0.get("members", []) if isinstance(data0.get("members"), list) else []:
+        if not isinstance(m, dict):
+            continue
+        if str(m.get("role", "")).strip() != policy.root_role:
+            continue
+        parent = m.get("parent")
+        parent_s = str(parent).strip() if isinstance(parent, str) else ""
+        if not parent_s:
+            existing_roots.append(str(m.get("full", "")).strip())
+    if existing_roots:
+        raise SystemExit(f"❌ root already exists in registry (use `atwf init` / `atwf resume`): {existing_roots[0]}")
+
     base = _base_name(role, args.label)
 
     full, session_path = _start_worker(twf, base=base, up_args=[])
@@ -1010,6 +1746,8 @@ def cmd_up(args: argparse.Namespace) -> int:
             team_dir=team_dir,
         )
 
+    _ensure_cap_watch_team(twf=twf, team_dir=team_dir, registry=registry)
+
     print(full)
     return 0
 
@@ -1019,12 +1757,31 @@ def cmd_spawn(args: argparse.Namespace) -> int:
     team_dir = _default_team_dir()
     registry = _registry_path(team_dir)
 
-    parent_full = args.parent_full.strip()
-    if not parent_full:
+    parent_raw = args.parent_full.strip()
+    if not parent_raw:
         raise SystemExit("❌ parent-full is required")
+
+    data0 = _load_registry(registry)
+    parent_full = _resolve_target_full(data0, parent_raw)
+    if not parent_full:
+        raise SystemExit(f"❌ parent not found in registry: {parent_raw}")
 
     role = _require_role(args.role)
     base = _base_name(role, args.label)
+
+    parent_m = _resolve_member(data0, parent_full)
+    if not parent_m:
+        raise SystemExit(f"❌ parent not found in registry: {parent_full}")
+    parent_role = str(parent_m.get("role", "")).strip()
+    if not parent_role:
+        raise SystemExit(f"❌ parent has no role recorded: {parent_full}")
+    policy = _policy()
+    allowed = policy.can_hire.get(parent_role, frozenset())
+    if role not in allowed:
+        raise SystemExit(
+            f"❌ policy.can_hire: {parent_role} cannot hire {role}. "
+            f"Allowed: {', '.join(sorted(allowed)) or '(none)'}"
+        )
 
     full, session_path = _spawn_worker(twf, parent_full=parent_full, child_base=base, up_args=[])
 
@@ -1053,6 +1810,8 @@ def cmd_spawn(args: argparse.Namespace) -> int:
             registry=registry,
             team_dir=team_dir,
         )
+
+    _ensure_cap_watch_team(twf=twf, team_dir=team_dir, registry=registry)
 
     print(full)
     return 0
@@ -1210,22 +1969,21 @@ def cmd_report_to(args: argparse.Namespace) -> int:
 
     data = _load_registry(registry)
 
-    m = _resolve_member(data, target)
-    if not m and target in SUPPORTED_ROLES:
-        m = _resolve_latest_by_role(data, target)
-    if not m:
+    to_full = _resolve_target_full(data, target)
+    if not to_full:
         raise SystemExit(f"❌ target not found in registry: {target}")
 
-    to_full = str(m.get("full", "")).strip()
-    if not to_full:
-        raise SystemExit(f"❌ invalid target entry (missing full): {target}")
-
-    res = _run(["tmux", "display-message", "-p", "#S"])
-    if res.returncode != 0:
+    self_name = _tmux_self_full()
+    if not self_name:
         raise SystemExit("❌ report-to must run inside tmux")
-    self_name = res.stdout.strip()
 
-    sender = _resolve_member(data, self_name) or {"full": self_name, "role": "", "base": self_name, "scope": ""}
+    sender = _resolve_member(data, self_name)
+    if not sender:
+        raise SystemExit(f"❌ current worker not found in registry: {self_name} (run: atwf register-self ...)")
+
+    policy = _policy()
+    _require_comm_allowed(policy, data, actor_full=self_name, target_full=to_full)
+
     body = _read_report_body(args.message)
     msg = _format_report(sender=sender, to_full=to_full, body=body)
 
@@ -1254,21 +2012,59 @@ def cmd_register(args: argparse.Namespace) -> int:
 
     base = args.base.strip() if args.base else None
     role = _require_role(args.role) if args.role else None
+    policy = _policy()
 
     lock = team_dir / ".lock"
     with _locked(lock):
         data = _load_registry(registry)
+        existing = _resolve_member(data, full)
+        existing_role = str(existing.get("role", "")).strip() if isinstance(existing, dict) else ""
+        existing_parent = existing.get("parent") if isinstance(existing, dict) else None
+        existing_parent_s = str(existing_parent).strip() if isinstance(existing_parent, str) else ""
+
+        resolved_parent: str | None = None
+        if args.parent is not None:
+            parent_raw = str(args.parent).strip()
+            if parent_raw:
+                resolved_parent = _resolve_target_full(data, parent_raw) or (parent_raw if FULL_NAME_RE.match(parent_raw) else None)
+                if not resolved_parent:
+                    raise SystemExit(f"❌ parent not found in registry: {parent_raw}")
+            else:
+                resolved_parent = ""
+
+        final_role = role or existing_role
+        final_parent = existing_parent_s if args.parent is None else (resolved_parent or "")
+        force = bool(getattr(args, "force", False))
+        if final_role:
+            if final_role == policy.root_role:
+                if final_parent and not force:
+                    raise SystemExit(f"❌ root_role={policy.root_role} cannot have a parent (use --force to override)")
+            else:
+                if not final_parent and not force:
+                    raise SystemExit(
+                        f"❌ non-root roles must have a parent (root_role={policy.root_role}). "
+                        f"Use `atwf spawn`/`spawn-self` or pass --parent/--force."
+                    )
+                parent_m = _resolve_member(data, final_parent) if final_parent else None
+                parent_role = _member_role(parent_m)
+                allowed = policy.can_hire.get(parent_role, frozenset())
+                if final_parent and (not parent_m or final_role not in allowed) and not force:
+                    raise SystemExit(
+                        f"❌ policy.can_hire: {parent_role or '(missing)'} cannot hire {final_role}. "
+                        f"Allowed: {', '.join(sorted(allowed)) or '(none)'}"
+                    )
+
         _ensure_member(
             data,
             full=full,
             base=base,
             role=role,
             scope=args.scope,
-            parent=args.parent,
+            parent=(resolved_parent if args.parent is not None else None),
             state_file=args.state_file,
         )
-        if args.parent:
-            _add_child(data, parent_full=args.parent, child_full=full)
+        if args.parent is not None and resolved_parent:
+            _add_child(data, parent_full=resolved_parent, child_full=full)
         _write_json_atomic(registry, data)
     _eprint(f"✅ registered: {full}")
     return 0
@@ -1287,6 +2083,7 @@ def cmd_register_self(args: argparse.Namespace) -> int:
         scope=args.scope,
         parent=args.parent,
         state_file=args.state_file,
+        force=getattr(args, "force", False),
     )
     return cmd_register(ns)
 
@@ -1371,6 +2168,186 @@ def cmd_where(_: argparse.Namespace) -> int:
     registry = _registry_path(team_dir)
     print(str(team_dir))
     print(str(registry))
+    return 0
+
+
+def cmd_policy(_: argparse.Namespace) -> int:
+    policy = _policy()
+    print(f"config: {_config_file()}")
+    print(f"root_role: {policy.root_role}")
+    print(f"enabled_roles: {', '.join(sorted(policy.enabled_roles))}")
+
+    print("can_hire:")
+    for parent in sorted(policy.can_hire):
+        kids = sorted(policy.can_hire.get(parent, frozenset()))
+        print(f"  {parent}: {', '.join(kids) if kids else '(none)'}")
+
+    print(f"broadcast.allowed_roles: {', '.join(sorted(policy.broadcast_allowed_roles)) or '(none)'}")
+    print(f"broadcast.exclude_roles: {', '.join(sorted(policy.broadcast_exclude_roles)) or '(none)'}")
+
+    print(f"comm.allow_parent_child: {policy.comm_allow_parent_child}")
+    print(f"comm.require_handoff: {policy.comm_require_handoff}")
+    print(f"comm.handoff_creators: {', '.join(sorted(policy.comm_handoff_creators)) or '(none)'}")
+
+    print("comm.direct_allow:")
+    for role in sorted(policy.enabled_roles):
+        allowed = sorted(policy.comm_direct_allow.get(role, frozenset()))
+        if not allowed:
+            continue
+        print(f"  {role}: {', '.join(allowed)}")
+    return 0
+
+
+def cmd_perms_self(_: argparse.Namespace) -> int:
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+    policy = _policy()
+
+    self_full = _tmux_self_full()
+    if not self_full:
+        raise SystemExit("❌ perms-self must run inside tmux")
+
+    self_m = _resolve_member(data, self_full)
+    if not self_m:
+        raise SystemExit(f"❌ current worker not found in registry: {self_full} (run: atwf register-self ...)")
+
+    role = _member_role(self_m)
+    base = _member_base(self_m)
+    parent = str(self_m.get("parent", "")).strip() if isinstance(self_m.get("parent"), str) else ""
+
+    print(f"full: {self_full}")
+    print(f"role: {role or '(missing)'}")
+    print(f"base: {base}")
+    print(f"parent: {parent or '(none)'}")
+    print(f"can_broadcast: {role in policy.broadcast_allowed_roles}")
+    print(f"can_create_handoff: {role in policy.comm_handoff_creators}")
+    print(f"can_hire: {', '.join(sorted(policy.can_hire.get(role, frozenset()))) or '(none)'}")
+    print(f"direct_allow_roles: {', '.join(sorted(policy.comm_direct_allow.get(role, frozenset()))) or '(none)'}")
+
+    peers: list[str] = []
+    permits = data.get("permits")
+    if isinstance(permits, list):
+        for p in permits:
+            if not isinstance(p, dict):
+                continue
+            a = str(p.get("a", "")).strip()
+            b = str(p.get("b", "")).strip()
+            if not a or not b:
+                continue
+            other = ""
+            if a == base:
+                other = b
+            elif b == base:
+                other = a
+            if not other:
+                continue
+            exp = str(p.get("expires_at", "")).strip()
+            if exp:
+                try:
+                    if datetime.fromisoformat(exp) <= datetime.now():
+                        continue
+                except Exception:
+                    pass
+            peers.append(other)
+    uniq_peers = sorted({p for p in peers if p})
+    print(f"active_handoff_peers: {', '.join(uniq_peers) if uniq_peers else '(none)'}")
+    return 0
+
+
+def cmd_handoff(args: argparse.Namespace) -> int:
+    twf = _resolve_twf()
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    policy = _policy()
+
+    lock = team_dir / ".lock"
+    dry_run = bool(getattr(args, "dry_run", False))
+    permit: dict[str, Any] | None = None
+    permit_exists = False
+    with _locked(lock):
+        data = _load_registry(registry)
+        actor_full = _resolve_actor_full(data, as_target=getattr(args, "as_target", None))
+        actor_m = _resolve_member(data, actor_full)
+        if not actor_m:
+            raise SystemExit(f"❌ actor not found in registry: {actor_full}")
+        actor_role = _member_role(actor_m)
+        if actor_role not in policy.comm_handoff_creators:
+            raise SystemExit(
+                "❌ handoff not permitted by policy.\n"
+                f"   actor: {actor_full} (role={actor_role or '?'})\n"
+                f"   allowed_roles: {', '.join(sorted(policy.comm_handoff_creators)) or '(none)'}"
+            )
+
+        a_full = _resolve_target_full(data, args.a)
+        if not a_full:
+            raise SystemExit(f"❌ member not found in registry: {args.a}")
+        b_full = _resolve_target_full(data, args.b)
+        if not b_full:
+            raise SystemExit(f"❌ member not found in registry: {args.b}")
+        a_m = _resolve_member(data, a_full)
+        b_m = _resolve_member(data, b_full)
+        if not a_m or not b_m:
+            raise SystemExit("❌ handoff endpoints must be registered members")
+
+        a_base = _member_base(a_m)
+        b_base = _member_base(b_m)
+        permit_exists = _permit_allows(data, a_base=a_base, b_base=b_base)
+        if not permit_exists and not dry_run:
+            permit = _add_handoff_permit(
+                data,
+                a_base=a_base,
+                b_base=b_base,
+                created_by=actor_full,
+                created_by_role=actor_role,
+                reason=str(getattr(args, "reason", "") or ""),
+                ttl_seconds=(int(args.ttl) if getattr(args, "ttl", None) is not None else None),
+            )
+            _write_json_atomic(registry, data)
+
+    if dry_run:
+        print("dry_run: true")
+        print(f"actor: {actor_full}")
+        print(f"a: {a_full}")
+        print(f"b: {b_full}")
+        print(f"permit_exists: {str(permit_exists).lower()}")
+        if not permit_exists:
+            print("permit_id: (would-create)")
+        return 0
+
+    exp_s = ""
+    if permit:
+        exp_s = str(permit.get("expires_at", "")).strip()
+    reason = str(getattr(args, "reason", "") or "").strip()
+    reason_line = f"reason: {reason}\n" if reason else ""
+    exp_line = f"expires_at: {exp_s}\n" if exp_s else ""
+
+    msg_a = (
+        "[HANDOFF]\n"
+        f"creator: {actor_full} (role={actor_role or '?'})\n"
+        f"peer: {b_base} ({b_full})\n"
+        f"{reason_line}{exp_line}"
+        "You are permitted to talk directly. Use:\n"
+        f"- atwf ask {b_base} \"...\"\n"
+    )
+    msg_b = (
+        "[HANDOFF]\n"
+        f"creator: {actor_full} (role={actor_role or '?'})\n"
+        f"peer: {a_base} ({a_full})\n"
+        f"{reason_line}{exp_line}"
+        "Please reply directly to the requester (avoid relaying via coord).\n"
+        "Use:\n"
+        f"- atwf ask {a_base} \"...\"\n"
+    )
+
+    res_a = _run_twf(twf, ["send", a_full, msg_a])
+    if res_a.returncode != 0:
+        _eprint(res_a.stderr.strip() or f"⚠️ notify failed: {a_full}")
+    res_b = _run_twf(twf, ["send", b_full, msg_b])
+    if res_b.returncode != 0:
+        _eprint(res_b.stderr.strip() or f"⚠️ notify failed: {b_full}")
+
+    print(str(permit.get("id", "")) if permit else "(existing)")
     return 0
 
 
@@ -1812,28 +2789,6 @@ def cmd_stop(args: argparse.Namespace) -> int:
         if res.returncode != 0:
             failures.append(full)
 
-    # Default: reset local load-balancer state so auth-team changes (add/remove)
-    # take effect immediately on next resume/init.
-    try:
-        clb_share = _skill_dir().parent / "codex-load-balancer" / "share"
-        clb_state = clb_share / "state.json"
-        clb_lock = clb_share / "state.json.lock"
-        try:
-            clb_state.unlink()
-        except Exception:
-            pass
-        try:
-            clb_lock.unlink()
-        except Exception:
-            pass
-        try:
-            if clb_share.is_dir() and not any(clb_share.iterdir()):
-                clb_share.rmdir()
-        except Exception:
-            pass
-    except Exception:
-        pass
-
     if failures:
         _eprint(f"❌ stop failures: {len(failures)} targets")
         return 1
@@ -1845,6 +2800,8 @@ def cmd_resume(args: argparse.Namespace) -> int:
     team_dir = _default_team_dir()
     registry = _registry_path(team_dir)
     data = _load_registry(registry)
+
+    _ensure_cap_watch_team(twf=twf, team_dir=team_dir, registry=registry)
 
     targets = _select_targets_for_team_op(
         data,
@@ -1880,6 +2837,19 @@ def cmd_broadcast(args: argparse.Namespace) -> int:
     team_dir = _default_team_dir()
     registry = _registry_path(team_dir)
     data = _load_registry(registry)
+    policy = _policy()
+
+    actor_full = _resolve_actor_full(data, as_target=getattr(args, "as_target", None))
+    actor_m = _resolve_member(data, actor_full)
+    if not actor_m:
+        raise SystemExit(f"❌ actor not found in registry: {actor_full}")
+    actor_role = _member_role(actor_m)
+    if actor_role not in policy.broadcast_allowed_roles:
+        raise SystemExit(
+            "❌ broadcast not permitted by policy.\n"
+            f"   actor: {actor_full} (role={actor_role or '?'})\n"
+            f"   allowed_roles: {', '.join(sorted(policy.broadcast_allowed_roles)) or '(none)'}"
+        )
 
     msg = args.message
     if msg is None:
@@ -1898,6 +2868,14 @@ def cmd_broadcast(args: argparse.Namespace) -> int:
         if not root:
             raise SystemExit(f"❌ subtree root not found in registry: {args.subtree}")
         targets = _subtree_fulls(data, root)
+        if not bool(getattr(args, "include_excluded", False)) and policy.broadcast_exclude_roles:
+            filtered: list[str] = []
+            for full in targets:
+                m = _resolve_member(data, full)
+                if _member_role(m) in policy.broadcast_exclude_roles:
+                    continue
+                filtered.append(full)
+            targets = filtered
     else:
         raw_targets = getattr(args, "targets", []) or []
         if not isinstance(raw_targets, list) or not raw_targets:
@@ -1914,6 +2892,8 @@ def cmd_broadcast(args: argparse.Namespace) -> int:
     uniq: list[str] = []
     seen: set[str] = set()
     for t in targets:
+        if t == actor_full:
+            continue
         if t not in seen:
             seen.add(t)
             uniq.append(t)
@@ -2051,6 +3031,11 @@ def cmd_ask(args: argparse.Namespace) -> int:
     team_dir = _default_team_dir()
     registry = _registry_path(team_dir)
     data = _load_registry(registry)
+    policy = _policy()
+
+    actor_full = _resolve_actor_full(data, as_target=getattr(args, "as_target", None))
+    if not _resolve_member(data, actor_full):
+        raise SystemExit(f"❌ actor not found in registry: {actor_full} (run: atwf register-self ...)")
 
     target = args.name.strip()
     if not target:
@@ -2058,12 +3043,50 @@ def cmd_ask(args: argparse.Namespace) -> int:
     full = _resolve_target_full(data, target)
     if not full:
         raise SystemExit(f"❌ name not found in registry: {target} (use `atwf list` or `atwf up/spawn`)")
+
+    _require_comm_allowed(policy, data, actor_full=actor_full, target_full=full)
+
     msg = args.message
     if msg is None:
         msg = _forward_stdin()
     if msg is None:
         raise SystemExit("❌ message missing (provide as arg or via stdin)")
     res = _run_twf(twf, ["ask", full, msg])
+    sys.stdout.write(res.stdout)
+    sys.stderr.write(res.stderr)
+    return res.returncode
+
+
+def cmd_send(args: argparse.Namespace) -> int:
+    twf = _resolve_twf()
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+    policy = _policy()
+
+    actor_full = _resolve_actor_full(data, as_target=getattr(args, "as_target", None))
+    if not _resolve_member(data, actor_full):
+        raise SystemExit(f"❌ actor not found in registry: {actor_full} (run: atwf register-self ...)")
+
+    target = args.name.strip()
+    if not target:
+        raise SystemExit("❌ name is required")
+    full = _resolve_target_full(data, target)
+    if not full:
+        raise SystemExit(f"❌ name not found in registry: {target} (use `atwf list` or `atwf up/spawn`)")
+
+    _require_comm_allowed(policy, data, actor_full=actor_full, target_full=full)
+
+    msg = args.message
+    if msg is None:
+        msg = _forward_stdin()
+    if msg is None:
+        raise SystemExit("❌ message missing (provide as arg or via stdin)")
+    msg = msg.strip()
+    if not msg:
+        raise SystemExit("❌ empty message")
+
+    res = _run_twf(twf, ["send", full, msg])
     sys.stdout.write(res.stdout)
     sys.stderr.write(res.stderr)
     return res.returncode
@@ -2197,21 +3220,23 @@ def cmd_remove(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    enabled_roles = sorted(_policy().enabled_roles)
     p = argparse.ArgumentParser(prog="atwf", add_help=True)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    init = sub.add_parser("init", help="init registry and start initial PM/Coordinator/Liaison trio")
+    init = sub.add_parser("init", help="init registry and start initial team (root_role + pm + liaison)")
     init.add_argument("task", nargs="?", help="task description (saved to share/task.md); or pipe via stdin")
     init.add_argument("--task-file", help="task file path to copy into share/task.md")
     init.add_argument("--registry-only", action="store_true", help="only create registry, do not start workers")
     init.add_argument("--force-new", action="store_true", help="always start a fresh trio (even if one exists)")
     init.add_argument("--no-bootstrap", action="store_true", help="skip sending role templates on creation")
 
-    reset = sub.add_parser("reset", help="reset local environment (delete worker state + share + lb state)")
+    reset = sub.add_parser("reset", help="reset local environment (delete worker state + share; preserve account pool by default)")
     reset.add_argument("--dry-run", action="store_true", help="print what would be deleted, without deleting")
     reset.add_argument("--force", action="store_true", help="also delete codex_home paths outside ~/.codex-workers (dangerous)")
+    reset.add_argument("--wipe-account-pool", action="store_true", help="also delete local account pool state.json (resets auth ordering/pointer)")
 
-    up = sub.add_parser("up", help="start a new role worker (twf up) + register + bootstrap")
+    up = sub.add_parser("up", help="start a new worker (root_role only; twf up) + register + bootstrap")
     up.add_argument("role")
     up.add_argument("label", nargs="?")
     up.add_argument("--scope", default="")
@@ -2245,7 +3270,7 @@ def build_parser() -> argparse.ArgumentParser:
     rup.add_argument("--wait", action="store_true", help="wait for a reply (uses twf ask)")
 
     rto = sub.add_parser("report-to", help="send a report to a target member or role (inside tmux)")
-    rto.add_argument("target", help="full|base|role (role: pm|arch|prod|dev|qa|ops|coord|liaison)")
+    rto.add_argument("target", help="full|base|role (see `atwf policy` for enabled roles)")
     rto.add_argument("message", nargs="?")
     rto.add_argument("--wait", action="store_true", help="wait for a reply (uses twf ask)")
 
@@ -2253,18 +3278,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     reg = sub.add_parser("register", help="upsert a member into registry.json")
     reg.add_argument("full")
-    reg.add_argument("--role", choices=SUPPORTED_ROLES)
+    reg.add_argument("--role", choices=enabled_roles)
     reg.add_argument("--base")
     reg.add_argument("--scope")
     reg.add_argument("--parent")
     reg.add_argument("--state-file")
+    reg.add_argument("--force", action="store_true", help="bypass root/parent policy checks (registry repair)")
 
     regself = sub.add_parser("register-self", help="register current tmux session into registry.json")
-    regself.add_argument("--role", required=True, choices=SUPPORTED_ROLES)
+    regself.add_argument("--role", required=True, choices=enabled_roles)
     regself.add_argument("--base")
     regself.add_argument("--scope")
     regself.add_argument("--parent")
     regself.add_argument("--state-file")
+    regself.add_argument("--force", action="store_true", help="bypass root/parent policy checks (registry repair)")
 
     ss = sub.add_parser("set-scope", help="update scope for a member (lookup by full or base)")
     ss.add_argument("name")
@@ -2276,6 +3303,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("list", help="print registry table")
 
     sub.add_parser("where", help="print resolved shared dirs (team_dir + registry)")
+
+    sub.add_parser("policy", help="print resolved team policy (hard constraints)")
+
+    sub.add_parser("perms-self", help="print current worker permissions (inside tmux)")
 
     tree = sub.add_parser("tree", help="print org tree from registry (parent/children)")
     tree.add_argument("root", nargs="?", help="optional root: full|base|role")
@@ -2306,21 +3337,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     stop = sub.add_parser("stop", help="stop Codex tmux workers (default: whole team)")
     stop.add_argument("targets", nargs="*", help="optional targets (full|base|role)")
-    stop.add_argument("--role", choices=SUPPORTED_ROLES, help="stop all members of a role")
+    stop.add_argument("--role", choices=enabled_roles, help="stop all members of a role")
     stop.add_argument("--subtree", help="stop all members under a root (full|base|role)")
     stop.add_argument("--dry-run", action="store_true", help="print what would be stopped")
 
     resume = sub.add_parser("resume", help="resume Codex tmux workers (default: whole team)")
     resume.add_argument("targets", nargs="*", help="optional targets (full|base|role)")
-    resume.add_argument("--role", choices=SUPPORTED_ROLES, help="resume all members of a role")
+    resume.add_argument("--role", choices=enabled_roles, help="resume all members of a role")
     resume.add_argument("--subtree", help="resume all members under a root (full|base|role)")
     resume.add_argument("--dry-run", action="store_true", help="print what would be resumed")
 
     bc = sub.add_parser("broadcast", help="send the same message to multiple workers (sequential)")
     bc.add_argument("targets", nargs="*", help="targets (full|base|role). Ignored when --role/--subtree is used.")
-    bc.add_argument("--role", choices=SUPPORTED_ROLES, help="broadcast to all members of a role")
+    bc.add_argument("--role", choices=enabled_roles, help="broadcast to all members of a role")
     bc.add_argument("--subtree", help="broadcast to all members under a root (full|base|role)")
     bc.add_argument("--message", default=None, help="message text (if omitted, read stdin)")
+    bc.add_argument("--as", dest="as_target", default=None, help="actor (full|base|role); required outside tmux")
+    bc.add_argument("--include-excluded", action="store_true", help="include excluded roles when using --subtree")
 
     resolve = sub.add_parser("resolve", help="resolve a target to full tmux session name (full|base|role)")
     resolve.add_argument("target")
@@ -2330,12 +3363,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     route = sub.add_parser("route", help="find best owner(s) for a query")
     route.add_argument("query")
-    route.add_argument("--role", choices=SUPPORTED_ROLES)
+    route.add_argument("--role", choices=enabled_roles)
     route.add_argument("--limit", type=int, default=5)
 
     ask = sub.add_parser("ask", help="twf ask wrapper (supports stdin)")
     ask.add_argument("name")
     ask.add_argument("message", nargs="?")
+    ask.add_argument("--as", dest="as_target", default=None, help="actor (full|base|role); required outside tmux")
+
+    send = sub.add_parser("send", help="twf send wrapper with policy checks (supports stdin)")
+    send.add_argument("name")
+    send.add_argument("message", nargs="?")
+    send.add_argument("--as", dest="as_target", default=None, help="actor (full|base|role); required outside tmux")
+
+    handoff = sub.add_parser("handoff", help="create a handoff/permit so two members can talk directly")
+    handoff.add_argument("a", help="member A (full|base|role)")
+    handoff.add_argument("b", help="member B (full|base|role)")
+    handoff.add_argument("--as", dest="as_target", default=None, help="creator (full|base|role); required outside tmux")
+    handoff.add_argument("--reason", default="", help="handoff reason (optional)")
+    handoff.add_argument("--ttl", type=int, default=None, help="permit ttl in seconds (optional)")
+    handoff.add_argument("--dry-run", action="store_true", help="do not write/send; print what would happen")
 
     pend = sub.add_parser("pend", help="twf pend wrapper")
     pend.add_argument("name")
@@ -2346,7 +3393,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     boot = sub.add_parser("bootstrap", help="send the role prompt template to a worker")
     boot.add_argument("name")
-    boot.add_argument("role", choices=SUPPORTED_ROLES)
+    boot.add_argument("role", choices=enabled_roles)
 
     return p
 
@@ -2391,6 +3438,10 @@ def main(argv: list[str]) -> int:
         return cmd_list(args)
     if args.cmd == "where":
         return cmd_where(args)
+    if args.cmd == "policy":
+        return cmd_policy(args)
+    if args.cmd == "perms-self":
+        return cmd_perms_self(args)
     if args.cmd == "tree":
         return cmd_tree(args)
     if args.cmd == "design-path":
@@ -2421,6 +3472,10 @@ def main(argv: list[str]) -> int:
         return cmd_route(args)
     if args.cmd == "ask":
         return cmd_ask(args)
+    if args.cmd == "send":
+        return cmd_send(args)
+    if args.cmd == "handoff":
+        return cmd_handoff(args)
     if args.cmd == "pend":
         return cmd_pend(args)
     if args.cmd == "ping":

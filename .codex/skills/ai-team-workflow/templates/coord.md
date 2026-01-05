@@ -17,6 +17,11 @@ How to route:
 2. Prefer owners within the same architect subtree, unless cross-module.
 3. When ambiguous, ask the relevant architect(s) to clarify ownership, then update scopes.
 
+Handoff / authorization (avoid relaying):
+- If A needs to talk to B but direct communication is restricted by policy, create a handoff permit:
+  - `bash .codex/skills/ai-team-workflow/scripts/atwf handoff <a> <b> --reason "..."`
+- After granting the handoff, instruct A to ask B directly, and instruct B to reply directly to A (no coordinator relay).
+
 Escalation to user:
 - Only when the team cannot resolve internally.
 - Package the question crisply (options + what decision is needed).
