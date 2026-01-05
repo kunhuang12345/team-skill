@@ -18,8 +18,8 @@ codex:
   model: gpt-5.2
   model_reasoning_effort: high
 
-  # Optional profile when account pool is disabled (equivalent to `codex -p <profile>`).
-  profile: ""
+  # Optional profile (equivalent to `codex -p <profile>`).
+  profile: "aihuohua"
 
 twf:
   # Worker state directory (where twf writes its worker state JSON files)
@@ -45,7 +45,7 @@ twf:
     # - choose which CODEX_HOME source to copy from for each worker, and
     # - choose an auth credential file and copy it into worker home as `auth.json`,
     # so many workers don't all share the same login credentials.
-    enabled: true
+    enabled: false
 
     # Optional override path to the account pool command.
     # If empty, twf auto-detects:
@@ -86,7 +86,7 @@ twf:
   # file (any filename) by copying its contents into each worker's
   # `CODEX_HOME/auth.json` (Codex only reads auth from `auth.json`).
   auth:
-    src: ""
+    src: "/root/.codex/auth.json.aihuohua"
 
 # Legacy (flat) keys (optional):
 # model: gpt-5.2

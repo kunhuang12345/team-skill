@@ -10,7 +10,7 @@ tmux-workflow helper: manage multiple Codex tmux workers with short names.
 Usage:
   twf <name>                       # start a new worker: <name>-<timestamp>
   twf <name> "<message>"           # ask the latest worker for <name> (auto-up if missing)
-  twf up <name> [up-args...]        # explicit start (forwards args to codex_up_tmux.sh)
+  twf up <name> [--profile P] [up-args...]  # explicit start (forwards args to codex_up_tmux.sh)
   twf ask <name> [message]          # explicit ask (reads stdin if message omitted)
   twf send <name> [message]         # send-only: submit message without waiting for reply
   twf pend <name> [N]               # show latest reply / last N Q&A
@@ -711,6 +711,25 @@ start_worker() {
   local base="$1"
   shift || true
 
+  local cli_profile=""
+  local up_args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -p|--profile)
+        cli_profile="${2:-}"
+        shift 2
+        ;;
+      --profile=*)
+        cli_profile="${1#*=}"
+        shift
+        ;;
+      *)
+        up_args+=("$1")
+        shift
+        ;;
+    esac
+  done
+
   local worker="$base"
   if ! is_ts_name "$base"; then
     local ts
@@ -737,11 +756,11 @@ start_worker() {
   fi
 
   local profile_final
-  profile_final="$(get_env_override TWF_CODEX_PROFILE)"
-  # Only apply profile when account pool is disabled.
-  if lower_bool "$twf_use_account_pool"; then
-    profile_final=""
-  elif [[ -z "$profile_final" ]]; then
+  profile_final="$cli_profile"
+  if [[ -z "$profile_final" ]]; then
+    profile_final="$(get_env_override TWF_CODEX_PROFILE)"
+  fi
+  if [[ -z "$profile_final" ]]; then
     profile_final="$twf_profile_cfg"
   fi
 
@@ -756,7 +775,7 @@ start_worker() {
     env_args+=("TWF_CODEX_PROFILE=$profile_final")
   fi
   # Always clear any inherited overrides (tmux server/global env can leak these).
-  env -u TWF_CODEX_HOME_SRC -u TWF_AUTH_SRC -u TWF_CODEX_PROFILE "${env_args[@]}" bash "$script_dir/codex_up_tmux.sh" --session "$worker" --session-file "$session_file" "$@" 1>&2
+  env -u TWF_CODEX_HOME_SRC -u TWF_AUTH_SRC -u TWF_CODEX_PROFILE "${env_args[@]}" bash "$script_dir/codex_up_tmux.sh" --session "$worker" --session-file "$session_file" "${up_args[@]}" 1>&2
   echo "$session_file"
 }
 
@@ -1405,6 +1424,9 @@ PY
   warn_ignored_env_overrides_once
   local profile_final
   profile_final="$(get_env_override TWF_CODEX_PROFILE)"
+  if [[ -z "$profile_final" ]]; then
+    profile_final="$twf_profile_cfg"
+  fi
 
   if [[ -z "$codex_home" ]]; then
     echo "❌ codex_home missing in state: $session_file" >&2
@@ -1445,9 +1467,6 @@ PY
       fi
 
       auth_src_final="$(get_env_override TWF_AUTH_SRC)"
-      if [[ -z "$profile_final" ]]; then
-        profile_final="$twf_profile_cfg"
-      fi
       if [[ -z "$auth_src_final" ]] && [[ -n "$twf_auth_src_cfg" ]]; then
         auth_src_final="$(resolve_auth_src_cfg "$twf_auth_src_cfg")"
       fi
@@ -1455,8 +1474,7 @@ PY
 
     # Force resume command to follow CURRENT config file:
     # - always override model/model_reasoning_effort
-    # - when account_pool=true, profile is disabled (no -p/--profile)
-    # - when account_pool=false, profile follows twf_profile (empty => remove)
+    # - profile follows twf_profile (empty => remove)
     readarray -t _cmd_cfg < <(
       python3 - "$config_file" <<'PY'
 import json
@@ -1553,9 +1571,6 @@ PY
     _effort_cfg="${_cmd_cfg[1]:-}"
 
 	    _desired_profile="$profile_final"
-	    if lower_bool "$twf_use_account_pool"; then
-	      _desired_profile=""
-	    fi
 
     codex_cmd="$(python3 - "$codex_cmd" "$_model_cfg" "$_effort_cfg" "$_desired_profile" <<'PY'
 import shlex
