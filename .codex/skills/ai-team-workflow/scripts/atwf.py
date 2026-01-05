@@ -30,6 +30,12 @@ FULL_NAME_RE = re.compile(r"^.+-[0-9]{8}-[0-9]{6}-[0-9]+$")
 _MSG_SEQ_FILE = "message_seq.json"
 _MSG_ID_WIDTH = 6
 
+_INBOX_DIR = "inbox"
+_INBOX_UNREAD_DIR = "unread"
+_INBOX_READ_DIR = "read"
+_INBOX_OVERFLOW_DIR = "overflow"
+_INBOX_MAX_UNREAD_DEFAULT = 5
+
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
@@ -87,6 +93,31 @@ def _wrap_team_message(
     if body_s:
         return f"{header}\n{body_s}\n[ATWF-END id={resolved_id}]\n"
     return f"{header}\n[ATWF-END id={resolved_id}]\n"
+
+
+def _slugify(raw: str) -> str:
+    s = re.sub(r"[^a-zA-Z0-9_-]+", "-", (raw or "").strip())
+    s = "-".join(seg for seg in s.split("-") if seg)
+    return s or "unknown"
+
+
+def _inbox_root(team_dir: Path) -> Path:
+    return team_dir / _INBOX_DIR
+
+
+def _inbox_member_dir(team_dir: Path, *, base: str) -> Path:
+    return _inbox_root(team_dir) / _slugify(base)
+
+
+def _inbox_thread_dir(team_dir: Path, *, to_base: str, from_base: str, state: str) -> Path:
+    state = state.strip().lower()
+    if state not in {_INBOX_UNREAD_DIR, _INBOX_READ_DIR, _INBOX_OVERFLOW_DIR}:
+        state = _INBOX_UNREAD_DIR
+    return _inbox_member_dir(team_dir, base=to_base) / state / f"from-{_slugify(from_base)}"
+
+
+def _inbox_message_path(team_dir: Path, *, to_base: str, from_base: str, state: str, msg_id: str) -> Path:
+    return _inbox_thread_dir(team_dir, to_base=to_base, from_base=from_base, state=state) / f"{msg_id}.md"
 
 
 def _expand_path(path: str) -> Path:
@@ -520,6 +551,17 @@ def _cfg_get_intish(cfg: dict[str, Any], *paths: tuple[str, ...], default: int) 
         except Exception:
             return int(default)
     return int(default)
+
+
+@lru_cache(maxsize=1)
+def _inbox_max_unread_per_thread() -> int:
+    cfg = _read_yaml_or_json(_config_file())
+    n = _cfg_get_intish(cfg, ("team", "messaging", "inbox", "max_unread_per_thread"), default=_INBOX_MAX_UNREAD_DEFAULT)
+    if n < 1:
+        n = 1
+    if n > 100:
+        n = 100
+    return n
 
 
 def _cap_watch_session_name(project_root: Path) -> str:
@@ -1225,6 +1267,202 @@ def _ensure_share_layout(team_dir: Path) -> None:
     team_dir.mkdir(parents=True, exist_ok=True)
     _design_dir(team_dir).mkdir(parents=True, exist_ok=True)
     _ops_dir(team_dir).mkdir(parents=True, exist_ok=True)
+    _inbox_root(team_dir).mkdir(parents=True, exist_ok=True)
+
+
+def _inbox_summary(body: str) -> str:
+    for line in (body or "").splitlines():
+        s = line.strip()
+        if s:
+            return (s[:157] + "...") if len(s) > 160 else s
+    return ""
+
+
+def _inbox_list_msgs(dir_path: Path) -> list[tuple[int, str, Path]]:
+    if not dir_path.is_dir():
+        return []
+    out: list[tuple[int, str, Path]] = []
+    for p in dir_path.glob("*.md"):
+        if not p.is_file():
+            continue
+        stem = p.stem.strip()
+        if not stem.isdigit():
+            continue
+        try:
+            n = int(stem)
+        except Exception:
+            continue
+        out.append((n, stem, p))
+    out.sort(key=lambda t: t[0])
+    return out
+
+
+def _inbox_enforce_unread_limit_unlocked(team_dir: Path, *, to_base: str, from_base: str, max_unread: int) -> None:
+    if max_unread < 1:
+        max_unread = 1
+    unread_dir = _inbox_thread_dir(team_dir, to_base=to_base, from_base=from_base, state=_INBOX_UNREAD_DIR)
+    entries = _inbox_list_msgs(unread_dir)
+    if len(entries) <= max_unread:
+        return
+
+    overflow_dir = _inbox_thread_dir(team_dir, to_base=to_base, from_base=from_base, state=_INBOX_OVERFLOW_DIR)
+    overflow_dir.mkdir(parents=True, exist_ok=True)
+
+    # Move oldest unread into overflow so active unread stays bounded.
+    excess = entries[: max(0, len(entries) - max_unread)]
+    for _n, stem, p in excess:
+        dst = overflow_dir / f"{stem}.md"
+        try:
+            p.replace(dst)
+        except OSError:
+            try:
+                shutil.copy2(p, dst)
+                p.unlink(missing_ok=True)  # type: ignore[call-arg]
+            except Exception:
+                pass
+
+
+def _write_inbox_message_unlocked(
+    team_dir: Path,
+    *,
+    msg_id: str,
+    kind: str,
+    from_full: str,
+    from_base: str,
+    from_role: str,
+    to_full: str,
+    to_base: str,
+    to_role: str,
+    body: str,
+) -> Path:
+    msg_id = msg_id.strip()
+    if not msg_id:
+        raise SystemExit("❌ inbox message id missing")
+
+    kind_s = kind.strip() or "send"
+    from_full_s = from_full.strip() or "unknown"
+    from_base_s = from_base.strip() or from_full_s
+    from_role_s = from_role.strip() or "?"
+    to_full_s = to_full.strip() or "unknown"
+    to_base_s = to_base.strip() or to_full_s
+    to_role_s = to_role.strip() or "?"
+
+    path = _inbox_message_path(
+        team_dir,
+        to_base=to_base_s,
+        from_base=from_base_s,
+        state=_INBOX_UNREAD_DIR,
+        msg_id=msg_id,
+    )
+
+    summary = _inbox_summary(body)
+    meta_lines = [
+        f"# ATWF Inbox Message {msg_id}",
+        "",
+        f"- id: `{msg_id}`",
+        f"- kind: `{kind_s}`",
+        f"- created_at: {_now()}",
+        f"- from: `{from_full_s}` (base `{from_base_s}` role `{from_role_s}`)",
+        f"- to: `{to_full_s}` (base `{to_base_s}` role `{to_role_s}`)",
+    ]
+    if summary:
+        meta_lines.append(f"- summary: {summary}")
+    meta_lines.extend(["", "---", ""])
+
+    body_s = (body or "").rstrip()
+    payload = "\n".join(meta_lines) + (body_s + "\n" if body_s else "")
+    _write_text_atomic(path, payload)
+    return path
+
+
+def _write_inbox_message(
+    team_dir: Path,
+    *,
+    msg_id: str,
+    kind: str,
+    from_full: str,
+    from_base: str,
+    from_role: str,
+    to_full: str,
+    to_base: str,
+    to_role: str,
+    body: str,
+) -> Path:
+    lock = team_dir / ".lock"
+    with _locked(lock):
+        _ensure_share_layout(team_dir)
+        path = _write_inbox_message_unlocked(
+            team_dir,
+            msg_id=msg_id,
+            kind=kind,
+            from_full=from_full,
+            from_base=from_base,
+            from_role=from_role,
+            to_full=to_full,
+            to_base=to_base,
+            to_role=to_role,
+            body=body,
+        )
+        _inbox_enforce_unread_limit_unlocked(
+            team_dir,
+            to_base=to_base,
+            from_base=from_base,
+            max_unread=_inbox_max_unread_per_thread(),
+        )
+        return path
+
+
+def _find_inbox_message_file(team_dir: Path, *, to_base: str, msg_id: str) -> tuple[str, str, Path] | None:
+    base_dir = _inbox_member_dir(team_dir, base=to_base)
+    msg_id = msg_id.strip()
+    if not msg_id:
+        return None
+    for state in (_INBOX_UNREAD_DIR, _INBOX_OVERFLOW_DIR, _INBOX_READ_DIR):
+        state_dir = base_dir / state
+        if not state_dir.is_dir():
+            continue
+        for from_dir in state_dir.glob("from-*"):
+            if not from_dir.is_dir():
+                continue
+            p = from_dir / f"{msg_id}.md"
+            if p.is_file():
+                from_base = from_dir.name[len("from-") :]
+                return state, from_base, p
+    return None
+
+
+def _mark_inbox_read(team_dir: Path, *, to_base: str, msg_id: str) -> Path | None:
+    to_base = to_base.strip()
+    msg_id = msg_id.strip()
+    if not to_base or not msg_id:
+        return None
+
+    lock = team_dir / ".lock"
+    with _locked(lock):
+        hit = _find_inbox_message_file(team_dir, to_base=to_base, msg_id=msg_id)
+        if not hit:
+            return None
+        state, from_base, src = hit
+        if state == _INBOX_READ_DIR:
+            return src
+
+        dst = _inbox_message_path(
+            team_dir,
+            to_base=to_base,
+            from_base=from_base,
+            state=_INBOX_READ_DIR,
+            msg_id=msg_id,
+        )
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            src.replace(dst)
+        except OSError:
+            try:
+                shutil.copy2(src, dst)
+                src.unlink(missing_ok=True)  # type: ignore[call-arg]
+            except Exception:
+                pass
+        return dst if dst.is_file() else None
 
 
 def _ensure_task_and_design_files(team_dir: Path, *, task_content: str | None, task_source: str | None) -> Path | None:
@@ -1579,13 +1817,36 @@ def cmd_init(args: argparse.Namespace) -> int:
     if task_path:
         msg = "[TASK]\n" f"Shared task file: {task_path}\n" "Please read it and proceed.\n"
         sender_full = root_full.strip() or "atwf-init"
+        sender_m = _resolve_member(_load_registry(registry), sender_full) or {}
+        from_role = _member_role(sender_m) or root_role
+        from_base = _member_base(sender_m) or sender_full
+
+        pm_m = _resolve_member(_load_registry(registry), pm_full) or {}
+        to_role = _member_role(pm_m) or "pm"
+        to_base = _member_base(pm_m) or pm_full
+
+        msg_id = _next_msg_id(team_dir)
+        _write_inbox_message(
+            team_dir,
+            msg_id=msg_id,
+            kind="task",
+            from_full=sender_full,
+            from_base=from_base,
+            from_role=from_role,
+            to_full=pm_full,
+            to_base=to_base,
+            to_role=to_role,
+            body=msg,
+        )
+        notice = f"[INBOX] id={msg_id}\nopen: atwf inbox-open {msg_id}\nack: atwf inbox-ack {msg_id}\n"
         wrapped = _wrap_team_message(
             team_dir,
             kind="task",
             sender_full=sender_full,
-            sender_role=root_role,
+            sender_role=from_role or None,
             to_full=pm_full,
-            body=msg,
+            body=notice,
+            msg_id=msg_id,
         )
         res = _run_twf(twf, ["ask", pm_full, wrapped])
         sys.stdout.write(res.stdout)
@@ -1780,13 +2041,32 @@ def _bootstrap_worker(
     pieces.append(_render_template(raw, role=role, full=full, base=base, registry=registry, team_dir=team_dir).strip())
 
     msg = "\n\n---\n\n".join(pieces).strip() + "\n"
+    msg_id = _next_msg_id(team_dir)
+    _write_inbox_message(
+        team_dir,
+        msg_id=msg_id,
+        kind="bootstrap",
+        from_full="atwf-bootstrap",
+        from_base="atwf",
+        from_role="system",
+        to_full=name,
+        to_base=base,
+        to_role=role,
+        body=msg,
+    )
+    notice = (
+        f"[BOOTSTRAP-INBOX] id={msg_id}\n"
+        f"open: bash .codex/skills/ai-team-workflow/scripts/atwf inbox-open {msg_id}\n"
+        f"ack:  bash .codex/skills/ai-team-workflow/scripts/atwf inbox-ack {msg_id}\n"
+    )
     wrapped = _wrap_team_message(
         team_dir,
         kind="bootstrap",
         sender_full="atwf-bootstrap",
         sender_role=None,
         to_full=name,
-        body=msg,
+        body=notice,
+        msg_id=msg_id,
     )
     # Bootstrap should never block on a reply.
     res = _run_twf(twf, ["send", name, wrapped])
@@ -2046,15 +2326,37 @@ def cmd_report_up(args: argparse.Namespace) -> int:
     if not parent_full:
         raise SystemExit("❌ no parent recorded for this worker (root). Use report-to <coord|liaison|name> instead.")
 
+    parent_m = _resolve_member(data, parent_full) or {}
+    to_role = _member_role(parent_m)
+    to_base = _member_base(parent_m) or parent_full
+
     body = _read_report_body(args.message)
     msg = _format_report(sender=sender, to_full=parent_full, body=body)
+
+    from_role = str(sender.get("role", "")).strip()
+    from_base = _member_base(sender) or self_name
+    msg_id = _next_msg_id(team_dir)
+    _write_inbox_message(
+        team_dir,
+        msg_id=msg_id,
+        kind="report-up",
+        from_full=self_name,
+        from_base=from_base,
+        from_role=from_role,
+        to_full=parent_full,
+        to_base=to_base,
+        to_role=to_role,
+        body=msg,
+    )
+    notice = f"[INBOX] id={msg_id}\nopen: atwf inbox-open {msg_id}\nack: atwf inbox-ack {msg_id}\n"
     wrapped = _wrap_team_message(
         team_dir,
         kind="report-up",
         sender_full=self_name,
-        sender_role=str(sender.get("role", "")).strip() or None,
+        sender_role=from_role or None,
         to_full=parent_full,
-        body=msg,
+        body=notice,
+        msg_id=msg_id,
     )
 
     # Default to fire-and-forget so reporters don't stall if the recipient is
@@ -2092,15 +2394,37 @@ def cmd_report_to(args: argparse.Namespace) -> int:
     policy = _policy()
     _require_comm_allowed(policy, data, actor_full=self_name, target_full=to_full)
 
+    target_m = _resolve_member(data, to_full) or {}
+    to_role = _member_role(target_m)
+    to_base = _member_base(target_m) or to_full
+
     body = _read_report_body(args.message)
     msg = _format_report(sender=sender, to_full=to_full, body=body)
+
+    from_role = str(sender.get("role", "")).strip()
+    from_base = _member_base(sender) or self_name
+    msg_id = _next_msg_id(team_dir)
+    _write_inbox_message(
+        team_dir,
+        msg_id=msg_id,
+        kind="report-to",
+        from_full=self_name,
+        from_base=from_base,
+        from_role=from_role,
+        to_full=to_full,
+        to_base=to_base,
+        to_role=to_role,
+        body=msg,
+    )
+    notice = f"[INBOX] id={msg_id}\nopen: atwf inbox-open {msg_id}\nack: atwf inbox-ack {msg_id}\n"
     wrapped = _wrap_team_message(
         team_dir,
         kind="report-to",
         sender_full=self_name,
-        sender_role=str(sender.get("role", "")).strip() or None,
+        sender_role=from_role or None,
         to_full=to_full,
-        body=msg,
+        body=notice,
+        msg_id=msg_id,
     )
 
     twf_subcmd = "ask" if bool(getattr(args, "wait", False)) else "send"
@@ -2457,13 +2781,40 @@ def cmd_handoff(args: argparse.Namespace) -> int:
     )
 
     handoff_id = _next_msg_id(team_dir)
+    notice = f"[INBOX] id={handoff_id}\nopen: atwf inbox-open {handoff_id}\nack: atwf inbox-ack {handoff_id}\n"
+
+    _write_inbox_message(
+        team_dir,
+        msg_id=handoff_id,
+        kind="handoff",
+        from_full=actor_full,
+        from_base=_member_base(actor_m) or actor_full,
+        from_role=actor_role or "?",
+        to_full=a_full,
+        to_base=a_base,
+        to_role=_member_role(a_m) or "?",
+        body=msg_a,
+    )
+    _write_inbox_message(
+        team_dir,
+        msg_id=handoff_id,
+        kind="handoff",
+        from_full=actor_full,
+        from_base=_member_base(actor_m) or actor_full,
+        from_role=actor_role or "?",
+        to_full=b_full,
+        to_base=b_base,
+        to_role=_member_role(b_m) or "?",
+        body=msg_b,
+    )
+
     wrapped_a = _wrap_team_message(
         team_dir,
         kind="handoff",
         sender_full=actor_full,
         sender_role=actor_role or None,
         to_full=a_full,
-        body=msg_a,
+        body=notice,
         msg_id=handoff_id,
     )
     wrapped_b = _wrap_team_message(
@@ -2472,7 +2823,7 @@ def cmd_handoff(args: argparse.Namespace) -> int:
         sender_full=actor_full,
         sender_role=actor_role or None,
         to_full=b_full,
-        body=msg_b,
+        body=notice,
         msg_id=handoff_id,
     )
 
@@ -3044,6 +3395,7 @@ def cmd_broadcast(args: argparse.Namespace) -> int:
     if not actor_m:
         raise SystemExit(f"❌ actor not found in registry: {actor_full}")
     actor_role = _member_role(actor_m)
+    actor_base = _member_base(actor_m) or actor_full
     if actor_role not in policy.broadcast_allowed_roles:
         raise SystemExit(
             "❌ broadcast not permitted by policy.\n"
@@ -3099,6 +3451,34 @@ def cmd_broadcast(args: argparse.Namespace) -> int:
             uniq.append(t)
 
     bc_id = _next_msg_id(team_dir)
+    notice = f"[INBOX] id={bc_id}\nopen: atwf inbox-open {bc_id}\nack: atwf inbox-ack {bc_id}\n"
+
+    lock = team_dir / ".lock"
+    with _locked(lock):
+        _ensure_share_layout(team_dir)
+        max_unread = _inbox_max_unread_per_thread()
+        for full in uniq:
+            m = _resolve_member(data, full) or {}
+            to_role = _member_role(m)
+            to_base = _member_base(m) or full
+            _write_inbox_message_unlocked(
+                team_dir,
+                msg_id=bc_id,
+                kind="broadcast",
+                from_full=actor_full,
+                from_base=actor_base,
+                from_role=actor_role or "?",
+                to_full=full,
+                to_base=to_base,
+                to_role=to_role or "?",
+                body=msg,
+            )
+            _inbox_enforce_unread_limit_unlocked(
+                team_dir,
+                to_base=to_base,
+                from_base=actor_base,
+                max_unread=max_unread,
+            )
 
     failures: list[str] = []
     # Broadcast is fire-and-forget: fan out sends in parallel and do not wait for replies/confirmations.
@@ -3117,7 +3497,7 @@ def cmd_broadcast(args: argparse.Namespace) -> int:
                         sender_full=actor_full,
                         sender_role=actor_role or None,
                         to_full=full,
-                        body=msg,
+                        body=notice,
                         msg_id=bc_id,
                     ),
                 ],
@@ -3259,6 +3639,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
     if not actor_m:
         raise SystemExit(f"❌ actor not found in registry: {actor_full} (run: atwf register-self ...)")
     actor_role = _member_role(actor_m)
+    actor_base = _member_base(actor_m) or actor_full
 
     target = args.name.strip()
     if not target:
@@ -3267,6 +3648,10 @@ def cmd_ask(args: argparse.Namespace) -> int:
     if not full:
         raise SystemExit(f"❌ name not found in registry: {target} (use `atwf list` or `atwf up/spawn`)")
 
+    target_m = _resolve_member(data, full) or {}
+    to_role = _member_role(target_m)
+    to_base = _member_base(target_m) or full
+
     _require_comm_allowed(policy, data, actor_full=actor_full, target_full=full)
 
     msg = args.message
@@ -3274,13 +3659,29 @@ def cmd_ask(args: argparse.Namespace) -> int:
         msg = _forward_stdin()
     if msg is None:
         raise SystemExit("❌ message missing (provide as arg or via stdin)")
+
+    msg_id = _next_msg_id(team_dir)
+    _write_inbox_message(
+        team_dir,
+        msg_id=msg_id,
+        kind="ask",
+        from_full=actor_full,
+        from_base=actor_base,
+        from_role=actor_role,
+        to_full=full,
+        to_base=to_base,
+        to_role=to_role,
+        body=msg,
+    )
+    notice = f"[INBOX] id={msg_id}\nopen: atwf inbox-open {msg_id}\nack: atwf inbox-ack {msg_id}\n"
     wrapped = _wrap_team_message(
         team_dir,
         kind="ask",
         sender_full=actor_full,
         sender_role=actor_role or None,
         to_full=full,
-        body=msg,
+        body=notice,
+        msg_id=msg_id,
     )
     res = _run_twf(twf, ["ask", full, wrapped])
     sys.stdout.write(res.stdout)
@@ -3300,6 +3701,7 @@ def cmd_send(args: argparse.Namespace) -> int:
     if not actor_m:
         raise SystemExit(f"❌ actor not found in registry: {actor_full} (run: atwf register-self ...)")
     actor_role = _member_role(actor_m)
+    actor_base = _member_base(actor_m) or actor_full
 
     target = args.name.strip()
     if not target:
@@ -3307,6 +3709,10 @@ def cmd_send(args: argparse.Namespace) -> int:
     full = _resolve_target_full(data, target)
     if not full:
         raise SystemExit(f"❌ name not found in registry: {target} (use `atwf list` or `atwf up/spawn`)")
+
+    target_m = _resolve_member(data, full) or {}
+    to_role = _member_role(target_m)
+    to_base = _member_base(target_m) or full
 
     _require_comm_allowed(policy, data, actor_full=actor_full, target_full=full)
 
@@ -3319,13 +3725,28 @@ def cmd_send(args: argparse.Namespace) -> int:
     if not msg:
         raise SystemExit("❌ empty message")
 
+    msg_id = _next_msg_id(team_dir)
+    _write_inbox_message(
+        team_dir,
+        msg_id=msg_id,
+        kind="send",
+        from_full=actor_full,
+        from_base=actor_base,
+        from_role=actor_role,
+        to_full=full,
+        to_base=to_base,
+        to_role=to_role,
+        body=msg,
+    )
+    notice = f"[INBOX] id={msg_id}\nopen: atwf inbox-open {msg_id}\nack: atwf inbox-ack {msg_id}\n"
     wrapped = _wrap_team_message(
         team_dir,
         kind="send",
         sender_full=actor_full,
         sender_role=actor_role or None,
         to_full=full,
-        body=msg,
+        body=notice,
+        msg_id=msg_id,
     )
     res = _run_twf(twf, ["send", full, wrapped])
     sys.stdout.write(res.stdout)
@@ -3368,6 +3789,165 @@ def cmd_ping(args: argparse.Namespace) -> int:
     sys.stdout.write(res.stdout)
     sys.stderr.write(res.stderr)
     return res.returncode
+
+
+def cmd_inbox(args: argparse.Namespace) -> int:
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    target = str(getattr(args, "target", "") or "").strip()
+    if target:
+        full = _resolve_target_full(data, target)
+        if not full:
+            raise SystemExit(f"❌ target not found in registry: {target}")
+        m = _resolve_member(data, full) or {}
+        to_base = _member_base(m) or full
+    else:
+        self_full = _tmux_self_full()
+        if not self_full:
+            raise SystemExit("❌ inbox must run inside tmux (or use: inbox --target <full|base|role>)")
+        m = _resolve_member(data, self_full)
+        if not m:
+            raise SystemExit(f"❌ current worker not found in registry: {self_full}")
+        to_base = _member_base(m) or self_full
+
+    base_dir = _inbox_member_dir(team_dir, base=to_base)
+    unread_root = base_dir / _INBOX_UNREAD_DIR
+    overflow_root = base_dir / _INBOX_OVERFLOW_DIR
+
+    rows: list[tuple[int, str, str, str, str]] = []
+
+    def parse_meta(path: Path) -> tuple[str, str]:
+        kind = ""
+        summary = ""
+        try:
+            head = path.read_text(encoding="utf-8", errors="ignore").splitlines()[:40]
+        except Exception:
+            return kind, summary
+        for line in head:
+            s = line.strip()
+            if s.startswith("- kind:"):
+                kind = s.split(":", 1)[1].strip().strip("`")
+            elif s.startswith("- summary:"):
+                summary = s.split(":", 1)[1].strip()
+        return kind, summary
+
+    if unread_root.is_dir():
+        for from_dir in sorted([p for p in unread_root.glob("from-*") if p.is_dir()]):
+            from_base = from_dir.name[len("from-") :]
+            for n, stem, p in _inbox_list_msgs(from_dir):
+                kind, summary = parse_meta(p)
+                rows.append((n, stem, from_base, kind, summary))
+
+    rows.sort(key=lambda r: r[0])
+    if not rows and not overflow_root.is_dir():
+        print("(empty)")
+        return 0
+
+    for _n, msg_id, from_base, kind, summary in rows:
+        parts = [msg_id, from_base]
+        parts.append(kind or "?")
+        if summary:
+            parts.append(summary)
+        print("\t".join(parts))
+
+    if overflow_root.is_dir():
+        for from_dir in sorted([p for p in overflow_root.glob("from-*") if p.is_dir()]):
+            from_base = from_dir.name[len("from-") :]
+            count = len(_inbox_list_msgs(from_dir))
+            if count:
+                _eprint(f"ℹ️ overflow pending: from={from_base} count={count} (use inbox-open <id> to read)")
+    return 0
+
+
+def cmd_inbox_open(args: argparse.Namespace) -> int:
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    msg_id = str(args.msg_id or "").strip()
+    if not msg_id:
+        raise SystemExit("❌ msg_id is required")
+
+    target = str(getattr(args, "target", "") or "").strip()
+    if target:
+        full = _resolve_target_full(data, target)
+        if not full:
+            raise SystemExit(f"❌ target not found in registry: {target}")
+        m = _resolve_member(data, full) or {}
+        to_base = _member_base(m) or full
+    else:
+        self_full = _tmux_self_full()
+        if not self_full:
+            raise SystemExit("❌ inbox-open must run inside tmux (or use: inbox-open --target <full|base|role> <id>)")
+        m = _resolve_member(data, self_full)
+        if not m:
+            raise SystemExit(f"❌ current worker not found in registry: {self_full}")
+        to_base = _member_base(m) or self_full
+
+    hit = _find_inbox_message_file(team_dir, to_base=to_base, msg_id=msg_id)
+    if not hit:
+        raise SystemExit(f"❌ message not found in inbox: {msg_id}")
+    _state, _from_base, path = hit
+    content = path.read_text(encoding="utf-8", errors="ignore")
+    sys.stdout.write(content)
+    if content and not content.endswith("\n"):
+        sys.stdout.write("\n")
+    return 0
+
+
+def cmd_inbox_ack(args: argparse.Namespace) -> int:
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    msg_id = str(args.msg_id or "").strip()
+    if not msg_id:
+        raise SystemExit("❌ msg_id is required")
+
+    self_full = _tmux_self_full()
+    if not self_full:
+        raise SystemExit("❌ inbox-ack must run inside tmux")
+    m = _resolve_member(data, self_full)
+    if not m:
+        raise SystemExit(f"❌ current worker not found in registry: {self_full}")
+    to_base = _member_base(m) or self_full
+
+    moved = _mark_inbox_read(team_dir, to_base=to_base, msg_id=msg_id)
+    if not moved:
+        raise SystemExit(f"❌ message not found: {msg_id}")
+    print("OK")
+    return 0
+
+
+def cmd_inbox_pending(args: argparse.Namespace) -> int:
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    actor_full = _resolve_actor_full(data, as_target=getattr(args, "as_target", None))
+    actor_m = _resolve_member(data, actor_full)
+    if not actor_m:
+        raise SystemExit(f"❌ actor not found in registry: {actor_full}")
+    from_base = _member_base(actor_m) or actor_full
+
+    target = str(args.target or "").strip()
+    if not target:
+        raise SystemExit("❌ target is required")
+    target_full = _resolve_target_full(data, target)
+    if not target_full:
+        raise SystemExit(f"❌ target not found in registry: {target}")
+    target_m = _resolve_member(data, target_full) or {}
+    to_base = _member_base(target_m) or target_full
+
+    unread_dir = _inbox_thread_dir(team_dir, to_base=to_base, from_base=from_base, state=_INBOX_UNREAD_DIR)
+    overflow_dir = _inbox_thread_dir(team_dir, to_base=to_base, from_base=from_base, state=_INBOX_OVERFLOW_DIR)
+
+    unread = len(_inbox_list_msgs(unread_dir))
+    overflow = len(_inbox_list_msgs(overflow_dir))
+    print(f"unread={unread} overflow={overflow}")
+    return 0
 
 
 def cmd_bootstrap(args: argparse.Namespace) -> int:
@@ -3645,6 +4225,20 @@ def build_parser() -> argparse.ArgumentParser:
     ping = sub.add_parser("ping", help="twf ping wrapper")
     ping.add_argument("name")
 
+    inbox = sub.add_parser("inbox", help="list unread inbox messages (self by default)")
+    inbox.add_argument("--target", default="", help="optional target inbox to inspect (full|base|role)")
+
+    inbox_open = sub.add_parser("inbox-open", help="print a message body from inbox by id (self by default)")
+    inbox_open.add_argument("msg_id")
+    inbox_open.add_argument("--target", default="", help="optional target inbox to inspect (full|base|role)")
+
+    inbox_ack = sub.add_parser("inbox-ack", help="mark an inbox message as read (self only)")
+    inbox_ack.add_argument("msg_id")
+
+    inbox_pending = sub.add_parser("inbox-pending", help="count pending messages you sent to a target")
+    inbox_pending.add_argument("target", help="target member (full|base|role)")
+    inbox_pending.add_argument("--as", dest="as_target", default=None, help="actor (full|base|role); required outside tmux")
+
     boot = sub.add_parser("bootstrap", help="send the role prompt template to a worker")
     boot.add_argument("name")
     boot.add_argument("role", choices=enabled_roles)
@@ -3738,6 +4332,14 @@ def main(argv: list[str]) -> int:
         return cmd_pend(args)
     if args.cmd == "ping":
         return cmd_ping(args)
+    if args.cmd == "inbox":
+        return cmd_inbox(args)
+    if args.cmd == "inbox-open":
+        return cmd_inbox_open(args)
+    if args.cmd == "inbox-ack":
+        return cmd_inbox_ack(args)
+    if args.cmd == "inbox-pending":
+        return cmd_inbox_pending(args)
     if args.cmd == "bootstrap":
         return cmd_bootstrap(args)
 

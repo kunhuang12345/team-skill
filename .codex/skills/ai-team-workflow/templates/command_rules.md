@@ -33,6 +33,16 @@ Hard rules:
 - Do not re-quote entire incoming messages; reference by `id` to save tokens.
 - For `kind=send|broadcast|bootstrap|handoff|task`: keep replies minimal (ACK + any required action only).
 
+## Inbox-backed message bodies (mandatory)
+
+To reduce token waste and avoid “confirm storms”, **the full message body is written to a file** and the chat message only contains a short `[INBOX] id=...` notification.
+
+Hard rules:
+- For every received `id`, load the full body via: `bash .codex/skills/ai-team-workflow/scripts/atwf inbox-open <id>`
+- After you have fully processed the message, mark it read via: `bash .codex/skills/ai-team-workflow/scripts/atwf inbox-ack <id>`
+- To see your pending unread queue: `bash .codex/skills/ai-team-workflow/scripts/atwf inbox`
+- When you send many messages to the same target, check backlog first: `bash .codex/skills/ai-team-workflow/scripts/atwf inbox-pending <target>`
+
 ## Forbidden (do NOT do this)
 
 Do **NOT** use raw tmux keystroke injection to “send” chat messages, including:

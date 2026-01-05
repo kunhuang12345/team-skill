@@ -73,3 +73,11 @@ team:
 
       # Who can create handoffs/permits.
       handoff_creators: [coord, pm, arch]
+
+  # Message delivery (hard default behavior)
+  # - Full message bodies are stored in {{TEAM_DIR}}/inbox/...
+  # - Chat prompts contain only short [INBOX] id=... notifications
+  messaging:
+    inbox:
+      # Max active unread items per sender->recipient thread; older unread are moved to inbox/overflow.
+      max_unread_per_thread: 5
