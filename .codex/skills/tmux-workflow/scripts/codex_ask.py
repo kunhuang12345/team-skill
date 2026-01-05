@@ -342,6 +342,20 @@ def _send_enter(tmux_target: str) -> None:
     _tmux_cmd(["send-keys", "-t", resolved, "C-m"])
 
 
+def _send_escape(tmux_target: str) -> None:
+    resolved = _resolve_pane_target(tmux_target)
+    _tmux_cmd(["send-keys", "-t", resolved, "Escape"])
+
+
+def _prepare_tui_for_paste(tmux_target: str) -> None:
+    # Codex TUI sometimes needs a short settle time after ESC to avoid paste/submit glitches.
+    try:
+        _send_escape(tmux_target)
+    except Exception:
+        return
+    time.sleep(0.5)
+
+
 def _clear_input(tmux_target: str) -> None:
     """Clear Codex input buffer (Ctrl+U works in Codex TUI)."""
     resolved = _resolve_pane_target(tmux_target)
@@ -724,6 +738,7 @@ def main(argv: list[str]) -> int:
 
     if args.send_only:
         try:
+            _prepare_tui_for_paste(str(tmux_target))
             _clear_input(str(tmux_target))
             _inject_text_only(str(tmux_target), text)
             _schedule_submit_nudges_bg(
@@ -775,6 +790,7 @@ def main(argv: list[str]) -> int:
     sent_after = datetime.now(timezone.utc) - timedelta(seconds=0.5)
     try:
         _wait_for_tui_idle(str(tmux_target), timeout_s=30.0, poll_s=0.5)
+        _prepare_tui_for_paste(str(tmux_target))
         _clear_input(str(tmux_target))
         _inject_text_only(str(tmux_target), text)
         _schedule_submit_nudges_bg(
