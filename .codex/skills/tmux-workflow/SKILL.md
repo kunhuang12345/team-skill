@@ -47,6 +47,7 @@ State directory:
 - Start a worker (returns the state json path on stdout):
   - `bash .codex/skills/tmux-workflow/scripts/twf codex-a`
   - `bash .codex/skills/tmux-workflow/scripts/twf up codex-a`
+  - with profile: `bash .codex/skills/tmux-workflow/scripts/twf up codex-a -p aihuohua`
 - Ask a worker and print Codex reply to stdout:
   - `bash .codex/skills/tmux-workflow/scripts/twf codex-a "your prompt"`
   - `bash .codex/skills/tmux-workflow/scripts/twf ask codex-a "your prompt"`
