@@ -367,6 +367,11 @@ def _clear_input(tmux_target: str) -> None:
         return
 
 
+def _should_clear_input() -> bool:
+    v = (os.environ.get("TWF_CLEAR_INPUT") or "").strip().lower()
+    return v in {"1", "true", "yes", "y", "on"}
+
+
 class _InotifyWatcher:
     _IN_MODIFY = 0x00000002
     _IN_ATTRIB = 0x00000004
@@ -504,7 +509,7 @@ class _InotifyWatcher:
 
 
 def _inject_text(tmux_target: str, text: str, *, submit_delay_s: float) -> None:
-    text = text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     resolved = _resolve_pane_target(tmux_target)
     # Use buffer paste for large/multiline to avoid argv limits.
     if "\n" in text or len(text) > 200:
@@ -525,7 +530,7 @@ def _inject_text(tmux_target: str, text: str, *, submit_delay_s: float) -> None:
 
 
 def _inject_text_only(tmux_target: str, text: str) -> None:
-    text = text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     resolved = _resolve_pane_target(tmux_target)
     # Use buffer paste for large/multiline to avoid argv limits.
     if "\n" in text or len(text) > 200:
@@ -739,7 +744,8 @@ def main(argv: list[str]) -> int:
     if args.send_only:
         try:
             _prepare_tui_for_paste(str(tmux_target))
-            _clear_input(str(tmux_target))
+            if _should_clear_input():
+                _clear_input(str(tmux_target))
             _inject_text_only(str(tmux_target), text)
             _schedule_submit_nudges_bg(
                 str(tmux_target),
@@ -791,7 +797,8 @@ def main(argv: list[str]) -> int:
     try:
         _wait_for_tui_idle(str(tmux_target), timeout_s=30.0, poll_s=0.5)
         _prepare_tui_for_paste(str(tmux_target))
-        _clear_input(str(tmux_target))
+        if _should_clear_input():
+            _clear_input(str(tmux_target))
         _inject_text_only(str(tmux_target), text)
         _schedule_submit_nudges_bg(
             str(tmux_target),

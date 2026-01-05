@@ -14,6 +14,25 @@ This rule applies to **every role** in this AI team.
   - `bash .codex/skills/ai-team-workflow/scripts/atwf perms-self`
 - Any progress/completion/design conclusion **must** be reported via `atwf report-up` (or `atwf report-to coord|liaison`) to count as “reported”; otherwise the parent may treat it as “not received”.
 
+## Queue-safe message protocol (mandatory)
+
+Codex TUI can collapse multiple pending messages into a single prompt (especially after `Esc`).
+To keep ordering deterministic, **all atwf messages are wrapped** like:
+
+```
+[ATWF-MSG id=000123 kind=send from=<full> to=<full> ts=<iso8601>]
+...body...
+[ATWF-END id=000123]
+```
+
+Hard rules:
+- Extract all `[ATWF-MSG ...] ... [ATWF-END ...]` blocks from the prompt.
+- Process blocks in **ascending numeric `id`** (oldest first), regardless of where they appear in the prompt.
+- If the same `id` appears multiple times, **process it once** (dedupe).
+- Reply **once per batch**. Start your reply with: `ACK ids: 000123, 000124`.
+- Do not re-quote entire incoming messages; reference by `id` to save tokens.
+- For `kind=send|broadcast|bootstrap|handoff|task`: keep replies minimal (ACK + any required action only).
+
 ## Forbidden (do NOT do this)
 
 Do **NOT** use raw tmux keystroke injection to “send” chat messages, including:

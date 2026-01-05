@@ -27,6 +27,9 @@ DEFAULT_ROLE_SCOPES: dict[str, str] = {
 }
 FULL_NAME_RE = re.compile(r"^.+-[0-9]{8}-[0-9]{6}-[0-9]+$")
 
+_MSG_SEQ_FILE = "message_seq.json"
+_MSG_ID_WIDTH = 6
+
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
@@ -34,6 +37,56 @@ def _now() -> str:
 
 def _eprint(msg: str) -> None:
     print(msg, file=sys.stderr)
+
+
+def _msg_seq_path(team_dir: Path) -> Path:
+    return team_dir / _MSG_SEQ_FILE
+
+
+def _format_msg_id(n: int) -> str:
+    return str(max(0, int(n))).zfill(_MSG_ID_WIDTH)
+
+
+def _next_msg_id(team_dir: Path) -> str:
+    lock = team_dir / ".lock"
+    seq_path = _msg_seq_path(team_dir)
+    with _locked(lock):
+        data = _read_json(seq_path)
+        next_id_raw = data.get("next_id", 1)
+        try:
+            next_id = int(next_id_raw)
+        except Exception:
+            next_id = 1
+        if next_id < 1:
+            next_id = 1
+        data.setdefault("created_at", _now())
+        data["updated_at"] = _now()
+        data["next_id"] = next_id + 1
+        _write_json_atomic(seq_path, data)
+    return _format_msg_id(next_id)
+
+
+def _wrap_team_message(
+    team_dir: Path,
+    *,
+    kind: str,
+    sender_full: str,
+    sender_role: str | None,
+    to_full: str,
+    body: str,
+    msg_id: str | None = None,
+) -> str:
+    resolved_id = (msg_id or "").strip() or _next_msg_id(team_dir)
+    kind_s = kind.strip() or "send"
+    sender_full_s = sender_full.strip() or "unknown"
+    to_full_s = to_full.strip() or "unknown"
+    role_s = (sender_role or "").strip()
+    role_part = f" role={role_s}" if role_s else ""
+    header = f"[ATWF-MSG id={resolved_id} kind={kind_s} from={sender_full_s} to={to_full_s}{role_part} ts={_now()}]"
+    body_s = (body or "").rstrip()
+    if body_s:
+        return f"{header}\n{body_s}\n[ATWF-END id={resolved_id}]\n"
+    return f"{header}\n[ATWF-END id={resolved_id}]\n"
 
 
 def _expand_path(path: str) -> Path:
@@ -1525,7 +1578,16 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     if task_path:
         msg = "[TASK]\n" f"Shared task file: {task_path}\n" "Please read it and proceed.\n"
-        res = _run_twf(twf, ["ask", pm_full, msg])
+        sender_full = root_full.strip() or "atwf-init"
+        wrapped = _wrap_team_message(
+            team_dir,
+            kind="task",
+            sender_full=sender_full,
+            sender_role=root_role,
+            to_full=pm_full,
+            body=msg,
+        )
+        res = _run_twf(twf, ["ask", pm_full, wrapped])
         sys.stdout.write(res.stdout)
         sys.stderr.write(res.stderr)
         return res.returncode
@@ -1718,8 +1780,16 @@ def _bootstrap_worker(
     pieces.append(_render_template(raw, role=role, full=full, base=base, registry=registry, team_dir=team_dir).strip())
 
     msg = "\n\n---\n\n".join(pieces).strip() + "\n"
+    wrapped = _wrap_team_message(
+        team_dir,
+        kind="bootstrap",
+        sender_full="atwf-bootstrap",
+        sender_role=None,
+        to_full=name,
+        body=msg,
+    )
     # Bootstrap should never block on a reply.
-    res = _run_twf(twf, ["send", name, msg])
+    res = _run_twf(twf, ["send", name, wrapped])
     if res.returncode != 0:
         _eprint(res.stderr.strip() or f"⚠️ twf send failed (code {res.returncode})")
 
@@ -1978,11 +2048,19 @@ def cmd_report_up(args: argparse.Namespace) -> int:
 
     body = _read_report_body(args.message)
     msg = _format_report(sender=sender, to_full=parent_full, body=body)
+    wrapped = _wrap_team_message(
+        team_dir,
+        kind="report-up",
+        sender_full=self_name,
+        sender_role=str(sender.get("role", "")).strip() or None,
+        to_full=parent_full,
+        body=msg,
+    )
 
     # Default to fire-and-forget so reporters don't stall if the recipient is
     # busy. Use --wait to collect a reply.
     twf_subcmd = "ask" if bool(getattr(args, "wait", False)) else "send"
-    res2 = _run_twf(twf, [twf_subcmd, parent_full, msg])
+    res2 = _run_twf(twf, [twf_subcmd, parent_full, wrapped])
     sys.stdout.write(res2.stdout)
     sys.stderr.write(res2.stderr)
     return res2.returncode
@@ -2016,9 +2094,17 @@ def cmd_report_to(args: argparse.Namespace) -> int:
 
     body = _read_report_body(args.message)
     msg = _format_report(sender=sender, to_full=to_full, body=body)
+    wrapped = _wrap_team_message(
+        team_dir,
+        kind="report-to",
+        sender_full=self_name,
+        sender_role=str(sender.get("role", "")).strip() or None,
+        to_full=to_full,
+        body=msg,
+    )
 
     twf_subcmd = "ask" if bool(getattr(args, "wait", False)) else "send"
-    res2 = _run_twf(twf, [twf_subcmd, to_full, msg])
+    res2 = _run_twf(twf, [twf_subcmd, to_full, wrapped])
     sys.stdout.write(res2.stdout)
     sys.stderr.write(res2.stderr)
     return res2.returncode
@@ -2370,10 +2456,30 @@ def cmd_handoff(args: argparse.Namespace) -> int:
         f"- atwf ask {a_base} \"...\"\n"
     )
 
-    res_a = _run_twf(twf, ["send", a_full, msg_a])
+    handoff_id = _next_msg_id(team_dir)
+    wrapped_a = _wrap_team_message(
+        team_dir,
+        kind="handoff",
+        sender_full=actor_full,
+        sender_role=actor_role or None,
+        to_full=a_full,
+        body=msg_a,
+        msg_id=handoff_id,
+    )
+    wrapped_b = _wrap_team_message(
+        team_dir,
+        kind="handoff",
+        sender_full=actor_full,
+        sender_role=actor_role or None,
+        to_full=b_full,
+        body=msg_b,
+        msg_id=handoff_id,
+    )
+
+    res_a = _run_twf(twf, ["send", a_full, wrapped_a])
     if res_a.returncode != 0:
         _eprint(res_a.stderr.strip() or f"⚠️ notify failed: {a_full}")
-    res_b = _run_twf(twf, ["send", b_full, msg_b])
+    res_b = _run_twf(twf, ["send", b_full, wrapped_b])
     if res_b.returncode != 0:
         _eprint(res_b.stderr.strip() or f"⚠️ notify failed: {b_full}")
 
@@ -2992,11 +3098,32 @@ def cmd_broadcast(args: argparse.Namespace) -> int:
             seen.add(t)
             uniq.append(t)
 
+    bc_id = _next_msg_id(team_dir)
+
     failures: list[str] = []
     # Broadcast is fire-and-forget: fan out sends in parallel and do not wait for replies/confirmations.
     max_workers = min(16, max(1, len(uniq)))
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_run_twf, twf, ["send", full, msg]): full for full in uniq}
+        futures = {
+            pool.submit(
+                _run_twf,
+                twf,
+                [
+                    "send",
+                    full,
+                    _wrap_team_message(
+                        team_dir,
+                        kind="broadcast",
+                        sender_full=actor_full,
+                        sender_role=actor_role or None,
+                        to_full=full,
+                        body=msg,
+                        msg_id=bc_id,
+                    ),
+                ],
+            ): full
+            for full in uniq
+        }
         for fut in as_completed(futures):
             full = futures[fut]
             sys.stdout.write(f"--- {full} ---\n")
@@ -3128,8 +3255,10 @@ def cmd_ask(args: argparse.Namespace) -> int:
     policy = _policy()
 
     actor_full = _resolve_actor_full(data, as_target=getattr(args, "as_target", None))
-    if not _resolve_member(data, actor_full):
+    actor_m = _resolve_member(data, actor_full)
+    if not actor_m:
         raise SystemExit(f"❌ actor not found in registry: {actor_full} (run: atwf register-self ...)")
+    actor_role = _member_role(actor_m)
 
     target = args.name.strip()
     if not target:
@@ -3145,7 +3274,15 @@ def cmd_ask(args: argparse.Namespace) -> int:
         msg = _forward_stdin()
     if msg is None:
         raise SystemExit("❌ message missing (provide as arg or via stdin)")
-    res = _run_twf(twf, ["ask", full, msg])
+    wrapped = _wrap_team_message(
+        team_dir,
+        kind="ask",
+        sender_full=actor_full,
+        sender_role=actor_role or None,
+        to_full=full,
+        body=msg,
+    )
+    res = _run_twf(twf, ["ask", full, wrapped])
     sys.stdout.write(res.stdout)
     sys.stderr.write(res.stderr)
     return res.returncode
@@ -3159,8 +3296,10 @@ def cmd_send(args: argparse.Namespace) -> int:
     policy = _policy()
 
     actor_full = _resolve_actor_full(data, as_target=getattr(args, "as_target", None))
-    if not _resolve_member(data, actor_full):
+    actor_m = _resolve_member(data, actor_full)
+    if not actor_m:
         raise SystemExit(f"❌ actor not found in registry: {actor_full} (run: atwf register-self ...)")
+    actor_role = _member_role(actor_m)
 
     target = args.name.strip()
     if not target:
@@ -3180,7 +3319,15 @@ def cmd_send(args: argparse.Namespace) -> int:
     if not msg:
         raise SystemExit("❌ empty message")
 
-    res = _run_twf(twf, ["send", full, msg])
+    wrapped = _wrap_team_message(
+        team_dir,
+        kind="send",
+        sender_full=actor_full,
+        sender_role=actor_role or None,
+        to_full=full,
+        body=msg,
+    )
+    res = _run_twf(twf, ["send", full, wrapped])
     sys.stdout.write(res.stdout)
     sys.stderr.write(res.stderr)
     return res.returncode
