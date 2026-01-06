@@ -49,7 +49,9 @@ Goal: avoid spending tokens by injecting prompts into other workers' Codex CLIs.
 
 Hard rules:
 - Default delivery is **inbox-only**: `atwf send` / `atwf broadcast` / `atwf report-*` write to inbox and do **not** inject into the recipient CLI.
-- The **only** routine CLI injection is the operator-side watcher `atwf watch-idle`, which wakes `idle` workers when inbox has pending items.
+- The **only** routine CLI injection is the operator-side watcher `atwf watch-idle`, which:
+  - wakes `idle` workers when inbox has pending items
+  - injects governance alerts to `coord` when `working` workers ignore inbox too long
 - `--notify` / `--wait` are **operator-only exceptions** and should not be used during normal work.
 
 ## Agent state + standby protocol (mandatory)

@@ -4457,6 +4457,24 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
                                 to_role=policy.root_role,
                                 body=body,
                             )
+                            # Also inject a short notice into coord's CLI so the coordinator
+                            # sees governance alerts even if they aren't polling inbox.
+                            short = (
+                                "[ALERT] stale inbox while working\n"
+                                f"worker={base} role={role or '?'} pending={unread}+{overflow} "
+                                f"oldest={min_id} age_s={int(age_s)}\n"
+                                f"inbox id={msg_id} (run: atwf inbox-open {msg_id} --target coord)\n"
+                            )
+                            wrapped = _wrap_team_message(
+                                team_dir,
+                                kind="alert-stale-inbox",
+                                sender_full="atwf-watch",
+                                sender_role="system",
+                                to_full=coord_full,
+                                body=short,
+                                msg_id=msg_id,
+                            )
+                            _run_twf(twf, ["send", coord_full, wrapped])
                             _write_agent_state(
                                 team_dir,
                                 full=full,
