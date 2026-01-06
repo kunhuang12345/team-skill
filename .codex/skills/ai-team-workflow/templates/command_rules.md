@@ -43,6 +43,15 @@ Hard rules:
 - To see your pending unread queue: `bash .codex/skills/ai-team-workflow/scripts/atwf inbox`
 - When you send many messages to the same target, check backlog first: `bash .codex/skills/ai-team-workflow/scripts/atwf inbox-pending <target>`
 
+## CLI injection policy (mandatory)
+
+Goal: avoid spending tokens by injecting prompts into other workers' Codex CLIs.
+
+Hard rules:
+- Default delivery is **inbox-only**: `atwf send` / `atwf broadcast` / `atwf report-*` write to inbox and do **not** inject into the recipient CLI.
+- The **only** routine CLI injection is the operator-side watcher `atwf watch-idle`, which wakes `idle` workers when inbox has pending items.
+- `--notify` / `--wait` are **operator-only exceptions** and should not be used during normal work.
+
 ## Agent state + standby protocol (mandatory)
 
 The team uses an explicit state machine to reduce token waste and prevent message pileups.

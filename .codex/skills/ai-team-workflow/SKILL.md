@@ -173,7 +173,7 @@ All commands are wrappers around `twf` plus registry management:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf attach <full|base|role>`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf route "<query>" [--role <role>]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf ask <full|base|role> ["message"]` (stdin supported)
-- `bash .codex/skills/ai-team-workflow/scripts/atwf send <full|base|role> ["message"]` (stdin supported; no waiting)
+- `bash .codex/skills/ai-team-workflow/scripts/atwf send <full|base|role> ["message"]` (stdin supported; default inbox-only, no CLI injection)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf handoff <a> <b> [--reason "..."] [--ttl SECONDS]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf pend <full|base|role> [N]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf ping <full|base|role>`

@@ -2533,7 +2533,6 @@ def _format_report(*, sender: dict[str, Any], to_full: str, body: str) -> str:
 
 
 def cmd_report_up(args: argparse.Namespace) -> int:
-    twf = _resolve_twf()
     team_dir = _default_team_dir()
     registry = _registry_path(team_dir)
 
@@ -2587,17 +2586,22 @@ def cmd_report_up(args: argparse.Namespace) -> int:
         msg_id=msg_id,
     )
 
-    # Default to fire-and-forget so reporters don't stall if the recipient is
-    # busy. Use --wait to collect a reply.
-    twf_subcmd = "ask" if bool(getattr(args, "wait", False)) else "send"
-    res2 = _run_twf(twf, [twf_subcmd, parent_full, wrapped])
+    # Default: inbox-only delivery (no CLI injection). This avoids consuming the
+    # recipient's Codex context. Recipients must poll inbox while working.
+    if not bool(getattr(args, "wait", False)):
+        print(msg_id)
+        return 0
+
+    # Exceptional: allow an explicit blocking request (CLI injection) when the
+    # operator intentionally chooses to wait for a reply.
+    twf = _resolve_twf()
+    res2 = _run_twf(twf, ["ask", parent_full, wrapped])
     sys.stdout.write(res2.stdout)
     sys.stderr.write(res2.stderr)
     return res2.returncode
 
 
 def cmd_report_to(args: argparse.Namespace) -> int:
-    twf = _resolve_twf()
     team_dir = _default_team_dir()
     registry = _registry_path(team_dir)
 
@@ -2655,8 +2659,14 @@ def cmd_report_to(args: argparse.Namespace) -> int:
         msg_id=msg_id,
     )
 
-    twf_subcmd = "ask" if bool(getattr(args, "wait", False)) else "send"
-    res2 = _run_twf(twf, [twf_subcmd, to_full, wrapped])
+    # Default: inbox-only delivery (no CLI injection).
+    if not bool(getattr(args, "wait", False)):
+        print(msg_id)
+        return 0
+
+    # Exceptional: blocking request (CLI injection) when --wait is used.
+    twf = _resolve_twf()
+    res2 = _run_twf(twf, ["ask", to_full, wrapped])
     sys.stdout.write(res2.stdout)
     sys.stderr.write(res2.stderr)
     return res2.returncode
@@ -2924,7 +2934,6 @@ def cmd_perms_self(_: argparse.Namespace) -> int:
 
 
 def cmd_handoff(args: argparse.Namespace) -> int:
-    twf = _resolve_twf()
     team_dir = _default_team_dir()
     registry = _registry_path(team_dir)
     policy = _policy()
@@ -2996,7 +3005,7 @@ def cmd_handoff(args: argparse.Namespace) -> int:
         f"peer: {b_base} ({b_full})\n"
         f"{reason_line}{exp_line}"
         "You are permitted to talk directly. Use:\n"
-        f"- atwf ask {b_base} \"...\"\n"
+        f"- atwf send {b_base} \"...\"  # inbox-only by default; peer must poll inbox while working\n"
     )
     msg_b = (
         "[HANDOFF]\n"
@@ -3005,7 +3014,7 @@ def cmd_handoff(args: argparse.Namespace) -> int:
         f"{reason_line}{exp_line}"
         "Please reply directly to the requester (avoid relaying via coord).\n"
         "Use:\n"
-        f"- atwf ask {a_base} \"...\"\n"
+        f"- atwf send {a_base} \"...\"  # inbox-only by default; peer must poll inbox while working\n"
     )
 
     handoff_id = _next_msg_id(team_dir)
@@ -3055,12 +3064,14 @@ def cmd_handoff(args: argparse.Namespace) -> int:
         msg_id=handoff_id,
     )
 
-    res_a = _run_twf(twf, ["send", a_full, wrapped_a])
-    if res_a.returncode != 0:
-        _eprint(res_a.stderr.strip() or f"⚠️ notify failed: {a_full}")
-    res_b = _run_twf(twf, ["send", b_full, wrapped_b])
-    if res_b.returncode != 0:
-        _eprint(res_b.stderr.strip() or f"⚠️ notify failed: {b_full}")
+    if bool(getattr(args, "notify", False)):
+        twf = _resolve_twf()
+        res_a = _run_twf(twf, ["send", a_full, wrapped_a])
+        if res_a.returncode != 0:
+            _eprint(res_a.stderr.strip() or f"⚠️ notify failed: {a_full}")
+        res_b = _run_twf(twf, ["send", b_full, wrapped_b])
+        if res_b.returncode != 0:
+            _eprint(res_b.stderr.strip() or f"⚠️ notify failed: {b_full}")
 
     print(str(permit.get("id", "")) if permit else "(existing)")
     return 0
@@ -3613,7 +3624,6 @@ def cmd_unpause(args: argparse.Namespace) -> int:
 
 
 def cmd_broadcast(args: argparse.Namespace) -> int:
-    twf = _resolve_twf()
     team_dir = _default_team_dir()
     registry = _registry_path(team_dir)
     data = _load_registry(registry)
@@ -3709,10 +3719,17 @@ def cmd_broadcast(args: argparse.Namespace) -> int:
                 max_unread=max_unread,
             )
 
-    failures: list[str] = []
-    # Broadcast is fire-and-forget: fan out sends in parallel and do not wait for replies/confirmations.
-    max_workers = min(16, max(1, len(uniq)))
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+    # Default: inbox-only delivery. We still write inbox entries for all
+    # recipients, but we do NOT inject into their Codex CLIs unless explicitly
+    # requested.
+    if not bool(getattr(args, "notify", False)):
+        print(bc_id)
+        return 0
+
+    twf = _resolve_twf()
+    failures2: list[str] = []
+    max_workers2 = min(16, max(1, len(uniq)))
+    with ThreadPoolExecutor(max_workers=max_workers2) as pool:
         futures = {
             pool.submit(
                 _run_twf,
@@ -3739,16 +3756,16 @@ def cmd_broadcast(args: argparse.Namespace) -> int:
             try:
                 res = fut.result()
             except Exception as exc:
-                sys.stderr.write(f"❌ broadcast failed: {full}: {exc}\n")
-                failures.append(full)
+                sys.stderr.write(f"❌ broadcast notify failed: {full}: {exc}\n")
+                failures2.append(full)
                 continue
             sys.stdout.write(res.stdout)
             sys.stderr.write(res.stderr)
             if res.returncode != 0:
-                failures.append(full)
+                failures2.append(full)
 
-    if failures:
-        _eprint(f"❌ broadcast failures: {len(failures)} targets")
+    if failures2:
+        _eprint(f"❌ broadcast notify failures: {len(failures2)} targets")
         return 1
     return 0
 
@@ -3857,7 +3874,6 @@ def _forward_stdin() -> str | None:
 
 
 def cmd_ask(args: argparse.Namespace) -> int:
-    twf = _resolve_twf()
     team_dir = _default_team_dir()
     registry = _registry_path(team_dir)
     data = _load_registry(registry)
@@ -3912,14 +3928,26 @@ def cmd_ask(args: argparse.Namespace) -> int:
         body=notice,
         msg_id=msg_id,
     )
-    res = _run_twf(twf, ["ask", full, wrapped])
+
+    # Default: inbox-only delivery (no CLI injection). Recipients must poll
+    # inbox while working. This avoids consuming their Codex context.
+    notify = bool(getattr(args, "notify", False))
+    wait = bool(getattr(args, "wait", False))
+    if wait and not notify:
+        raise SystemExit("❌ --wait requires --notify (CLI injection)")
+    if not notify:
+        print(msg_id)
+        return 0
+
+    twf = _resolve_twf()
+    twf_subcmd = "ask" if wait else "send"
+    res = _run_twf(twf, [twf_subcmd, full, wrapped])
     sys.stdout.write(res.stdout)
     sys.stderr.write(res.stderr)
     return res.returncode
 
 
 def cmd_send(args: argparse.Namespace) -> int:
-    twf = _resolve_twf()
     team_dir = _default_team_dir()
     registry = _registry_path(team_dir)
     data = _load_registry(registry)
@@ -3977,6 +4005,13 @@ def cmd_send(args: argparse.Namespace) -> int:
         body=notice,
         msg_id=msg_id,
     )
+
+    # Default: inbox-only delivery (no CLI injection).
+    if not bool(getattr(args, "notify", False)):
+        print(msg_id)
+        return 0
+
+    twf = _resolve_twf()
     res = _run_twf(twf, ["send", full, wrapped])
     sys.stdout.write(res.stdout)
     sys.stderr.write(res.stderr)
@@ -4791,6 +4826,7 @@ def build_parser() -> argparse.ArgumentParser:
     bc.add_argument("--message", default=None, help="message text (if omitted, read stdin)")
     bc.add_argument("--as", dest="as_target", default=None, help="actor (full|base|role); required outside tmux")
     bc.add_argument("--include-excluded", action="store_true", help="include excluded roles when using --subtree")
+    bc.add_argument("--notify", action="store_true", help="also inject a short inbox notice into recipients' CLIs (discouraged)")
 
     resolve = sub.add_parser("resolve", help="resolve a target to full tmux session name (full|base|role)")
     resolve.add_argument("target")
@@ -4807,11 +4843,14 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("name")
     ask.add_argument("message", nargs="?")
     ask.add_argument("--as", dest="as_target", default=None, help="actor (full|base|role); required outside tmux")
+    ask.add_argument("--notify", action="store_true", help="inject inbox notice into recipient CLI (discouraged)")
+    ask.add_argument("--wait", action="store_true", help="wait for reply (implies CLI injection; requires --notify)")
 
     send = sub.add_parser("send", help="twf send wrapper with policy checks (supports stdin)")
     send.add_argument("name")
     send.add_argument("message", nargs="?")
     send.add_argument("--as", dest="as_target", default=None, help="actor (full|base|role); required outside tmux")
+    send.add_argument("--notify", action="store_true", help="also inject inbox notice into recipient CLI (discouraged)")
 
     handoff = sub.add_parser("handoff", help="create a handoff/permit so two members can talk directly")
     handoff.add_argument("a", help="member A (full|base|role)")
@@ -4820,6 +4859,7 @@ def build_parser() -> argparse.ArgumentParser:
     handoff.add_argument("--reason", default="", help="handoff reason (optional)")
     handoff.add_argument("--ttl", type=int, default=None, help="permit ttl in seconds (optional)")
     handoff.add_argument("--dry-run", action="store_true", help="do not write/send; print what would happen")
+    handoff.add_argument("--notify", action="store_true", help="also inject inbox notice into both CLIs (discouraged)")
 
     pend = sub.add_parser("pend", help="twf pend wrapper")
     pend.add_argument("name")
