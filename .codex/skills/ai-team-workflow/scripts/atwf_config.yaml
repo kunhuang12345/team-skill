@@ -81,3 +81,21 @@ team:
     inbox:
       # Max active unread items per sender->recipient thread; older unread are moved to inbox/overflow.
       max_unread_per_thread: 5
+
+  # Agent standby + inbox polling
+  #
+  # Notes:
+  # - "working" agents should proactively check inbox periodically to avoid queue buildup.
+  # - "idle" agents do NOT proactively poll inbox; they are woken by `atwf watch-idle` (operator sidecar).
+  state:
+    # While working, check inbox at least every N seconds.
+    inbox_check_interval: 60
+
+    # If a member is idle and new inbox messages arrive, schedule a wakeup after N seconds.
+    idle_wake_delay: 60
+
+    # Poll interval for `atwf watch-idle` (seconds).
+    watch_interval: 60
+
+    # Minimal wake message injected into Codex TUI (no full body here).
+    wake_message: "INBOX wake: you have unread messages. Run: bash .codex/skills/ai-team-workflow/scripts/atwf inbox"

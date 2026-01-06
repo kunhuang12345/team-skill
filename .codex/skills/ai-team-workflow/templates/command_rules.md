@@ -43,6 +43,29 @@ Hard rules:
 - To see your pending unread queue: `bash .codex/skills/ai-team-workflow/scripts/atwf inbox`
 - When you send many messages to the same target, check backlog first: `bash .codex/skills/ai-team-workflow/scripts/atwf inbox-pending <target>`
 
+## Agent state + standby protocol (mandatory)
+
+The team uses an explicit state machine to reduce token waste and prevent message pileups.
+
+States:
+- `working`: you are actively executing an assigned task; you must proactively check inbox periodically.
+- `draining`: you are finishing work and clearing inbox before going idle.
+- `idle`: you are on standby; you must NOT proactively poll inbox (a watcher will wake you).
+
+Commands:
+- View your state: `bash .codex/skills/ai-team-workflow/scripts/atwf state-self`
+- Set your state: `bash .codex/skills/ai-team-workflow/scripts/atwf state-set-self <working|draining|idle>`
+- View others: `bash .codex/skills/ai-team-workflow/scripts/atwf state <target>`
+
+Hard rules:
+- When `working`: run `bash .codex/skills/ai-team-workflow/scripts/atwf inbox` at least once per minute (or before any blocking wait). If it lists unread `id`s, you must `inbox-open` + process + `inbox-ack` them, then continue work.
+- When your assigned work is complete: do NOT jump directly to `idle`.
+  1) set `draining`
+  2) clear inbox to empty (process+ack all unread)
+  3) only then set `idle`
+- Before setting `idle`, you must confirm inbox is empty; if new messages arrive after you go `idle`, that is OK: a watcher will wake you with a short prompt.
+- When `idle`: do not poll inbox on your own; wait for a wake prompt, then set `working` and process inbox.
+
 ## Forbidden (do NOT do this)
 
 Do **NOT** use raw tmux keystroke injection to “send” chat messages, including:

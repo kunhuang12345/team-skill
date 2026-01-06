@@ -10,6 +10,7 @@ import shutil
 import shlex
 import subprocess
 import sys
+import time
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
@@ -35,6 +36,17 @@ _INBOX_UNREAD_DIR = "unread"
 _INBOX_READ_DIR = "read"
 _INBOX_OVERFLOW_DIR = "overflow"
 _INBOX_MAX_UNREAD_DEFAULT = 5
+
+_STATE_DIR = "state"
+_STATE_STATUS_WORKING = "working"
+_STATE_STATUS_DRAINING = "draining"
+_STATE_STATUS_IDLE = "idle"
+_STATE_STATUSES = {_STATE_STATUS_WORKING, _STATE_STATUS_DRAINING, _STATE_STATUS_IDLE}
+
+_STATE_INBOX_CHECK_INTERVAL_DEFAULT = 60.0
+_STATE_IDLE_WAKE_DELAY_DEFAULT = 60.0
+_STATE_WATCH_INTERVAL_DEFAULT = 60.0
+_STATE_WAKE_MESSAGE_DEFAULT = "INBOX wake: you have unread messages. Run: bash .codex/skills/ai-team-workflow/scripts/atwf inbox"
 
 
 def _now() -> str:
@@ -103,6 +115,14 @@ def _slugify(raw: str) -> str:
 
 def _inbox_root(team_dir: Path) -> Path:
     return team_dir / _INBOX_DIR
+
+
+def _state_root(team_dir: Path) -> Path:
+    return team_dir / _STATE_DIR
+
+
+def _state_lock_path(team_dir: Path) -> Path:
+    return _state_root(team_dir) / ".lock"
 
 
 def _inbox_member_dir(team_dir: Path, *, base: str) -> Path:
@@ -562,6 +582,46 @@ def _inbox_max_unread_per_thread() -> int:
     if n > 100:
         n = 100
     return n
+
+
+@lru_cache(maxsize=1)
+def _state_inbox_check_interval_s() -> float:
+    cfg = _read_yaml_or_json(_config_file())
+    n = _cfg_get_floatish(cfg, ("team", "state", "inbox_check_interval"), default=_STATE_INBOX_CHECK_INTERVAL_DEFAULT)
+    if n < 5:
+        n = 5.0
+    if n > 3600:
+        n = 3600.0
+    return float(n)
+
+
+@lru_cache(maxsize=1)
+def _state_idle_wake_delay_s() -> float:
+    cfg = _read_yaml_or_json(_config_file())
+    n = _cfg_get_floatish(cfg, ("team", "state", "idle_wake_delay"), default=_STATE_IDLE_WAKE_DELAY_DEFAULT)
+    if n < 5:
+        n = 5.0
+    if n > 3600:
+        n = 3600.0
+    return float(n)
+
+
+@lru_cache(maxsize=1)
+def _state_watch_interval_s() -> float:
+    cfg = _read_yaml_or_json(_config_file())
+    n = _cfg_get_floatish(cfg, ("team", "state", "watch_interval"), default=_STATE_WATCH_INTERVAL_DEFAULT)
+    if n < 5:
+        n = 5.0
+    if n > 3600:
+        n = 3600.0
+    return float(n)
+
+
+@lru_cache(maxsize=1)
+def _state_wake_message() -> str:
+    cfg = _read_yaml_or_json(_config_file())
+    msg = _cfg_get_str(cfg, ("team", "state", "wake_message"), default=_STATE_WAKE_MESSAGE_DEFAULT)
+    return msg.strip() or _STATE_WAKE_MESSAGE_DEFAULT
 
 
 def _cap_watch_session_name(project_root: Path) -> str:
@@ -1268,6 +1328,7 @@ def _ensure_share_layout(team_dir: Path) -> None:
     _design_dir(team_dir).mkdir(parents=True, exist_ok=True)
     _ops_dir(team_dir).mkdir(parents=True, exist_ok=True)
     _inbox_root(team_dir).mkdir(parents=True, exist_ok=True)
+    _state_root(team_dir).mkdir(parents=True, exist_ok=True)
 
 
 def _inbox_summary(body: str) -> str:
@@ -1276,6 +1337,122 @@ def _inbox_summary(body: str) -> str:
         if s:
             return (s[:157] + "...") if len(s) > 160 else s
     return ""
+
+
+def _agent_state_path(team_dir: Path, *, full: str) -> Path:
+    return _state_root(team_dir) / f"{_slugify(full)}.json"
+
+
+def _normalize_agent_status(raw: str) -> str:
+    s = (raw or "").strip().lower()
+    if s in {"work", "working", "busy"}:
+        return _STATE_STATUS_WORKING
+    if s in {"drain", "draining"}:
+        return _STATE_STATUS_DRAINING
+    if s in {"idle", "standby"}:
+        return _STATE_STATUS_IDLE
+    return s
+
+
+def _default_agent_state(*, full: str, base: str, role: str) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "created_at": _now(),
+        "updated_at": _now(),
+        "full": full,
+        "base": base,
+        "role": role,
+        "status": _STATE_STATUS_WORKING,
+        "last_inbox_check_at": "",
+        "last_inbox_unread": 0,
+        "last_inbox_overflow": 0,
+        "idle_since": "",
+        "idle_inbox_empty_at": "",
+        "wakeup_scheduled_at": "",
+        "wakeup_due_at": "",
+        "wakeup_sent_at": "",
+        "wakeup_reason": "",
+    }
+
+
+def _load_agent_state_unlocked(team_dir: Path, *, full: str, base: str, role: str) -> dict[str, Any]:
+    path = _agent_state_path(team_dir, full=full)
+    data = _read_json(path) if path.is_file() else {}
+    if not data:
+        data = _default_agent_state(full=full, base=base, role=role)
+        _write_json_atomic(path, data)
+        return data
+
+    data.setdefault("version", 1)
+    data.setdefault("created_at", _now())
+    data.setdefault("full", full)
+    data.setdefault("base", base)
+    data.setdefault("role", role)
+    data.setdefault("status", _STATE_STATUS_WORKING)
+    data["updated_at"] = _now()
+
+    status = _normalize_agent_status(str(data.get("status", "")))
+    if status not in _STATE_STATUSES:
+        status = _STATE_STATUS_WORKING
+    data["status"] = status
+    return data
+
+
+def _write_agent_state(team_dir: Path, *, full: str, base: str, role: str, update: dict[str, Any]) -> dict[str, Any]:
+    lock = _state_lock_path(team_dir)
+    with _locked(lock):
+        _ensure_share_layout(team_dir)
+        data = _load_agent_state_unlocked(team_dir, full=full, base=base, role=role)
+        for k, v in update.items():
+            data[k] = v
+        data["updated_at"] = _now()
+        _write_json_atomic(_agent_state_path(team_dir, full=full), data)
+        return data
+
+
+def _update_agent_state(
+    team_dir: Path,
+    *,
+    full: str,
+    base: str,
+    role: str,
+    updater,
+) -> dict[str, Any]:
+    lock = _state_lock_path(team_dir)
+    with _locked(lock):
+        _ensure_share_layout(team_dir)
+        data = _load_agent_state_unlocked(team_dir, full=full, base=base, role=role)
+        updater(data)
+        data["updated_at"] = _now()
+        _write_json_atomic(_agent_state_path(team_dir, full=full), data)
+        return data
+
+
+def _inbox_unread_stats(team_dir: Path, *, to_base: str) -> tuple[int, int, list[str]]:
+    base_dir = _inbox_member_dir(team_dir, base=to_base)
+    unread_root = base_dir / _INBOX_UNREAD_DIR
+    overflow_root = base_dir / _INBOX_OVERFLOW_DIR
+
+    unread = 0
+    overflow = 0
+    ids: list[tuple[int, str]] = []
+
+    if unread_root.is_dir():
+        for from_dir in unread_root.glob("from-*"):
+            if not from_dir.is_dir():
+                continue
+            for n, stem, _p in _inbox_list_msgs(from_dir):
+                unread += 1
+                ids.append((n, stem))
+
+    if overflow_root.is_dir():
+        for from_dir in overflow_root.glob("from-*"):
+            if not from_dir.is_dir():
+                continue
+            overflow += len(_inbox_list_msgs(from_dir))
+
+    ids.sort(key=lambda t: t[0])
+    return unread, overflow, [stem for _n, stem in ids]
 
 
 def _inbox_list_msgs(dir_path: Path) -> list[tuple[int, str, Path]]:
@@ -3791,12 +3968,333 @@ def cmd_ping(args: argparse.Namespace) -> int:
     return res.returncode
 
 
+def cmd_state(args: argparse.Namespace) -> int:
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    target = str(getattr(args, "target", "") or "").strip()
+    members = data.get("members")
+    if not isinstance(members, list):
+        members = []
+
+    def print_row(*cols: str) -> None:
+        sys.stdout.write("\t".join(c or "" for c in cols) + "\n")
+
+    if target:
+        full = _resolve_target_full(data, target)
+        if not full:
+            raise SystemExit(f"❌ target not found in registry: {target}")
+        m = _resolve_member(data, full) or {}
+        base = _member_base(m) or full
+        role = _member_role(m)
+        path = _agent_state_path(team_dir, full=full)
+        st = _read_json(path) if path.is_file() else {}
+        status = _normalize_agent_status(str(st.get("status", ""))) if st else _STATE_STATUS_WORKING
+        if status not in _STATE_STATUSES:
+            status = _STATE_STATUS_WORKING
+        updated_at = str(st.get("updated_at", "") or "")
+        due_at = str(st.get("wakeup_due_at", "") or "")
+        print_row(full, role, base, status, updated_at, due_at)
+        return 0
+
+    # Table for all members (stable ordering: role then updated_at then full)
+    rows: list[tuple[str, str, str, str, str, str]] = []
+    for m in members:
+        if not isinstance(m, dict):
+            continue
+        full = str(m.get("full", "")).strip()
+        if not full:
+            continue
+        base = _member_base(m) or full
+        role = _member_role(m)
+        path = _agent_state_path(team_dir, full=full)
+        st = _read_json(path) if path.is_file() else {}
+        status = _normalize_agent_status(str(st.get("status", ""))) if st else _STATE_STATUS_WORKING
+        if status not in _STATE_STATUSES:
+            status = _STATE_STATUS_WORKING
+        updated_at = str(st.get("updated_at", "") or "")
+        due_at = str(st.get("wakeup_due_at", "") or "")
+        rows.append((role, updated_at, full, base, status, due_at))
+
+    rows.sort(key=lambda r: (r[0], r[1], r[2]))
+    print_row("full", "role", "base", "status", "updated_at", "wakeup_due_at")
+    for role, updated_at, full, base, status, due_at in rows:
+        print_row(full, role, base, status, updated_at, due_at)
+    return 0
+
+
+def cmd_state_self(args: argparse.Namespace) -> int:
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    self_full = _tmux_self_full()
+    if not self_full:
+        raise SystemExit("❌ state-self must run inside tmux")
+    m = _resolve_member(data, self_full)
+    if not m:
+        raise SystemExit(f"❌ current worker not found in registry: {self_full}")
+    base = _member_base(m) or self_full
+    role = _member_role(m)
+
+    st = _update_agent_state(team_dir, full=self_full, base=base, role=role, updater=lambda _d: None)
+    status = str(st.get("status", ""))
+    updated_at = str(st.get("updated_at", ""))
+    due_at = str(st.get("wakeup_due_at", ""))
+    print("\t".join([self_full, role, base, status, updated_at, due_at]).rstrip())
+    return 0
+
+
+def cmd_state_set_self(args: argparse.Namespace) -> int:
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    status_raw = str(args.status or "").strip()
+    if not status_raw:
+        raise SystemExit("❌ status is required")
+    desired = _normalize_agent_status(status_raw)
+    if desired not in _STATE_STATUSES:
+        raise SystemExit(f"❌ invalid status: {status_raw} (allowed: working|draining|idle)")
+
+    self_full = _tmux_self_full()
+    if not self_full:
+        raise SystemExit("❌ state-set-self must run inside tmux")
+    m = _resolve_member(data, self_full)
+    if not m:
+        raise SystemExit(f"❌ current worker not found in registry: {self_full}")
+    base = _member_base(m) or self_full
+    role = _member_role(m)
+
+    def set_status(state: dict[str, Any]) -> None:
+        cur = _normalize_agent_status(str(state.get("status", ""))) or _STATE_STATUS_WORKING
+        if cur not in _STATE_STATUSES:
+            cur = _STATE_STATUS_WORKING
+        now = _now()
+
+        if desired == _STATE_STATUS_IDLE:
+            if cur != _STATE_STATUS_DRAINING:
+                raise SystemExit("❌ must set state to 'draining' before 'idle'")
+            unread, overflow, _ids = _inbox_unread_stats(team_dir, to_base=base)
+            if unread or overflow:
+                preview = ", ".join(ids[:10]) if ids else ""
+                hint = f" ids: {preview}" if preview else ""
+                raise SystemExit(
+                    f"❌ inbox not empty (unread={unread} overflow={overflow}){hint} "
+                    f"(run: bash .codex/skills/ai-team-workflow/scripts/atwf inbox)"
+                )
+            state["idle_since"] = now
+            state["idle_inbox_empty_at"] = now
+        elif desired == _STATE_STATUS_DRAINING:
+            state["idle_since"] = ""
+            state["idle_inbox_empty_at"] = ""
+        elif desired == _STATE_STATUS_WORKING:
+            state["idle_since"] = ""
+            state["idle_inbox_empty_at"] = ""
+
+        # Clear any pending wake scheduling when state changes.
+        state["wakeup_scheduled_at"] = ""
+        state["wakeup_due_at"] = ""
+        state["wakeup_reason"] = ""
+        if desired != _STATE_STATUS_WORKING:
+            # keep historical wake_sent_at for debugging
+            pass
+        state["status"] = desired
+
+    st = _update_agent_state(team_dir, full=self_full, base=base, role=role, updater=set_status)
+    print(str(st.get("status", "")))
+    return 0
+
+
+def cmd_state_set(args: argparse.Namespace) -> int:
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    target = str(getattr(args, "target", "") or "").strip()
+    if not target:
+        raise SystemExit("❌ target is required")
+    full = _resolve_target_full(data, target)
+    if not full:
+        raise SystemExit(f"❌ target not found in registry: {target}")
+    m = _resolve_member(data, full) or {}
+    base = _member_base(m) or full
+    role = _member_role(m)
+
+    status_raw = str(args.status or "").strip()
+    if not status_raw:
+        raise SystemExit("❌ status is required")
+    desired = _normalize_agent_status(status_raw)
+    if desired not in _STATE_STATUSES:
+        raise SystemExit(f"❌ invalid status: {status_raw} (allowed: working|draining|idle)")
+
+    force = bool(getattr(args, "force", False))
+    if desired in {_STATE_STATUS_IDLE, _STATE_STATUS_DRAINING} and not force:
+        raise SystemExit("❌ only the worker can set draining/idle (use --force for operator override)")
+
+    st = _update_agent_state(team_dir, full=full, base=base, role=role, updater=lambda s: s.__setitem__("status", desired))
+    print(str(st.get("status", "")))
+    return 0
+
+
+def cmd_watch_idle(args: argparse.Namespace) -> int:
+    """
+    Operator-side watcher:
+    - polls inbox + agent state
+    - if a member is `idle` and has unread inbox, schedule a wakeup in 60s
+    - when due, inject a short wake message and flip state to `working`
+    """
+    twf = _resolve_twf()
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+
+    interval_s = float(getattr(args, "interval", None) or _state_watch_interval_s())
+    delay_s = float(getattr(args, "delay", None) or _state_idle_wake_delay_s())
+    message = str(getattr(args, "message", "") or "").strip() or _state_wake_message()
+    once = bool(getattr(args, "once", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+
+    def parse_iso(raw: str) -> datetime | None:
+        s = (raw or "").strip()
+        if not s:
+            return None
+        try:
+            return datetime.fromisoformat(s)
+        except Exception:
+            return None
+
+    def iso(dt: datetime) -> str:
+        return dt.isoformat(timespec="seconds")
+
+    while True:
+        if _paused_marker_path(team_dir).is_file():
+            if once:
+                return 0
+            time_sleep = max(1.0, interval_s)
+            time.sleep(time_sleep)
+            continue
+
+        data = _load_registry(registry)
+        members = data.get("members")
+        if not isinstance(members, list):
+            members = []
+
+        now_dt = datetime.now()
+        for m in members:
+            if not isinstance(m, dict):
+                continue
+            full = str(m.get("full", "")).strip()
+            if not full:
+                continue
+            base = _member_base(m) or full
+            role = _member_role(m)
+
+            # Read (or create) state lazily.
+            path = _agent_state_path(team_dir, full=full)
+            if path.is_file():
+                st = _read_json(path)
+            else:
+                st = _write_agent_state(team_dir, full=full, base=base, role=role, update={})
+            status = _normalize_agent_status(str(st.get("status", ""))) or _STATE_STATUS_WORKING
+            if status not in _STATE_STATUSES:
+                status = _STATE_STATUS_WORKING
+
+            # Clear stale wake scheduling when not idle.
+            if status != _STATE_STATUS_IDLE:
+                if st.get("wakeup_due_at") or st.get("wakeup_scheduled_at") or st.get("wakeup_reason"):
+                    if not dry_run:
+                        _write_agent_state(
+                            team_dir,
+                            full=full,
+                            base=base,
+                            role=role,
+                            update={"wakeup_scheduled_at": "", "wakeup_due_at": "", "wakeup_reason": ""},
+                        )
+                continue
+
+            unread, overflow, ids = _inbox_unread_stats(team_dir, to_base=base)
+            pending = unread + overflow
+            if pending == 0:
+                if st.get("wakeup_due_at") or st.get("wakeup_scheduled_at") or st.get("wakeup_reason"):
+                    if not dry_run:
+                        _write_agent_state(
+                            team_dir,
+                            full=full,
+                            base=base,
+                            role=role,
+                            update={"wakeup_scheduled_at": "", "wakeup_due_at": "", "wakeup_reason": ""},
+                        )
+                continue
+
+            due_dt = parse_iso(str(st.get("wakeup_due_at", "")))
+            if due_dt is None:
+                due_dt = now_dt + timedelta(seconds=max(1.0, delay_s))
+                if not dry_run:
+                    _write_agent_state(
+                        team_dir,
+                        full=full,
+                        base=base,
+                        role=role,
+                        update={
+                            "wakeup_scheduled_at": iso(now_dt),
+                            "wakeup_due_at": iso(due_dt),
+                            "wakeup_reason": f"inbox_pending:{unread}+{overflow}",
+                        },
+                    )
+                continue
+
+            if now_dt < due_dt:
+                continue
+
+            # Due: re-check state + inbox before sending.
+            st2 = _read_json(path) if path.is_file() else {}
+            status2 = _normalize_agent_status(str(st2.get("status", ""))) or _STATE_STATUS_WORKING
+            if status2 != _STATE_STATUS_IDLE:
+                continue
+            unread2, overflow2, _ids2 = _inbox_unread_stats(team_dir, to_base=base)
+            pending2 = unread2 + overflow2
+            if pending2 == 0:
+                continue
+
+            if not _tmux_running(full):
+                # Keep due; we'll try again on next tick.
+                continue
+
+            if not dry_run:
+                _write_agent_state(
+                    team_dir,
+                    full=full,
+                    base=base,
+                    role=role,
+                    update={
+                        "status": _STATE_STATUS_WORKING,
+                        "wakeup_sent_at": _now(),
+                        "wakeup_scheduled_at": "",
+                        "wakeup_due_at": "",
+                        "wakeup_reason": f"inbox_pending:{unread2}+{overflow2}",
+                        "idle_since": "",
+                        "idle_inbox_empty_at": "",
+                        "last_inbox_unread": unread2,
+                        "last_inbox_overflow": overflow2,
+                    },
+                )
+                # Minimal wake: no body, just a reminder to read inbox.
+                _run_twf(twf, ["send", full, message])
+
+        if once:
+            return 0
+        time_sleep = max(1.0, interval_s)
+        time.sleep(time_sleep)
+
+
 def cmd_inbox(args: argparse.Namespace) -> int:
     team_dir = _default_team_dir()
     registry = _registry_path(team_dir)
     data = _load_registry(registry)
 
     target = str(getattr(args, "target", "") or "").strip()
+    is_self = False
     if target:
         full = _resolve_target_full(data, target)
         if not full:
@@ -3811,12 +4309,13 @@ def cmd_inbox(args: argparse.Namespace) -> int:
         if not m:
             raise SystemExit(f"❌ current worker not found in registry: {self_full}")
         to_base = _member_base(m) or self_full
+        is_self = True
 
     base_dir = _inbox_member_dir(team_dir, base=to_base)
     unread_root = base_dir / _INBOX_UNREAD_DIR
     overflow_root = base_dir / _INBOX_OVERFLOW_DIR
 
-    rows: list[tuple[int, str, str, str, str]] = []
+    rows: list[tuple[int, str, str, str, str, str]] = []
 
     def parse_meta(path: Path) -> tuple[str, str]:
         kind = ""
@@ -3838,26 +4337,46 @@ def cmd_inbox(args: argparse.Namespace) -> int:
             from_base = from_dir.name[len("from-") :]
             for n, stem, p in _inbox_list_msgs(from_dir):
                 kind, summary = parse_meta(p)
-                rows.append((n, stem, from_base, kind, summary))
-
-    rows.sort(key=lambda r: r[0])
-    if not rows and not overflow_root.is_dir():
-        print("(empty)")
-        return 0
-
-    for _n, msg_id, from_base, kind, summary in rows:
-        parts = [msg_id, from_base]
-        parts.append(kind or "?")
-        if summary:
-            parts.append(summary)
-        print("\t".join(parts))
+                rows.append((n, stem, from_base, kind, summary, _INBOX_UNREAD_DIR))
 
     if overflow_root.is_dir():
         for from_dir in sorted([p for p in overflow_root.glob("from-*") if p.is_dir()]):
             from_base = from_dir.name[len("from-") :]
-            count = len(_inbox_list_msgs(from_dir))
-            if count:
-                _eprint(f"ℹ️ overflow pending: from={from_base} count={count} (use inbox-open <id> to read)")
+            for n, stem, p in _inbox_list_msgs(from_dir):
+                kind, summary = parse_meta(p)
+                rows.append((n, stem, from_base, kind, summary, _INBOX_OVERFLOW_DIR))
+
+    rows.sort(key=lambda r: r[0])
+    if not rows:
+        print("(empty)")
+        return 0
+
+    for _n, msg_id, from_base, kind, summary, state in rows:
+        parts = [msg_id, from_base]
+        parts.append(kind or "?")
+        if summary:
+            parts.append(summary)
+        if state != _INBOX_UNREAD_DIR:
+            parts.append(state)
+        print("\t".join(parts))
+
+    if is_self:
+        self_full = _tmux_self_full() or ""
+        if self_full and isinstance(m, dict):
+            base = _member_base(m) or self_full
+            role = _member_role(m)
+            unread, overflow, _ids = _inbox_unread_stats(team_dir, to_base=base)
+            _update_agent_state(
+                team_dir,
+                full=self_full,
+                base=base,
+                role=role,
+                updater=lambda s: (
+                    s.__setitem__("last_inbox_check_at", _now()),
+                    s.__setitem__("last_inbox_unread", unread),
+                    s.__setitem__("last_inbox_overflow", overflow),
+                ),
+            )
     return 0
 
 
@@ -3894,6 +4413,25 @@ def cmd_inbox_open(args: argparse.Namespace) -> int:
     sys.stdout.write(content)
     if content and not content.endswith("\n"):
         sys.stdout.write("\n")
+
+    # Update "last_inbox_check_at" for self only.
+    if not target:
+        self_full = _tmux_self_full() or ""
+        if self_full and isinstance(m, dict):
+            base = _member_base(m) or self_full
+            role = _member_role(m)
+            unread, overflow, _ids = _inbox_unread_stats(team_dir, to_base=base)
+            _update_agent_state(
+                team_dir,
+                full=self_full,
+                base=base,
+                role=role,
+                updater=lambda s: (
+                    s.__setitem__("last_inbox_check_at", _now()),
+                    s.__setitem__("last_inbox_unread", unread),
+                    s.__setitem__("last_inbox_overflow", overflow),
+                ),
+            )
     return 0
 
 
@@ -3918,6 +4456,19 @@ def cmd_inbox_ack(args: argparse.Namespace) -> int:
     if not moved:
         raise SystemExit(f"❌ message not found: {msg_id}")
     print("OK")
+
+    unread, overflow, _ids = _inbox_unread_stats(team_dir, to_base=to_base)
+    _update_agent_state(
+        team_dir,
+        full=self_full,
+        base=to_base,
+        role=_member_role(m),
+        updater=lambda s: (
+            s.__setitem__("last_inbox_check_at", _now()),
+            s.__setitem__("last_inbox_unread", unread),
+            s.__setitem__("last_inbox_overflow", overflow),
+        ),
+    )
     return 0
 
 
@@ -4225,6 +4776,26 @@ def build_parser() -> argparse.ArgumentParser:
     ping = sub.add_parser("ping", help="twf ping wrapper")
     ping.add_argument("name")
 
+    state = sub.add_parser("state", help="print agent state table (or one target)")
+    state.add_argument("target", nargs="?", default="", help="optional target (full|base|role)")
+
+    sub.add_parser("state-self", help="print current worker state (inside tmux)")
+
+    state_set_self = sub.add_parser("state-set-self", help="set current worker state (inside tmux)")
+    state_set_self.add_argument("status", help="working|draining|idle")
+
+    state_set = sub.add_parser("state-set", help="operator: set a worker state (use --force for draining/idle)")
+    state_set.add_argument("target", help="target member (full|base|role)")
+    state_set.add_argument("status", help="working|draining|idle")
+    state_set.add_argument("--force", action="store_true", help="allow setting draining/idle for other workers")
+
+    watch_idle = sub.add_parser("watch-idle", help="operator: wake idle workers when inbox has unread messages")
+    watch_idle.add_argument("--interval", type=float, default=None, help="poll interval seconds (default: config)")
+    watch_idle.add_argument("--delay", type=float, default=None, help="wake delay seconds (default: config)")
+    watch_idle.add_argument("--message", default="", help="wake message injected into Codex TUI (default: config)")
+    watch_idle.add_argument("--once", action="store_true", help="run one tick then exit")
+    watch_idle.add_argument("--dry-run", action="store_true", help="do not write/send; print nothing, but still polls")
+
     inbox = sub.add_parser("inbox", help="list unread inbox messages (self by default)")
     inbox.add_argument("--target", default="", help="optional target inbox to inspect (full|base|role)")
 
@@ -4332,6 +4903,16 @@ def main(argv: list[str]) -> int:
         return cmd_pend(args)
     if args.cmd == "ping":
         return cmd_ping(args)
+    if args.cmd == "state":
+        return cmd_state(args)
+    if args.cmd == "state-self":
+        return cmd_state_self(args)
+    if args.cmd == "state-set-self":
+        return cmd_state_set_self(args)
+    if args.cmd == "state-set":
+        return cmd_state_set(args)
+    if args.cmd == "watch-idle":
+        return cmd_watch_idle(args)
     if args.cmd == "inbox":
         return cmd_inbox(args)
     if args.cmd == "inbox-open":

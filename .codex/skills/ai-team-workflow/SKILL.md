@@ -176,6 +176,10 @@ All commands are wrappers around `twf` plus registry management:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf handoff <a> <b> [--reason "..."] [--ttl SECONDS]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf pend <full|base|role> [N]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf ping <full|base|role>`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf state [target]`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf state-self`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf state-set-self <working|draining|idle>`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf watch-idle [--interval S] [--delay S] [--once]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf remove <pm-full>` (disband team; clears registry)
 
 ## Environment knobs
