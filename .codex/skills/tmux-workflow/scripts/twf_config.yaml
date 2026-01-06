@@ -19,7 +19,7 @@ codex:
   model_reasoning_effort: high
 
   # Optional profile (equivalent to `codex -p <profile>`).
-  profile: "aihuohua"
+  profile: "codez"
 
 twf:
   # Worker state directory (where twf writes its worker state JSON files)
@@ -86,7 +86,7 @@ twf:
   # file (any filename) by copying its contents into each worker's
   # `CODEX_HOME/auth.json` (Codex only reads auth from `auth.json`).
   auth:
-    src: "/root/.codex/auth.json.aihuohua"
+    src: "/root/.codex/auth.json.codez"
 
 # Legacy (flat) keys (optional):
 # model: gpt-5.2
