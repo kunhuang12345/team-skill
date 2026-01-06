@@ -99,3 +99,8 @@ team:
 
     # Minimal wake message injected into Codex TUI (no full body here).
     wake_message: "INBOX wake: you have unread messages. Run: bash .codex/skills/ai-team-workflow/scripts/atwf inbox"
+
+    # Governance: if a worker is `working` but has pending inbox items older than N seconds,
+    # the watcher writes an inbox-only alert to coord (no CLI injection).
+    working_stale_threshold: 180
+    working_alert_cooldown: 600

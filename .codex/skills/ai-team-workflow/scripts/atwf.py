@@ -46,6 +46,8 @@ _STATE_STATUSES = {_STATE_STATUS_WORKING, _STATE_STATUS_DRAINING, _STATE_STATUS_
 _STATE_INBOX_CHECK_INTERVAL_DEFAULT = 60.0
 _STATE_IDLE_WAKE_DELAY_DEFAULT = 60.0
 _STATE_WATCH_INTERVAL_DEFAULT = 60.0
+_STATE_WORKING_STALE_THRESHOLD_DEFAULT = 180.0
+_STATE_WORKING_ALERT_COOLDOWN_DEFAULT = 600.0
 _STATE_WAKE_MESSAGE_DEFAULT = "INBOX wake: you have unread messages. Run: bash .codex/skills/ai-team-workflow/scripts/atwf inbox"
 
 
@@ -622,6 +624,28 @@ def _state_wake_message() -> str:
     cfg = _read_yaml_or_json(_config_file())
     msg = _cfg_get_str(cfg, ("team", "state", "wake_message"), default=_STATE_WAKE_MESSAGE_DEFAULT)
     return msg.strip() or _STATE_WAKE_MESSAGE_DEFAULT
+
+
+@lru_cache(maxsize=1)
+def _state_working_stale_threshold_s() -> float:
+    cfg = _read_yaml_or_json(_config_file())
+    n = _cfg_get_floatish(cfg, ("team", "state", "working_stale_threshold"), default=_STATE_WORKING_STALE_THRESHOLD_DEFAULT)
+    if n < 30:
+        n = 30.0
+    if n > 3600:
+        n = 3600.0
+    return float(n)
+
+
+@lru_cache(maxsize=1)
+def _state_working_alert_cooldown_s() -> float:
+    cfg = _read_yaml_or_json(_config_file())
+    n = _cfg_get_floatish(cfg, ("team", "state", "working_alert_cooldown"), default=_STATE_WORKING_ALERT_COOLDOWN_DEFAULT)
+    if n < 30:
+        n = 30.0
+    if n > 86400:
+        n = 86400.0
+    return float(n)
 
 
 def _cap_watch_session_name(project_root: Path) -> str:
@@ -1420,6 +1444,9 @@ def _default_agent_state(*, full: str, base: str, role: str) -> dict[str, Any]:
         "wakeup_due_at": "",
         "wakeup_sent_at": "",
         "wakeup_reason": "",
+        "stale_alert_sent_at": "",
+        "stale_alert_msg_id": "",
+        "stale_alert_reason": "",
     }
 
 
@@ -1501,6 +1528,61 @@ def _inbox_unread_stats(team_dir: Path, *, to_base: str) -> tuple[int, int, list
 
     ids.sort(key=lambda t: t[0])
     return unread, overflow, [stem for _n, stem in ids]
+
+
+def _inbox_pending_min_id(team_dir: Path, *, to_base: str) -> tuple[int, str]:
+    """
+    Return (min_numeric_id, min_id_str) across unread+overflow for a recipient base.
+    If no pending messages exist, returns (0, "").
+    """
+    base_dir = _inbox_member_dir(team_dir, base=to_base)
+    min_n: int | None = None
+    min_s = ""
+
+    for state in (_INBOX_UNREAD_DIR, _INBOX_OVERFLOW_DIR):
+        root = base_dir / state
+        if not root.is_dir():
+            continue
+        for from_dir in root.glob("from-*"):
+            if not from_dir.is_dir():
+                continue
+            for p in from_dir.glob("*.md"):
+                if not p.is_file():
+                    continue
+                stem = p.stem.strip()
+                if not stem.isdigit():
+                    continue
+                try:
+                    n = int(stem)
+                except Exception:
+                    continue
+                if min_n is None or n < min_n:
+                    min_n = n
+                    min_s = stem
+
+    if min_n is None:
+        return 0, ""
+    return int(min_n), min_s
+
+
+def _inbox_message_created_at(team_dir: Path, *, to_base: str, msg_id: str) -> datetime | None:
+    hit = _find_inbox_message_file(team_dir, to_base=to_base, msg_id=msg_id)
+    if not hit:
+        return None
+    _state, _from_base, path = hit
+    try:
+        head = path.read_text(encoding="utf-8", errors="ignore").splitlines()[:40]
+    except Exception:
+        return None
+    for line in head:
+        s = line.strip()
+        if s.startswith("- created_at:"):
+            raw = s.split(":", 1)[1].strip()
+            try:
+                return datetime.fromisoformat(raw)
+            except Exception:
+                return None
+    return None
 
 
 def _inbox_list_msgs(dir_path: Path) -> list[tuple[int, str, Path]]:
@@ -4239,6 +4321,8 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
     interval_s = float(getattr(args, "interval", None) or _state_watch_interval_s())
     delay_s = float(getattr(args, "delay", None) or _state_idle_wake_delay_s())
     message = str(getattr(args, "message", "") or "").strip() or _state_wake_message()
+    stale_s = float(getattr(args, "working_stale", None) or _state_working_stale_threshold_s())
+    cooldown_s = float(getattr(args, "alert_cooldown", None) or _state_working_alert_cooldown_s())
     once = bool(getattr(args, "once", False))
     dry_run = bool(getattr(args, "dry_run", False))
 
@@ -4254,6 +4338,15 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
     def iso(dt: datetime) -> str:
         return dt.isoformat(timespec="seconds")
 
+    def parse_dt(raw: str) -> datetime | None:
+        s = (raw or "").strip()
+        if not s:
+            return None
+        try:
+            return datetime.fromisoformat(s)
+        except Exception:
+            return None
+
     while True:
         if _paused_marker_path(team_dir).is_file():
             if once:
@@ -4268,6 +4361,11 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
             members = []
 
         now_dt = datetime.now()
+        policy = _policy()
+        coord_m = _resolve_latest_by_role(data, policy.root_role)
+        coord_full = str(coord_m.get("full", "")).strip() if isinstance(coord_m, dict) else ""
+        coord_base = _member_base(coord_m) if isinstance(coord_m, dict) else ""
+
         for m in members:
             if not isinstance(m, dict):
                 continue
@@ -4286,6 +4384,71 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
             status = _normalize_agent_status(str(st.get("status", ""))) or _STATE_STATUS_WORKING
             if status not in _STATE_STATUSES:
                 status = _STATE_STATUS_WORKING
+
+            # Working stale inbox governance:
+            # If the worker is working and has pending inbox messages older than N seconds,
+            # write an inbox-only alert to coord (cooldown applies).
+            if (
+                coord_full
+                and coord_base
+                and status == _STATE_STATUS_WORKING
+                and not dry_run
+                and full != coord_full
+            ):
+                unread, overflow, _ids = _inbox_unread_stats(team_dir, to_base=base)
+                pending = unread + overflow
+                if pending > 0:
+                    _min_n, min_id = _inbox_pending_min_id(team_dir, to_base=base)
+                    created = _inbox_message_created_at(team_dir, to_base=base, msg_id=min_id) if min_id else None
+                    if created is not None:
+                        age_s = (now_dt - created).total_seconds()
+                        last_check_dt = parse_dt(str(st.get("last_inbox_check_at", "") or ""))
+                        check_age_s = (now_dt - last_check_dt).total_seconds() if last_check_dt else None
+
+                        last_alert_dt = parse_dt(str(st.get("stale_alert_sent_at", "") or ""))
+                        alert_age_s = (now_dt - last_alert_dt).total_seconds() if last_alert_dt else None
+                        should_alert = age_s >= max(1.0, stale_s)
+                        if should_alert and check_age_s is not None:
+                            should_alert = should_alert and check_age_s >= max(1.0, stale_s)
+                        if should_alert and alert_age_s is not None:
+                            should_alert = should_alert and alert_age_s >= max(1.0, cooldown_s)
+
+                        if should_alert:
+                            msg_id = _next_msg_id(team_dir)
+                            body = (
+                                "[ALERT] stale inbox while working\n"
+                                f"- worker: {full} (role={role or '?'}, base={base})\n"
+                                f"- status: working\n"
+                                f"- pending: unread={unread} overflow={overflow}\n"
+                                f"- oldest_id: {min_id} age_s={int(age_s)}\n"
+                                f"- last_inbox_check_at: {str(st.get('last_inbox_check_at','') or '(never)')}\n"
+                                "Suggested action:\n"
+                                f"- Ask the worker to run: bash .codex/skills/ai-team-workflow/scripts/atwf inbox\n"
+                                "- If they are stuck, re-scope or pause/unpause that worker.\n"
+                            )
+                            _write_inbox_message(
+                                team_dir,
+                                msg_id=msg_id,
+                                kind="alert-stale-inbox",
+                                from_full="atwf-watch",
+                                from_base="atwf-watch",
+                                from_role="system",
+                                to_full=coord_full,
+                                to_base=coord_base,
+                                to_role=policy.root_role,
+                                body=body,
+                            )
+                            _write_agent_state(
+                                team_dir,
+                                full=full,
+                                base=base,
+                                role=role,
+                                update={
+                                    "stale_alert_sent_at": _now(),
+                                    "stale_alert_msg_id": msg_id,
+                                    "stale_alert_reason": f"pending:{unread}+{overflow} oldest:{min_id} age_s:{int(age_s)}",
+                                },
+                            )
 
             # Clear stale wake scheduling when not idle.
             if status != _STATE_STATUS_IDLE:
@@ -4885,6 +5048,8 @@ def build_parser() -> argparse.ArgumentParser:
     watch_idle.add_argument("--interval", type=float, default=None, help="poll interval seconds (default: config)")
     watch_idle.add_argument("--delay", type=float, default=None, help="wake delay seconds (default: config)")
     watch_idle.add_argument("--message", default="", help="wake message injected into Codex TUI (default: config)")
+    watch_idle.add_argument("--working-stale", type=float, default=None, help="alert coord if a working worker has pending inbox older than N seconds (default: config)")
+    watch_idle.add_argument("--alert-cooldown", type=float, default=None, help="minimum seconds between alerts per worker (default: config)")
     watch_idle.add_argument("--once", action="store_true", help="run one tick then exit")
     watch_idle.add_argument("--dry-run", action="store_true", help="do not write/send; print nothing, but still polls")
 
