@@ -54,6 +54,7 @@ Initialize + start the initial trio + send task to PM:
   - spawns under root: `pm-main`, `liaison-main`
   - copies the task into `share/task.md`, sends PM the shared path, and prints PM's first reply
   - starts a background sidecar: `atwf watch-idle` (tmux session `atwf-watch-idle-*`) to wake `idle` workers when inbox has unread; `atwf pause` disables watcher actions via `share/.paused`
+  - note: `atwf pause` stops the watcher session; `atwf unpause` restarts it (so code/config updates take effect)
 
 Enter a role (avoid `tmux a` attaching the wrong session):
 - `bash .codex/skills/ai-team-workflow/scripts/atwf attach pm`

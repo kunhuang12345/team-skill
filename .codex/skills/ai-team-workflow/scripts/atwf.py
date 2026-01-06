@@ -700,6 +700,15 @@ def _watch_idle_session_name(project_root: Path, *, team_dir: Path) -> str:
     return f"atwf-watch-idle-{base[:20]}-{digest}"
 
 
+def _restart_watch_idle_team(*, twf: Path, team_dir: Path, registry: Path) -> None:
+    """
+    Force-restart the `atwf watch-idle` sidecar so code/config changes take effect.
+    """
+    session = _watch_idle_session_name(_expected_project_root(), team_dir=team_dir)
+    _tmux_kill_session(session)
+    _ensure_watch_idle_team(twf=twf, team_dir=team_dir, registry=registry)
+
+
 def _ensure_watch_idle_team(*, twf: Path, team_dir: Path, registry: Path) -> None:
     """
     Start a background `atwf watch-idle` tmux session.
@@ -3613,6 +3622,10 @@ def cmd_pause(args: argparse.Namespace) -> int:
     reason = _read_optional_message(args, attr="reason")
     _set_paused(team_dir, reason=reason)
     _eprint(f"⏸️ paused: {_paused_marker_path(team_dir)}")
+
+    # Stop the watcher session so future updates are picked up on unpause.
+    if not bool(getattr(args, "dry_run", False)):
+        _tmux_kill_session(_watch_idle_session_name(_expected_project_root(), team_dir=team_dir))
     return cmd_stop(
         argparse.Namespace(
             targets=getattr(args, "targets", None),
@@ -3666,7 +3679,7 @@ def cmd_unpause(args: argparse.Namespace) -> int:
     Human-facing unpause:
     - clears the pause marker (`share/.paused`)
     - resumes workers (same selection rules as `resume`)
-    - does NOT start/recover watcher processes (so non-rotation mode stays inert)
+    - restarts watcher processes so updates take effect
     """
     twf = _resolve_twf()
     team_dir = _default_team_dir()
@@ -3675,6 +3688,12 @@ def cmd_unpause(args: argparse.Namespace) -> int:
 
     _clear_paused(team_dir)
     _eprint(f"▶️ unpaused: {_paused_marker_path(team_dir)}")
+
+    if bool(getattr(args, "dry_run", False)):
+        # In dry-run, do not change watcher state.
+        pass
+    else:
+        _restart_watch_idle_team(twf=twf, team_dir=team_dir, registry=registry)
 
     targets = _select_targets_for_team_op(
         data,
