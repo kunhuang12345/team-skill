@@ -670,6 +670,53 @@ def _normalize_auth_strategy(raw: str) -> str:
     return s
 
 
+def _watch_idle_session_name(project_root: Path, *, team_dir: Path) -> str:
+    base = re.sub(r"[^a-zA-Z0-9_-]+", "-", project_root.name or "project").strip("-") or "project"
+    digest = hashlib.sha1(f"{project_root}|{team_dir}".encode("utf-8")).hexdigest()[:8]
+    return f"atwf-watch-idle-{base[:20]}-{digest}"
+
+
+def _ensure_watch_idle_team(*, twf: Path, team_dir: Path, registry: Path) -> None:
+    """
+    Start a background `atwf watch-idle` tmux session.
+
+    Behavior:
+    - Runs forever as a sidecar.
+    - Respects `share/.paused`: when paused, it sleeps and does nothing.
+    """
+    reg = _load_registry(registry)
+    members = reg.get("members")
+    if not isinstance(members, list) or not any(isinstance(m, dict) and str(m.get("full", "")).strip() for m in members):
+        return
+
+    session = _watch_idle_session_name(_expected_project_root(), team_dir=team_dir)
+    if _tmux_running(session):
+        return
+
+    exports: list[str] = []
+    exports.append(f"export AITWF_DIR={shlex.quote(str(team_dir))};")
+    exports.append(f"export AITWF_TWF={shlex.quote(str(twf))};")
+
+    cmd_parts = [
+        "bash",
+        ".codex/skills/ai-team-workflow/scripts/atwf",
+        "watch-idle",
+    ]
+    cmd_line = " ".join(shlex.quote(p) for p in cmd_parts)
+    launch = "".join(exports) + f"exec {cmd_line}"
+
+    res = subprocess.run(
+        ["tmux", "new-session", "-d", "-s", session, "-c", str(_expected_project_root()), "bash", "-lc", launch],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if res.returncode != 0:
+        _eprint(f"⚠️ failed to start atwf watch-idle tmux session: {session}")
+        return
+    _eprint(f"🛰️ atwf watch-idle started: {session}")
+
+
 def _ensure_cap_watch_team(*, twf: Path, team_dir: Path, registry: Path) -> None:
     """
     Start a background `cap watch-team` tmux session when:
@@ -821,6 +868,7 @@ def cmd_reset(args: argparse.Namespace) -> int:
     watch_session = _cap_watch_session_name(expected_root)
     _tmux_kill_session(watch_session)
     _tmux_kill_session(f"{watch_session}-status")
+    _tmux_kill_session(_watch_idle_session_name(expected_root, team_dir=_default_team_dir()))
 
     # 1) Stop/remove tmux-workflow workers for this project.
     state_dir = _resolve_twf_state_dir(twf)
@@ -1990,6 +2038,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     # If account_pool is enabled in twf_config and team_cycle is selected,
     # start a background watcher that rotates the whole team when limits are hit.
     _ensure_cap_watch_team(twf=twf, team_dir=team_dir, registry=registry)
+    _ensure_watch_idle_team(twf=twf, team_dir=team_dir, registry=registry)
 
     if task_path:
         msg = "[TASK]\n" f"Shared task file: {task_path}\n" "Please read it and proceed.\n"
@@ -2304,6 +2353,7 @@ def cmd_up(args: argparse.Namespace) -> int:
         )
 
     _ensure_cap_watch_team(twf=twf, team_dir=team_dir, registry=registry)
+    _ensure_watch_idle_team(twf=twf, team_dir=team_dir, registry=registry)
 
     print(full)
     return 0
@@ -2369,6 +2419,7 @@ def cmd_spawn(args: argparse.Namespace) -> int:
         )
 
     _ensure_cap_watch_team(twf=twf, team_dir=team_dir, registry=registry)
+    _ensure_watch_idle_team(twf=twf, team_dir=team_dir, registry=registry)
 
     print(full)
     return 0
@@ -3486,6 +3537,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
     data = _load_registry(registry)
 
     _ensure_cap_watch_team(twf=twf, team_dir=team_dir, registry=registry)
+    _ensure_watch_idle_team(twf=twf, team_dir=team_dir, registry=registry)
 
     targets = _select_targets_for_team_op(
         data,
