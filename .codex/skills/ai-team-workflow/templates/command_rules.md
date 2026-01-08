@@ -100,7 +100,7 @@ Hard rules:
   - may auto-send an `Enter` keystroke when an approval menu is detected (config: `team.state.auto_enter`)
 - `--notify` / `--wait` are **operator-only exceptions** and should not be used during normal work.
 
-## Agent state + standby protocol (mandatory)
+## Agent state protocol (mandatory)
 
 State is **watcher-derived** (operator sidecar `atwf watch-idle`) to reduce token waste and avoid relying on workers to self-report.
 
@@ -121,22 +121,13 @@ Hard rules:
 
 To prevent “everyone idle, nobody kicks off the next iteration”, the team uses a human-controlled drive loop.
 
-Commands:
-- Check drive mode: `bash .codex/skills/ai-team-workflow/scripts/atwf drive`
-- Set drive mode (config is authoritative):
-  - edit `.codex/skills/ai-team-workflow/scripts/atwf_config.yaml`: `team.drive.mode: running|standby`
-  - operator convenience: run `bash .codex/skills/ai-team-workflow/scripts/atwf drive running|standby` (must be outside worker tmux)
-
 Hard rules:
-- `team.drive.mode` in config is the ONLY truth; `atwf watch-idle` hot-reloads it each tick.
-- Team members MUST NOT switch drive mode from inside their worker tmux sessions.
-- When drive mode is `running`, **all idle + all inbox empty** is treated as an abnormal stall.
-  The watcher will wake the configured `driver_role` (default: `coord`) with a `[DRIVE]` ticket.
-- The driver must immediately do ONE:
-  1) Kick off the next iteration by assigning owners/actions/ETAs (via `atwf action` / `atwf report-to`)
-  2) Switch the team to `standby` via config (and tell Liaison/User why)
-  3) Declare a blocker and create a handoff/permit when needed
-- When drive mode is `standby`, the team is allowed to be fully idle with empty inbox (no drive nudges).
+- `team.drive.mode` is USER/OPERATOR-ONLY configuration.
+- Any worker (including `coord`) MUST NOT edit: `.codex/skills/ai-team-workflow/scripts/atwf_config.yaml`.
+- `[DRIVE]` means **“ALL IDLE + INBOX EMPTY = abnormal stall”** (no one is driving work).
+- On `[DRIVE]`, the driver’s only job is:
+  - diagnose the root cause (run: `atwf state`, `atwf list`, `atwf inbox`), and
+  - re-drive work by assigning `action` tasks (owners + next action + ETA) or presenting concrete blocker evidence (with handoff when needed).
 
 ## Forbidden (do NOT do this)
 

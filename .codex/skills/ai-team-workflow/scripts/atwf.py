@@ -5838,9 +5838,9 @@ def cmd_drive(args: argparse.Namespace) -> int:
     self_full = _tmux_self_full()
     if self_full and _resolve_member(data, self_full):
         raise SystemExit(
-            "❌ drive mode is config-controlled; team members must not change it from inside tmux.\n"
-            f"   edit: {_config_file()} (team.drive.mode)\n"
-            "   operator: run `atwf drive standby|running` outside tmux if needed."
+            "❌ drive mode is user/operator-only.\n"
+            f"   workers must NOT edit: {_config_file()}\n"
+            "   workers must NOT change drive mode."
         )
 
     print(_set_drive_mode_config(mode))
@@ -6313,19 +6313,16 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
                 if target_full:
                     msg_id = _next_msg_id(team_dir)
                     body = (
-                        "[DRIVE] team stalled: all idle + inbox empty\n"
+                        "[DRIVE] team stalled: ALL IDLE + INBOX EMPTY\n"
                         f"- detected_at: {now_iso_tick}\n"
-                        f"- mode: running (set standby: edit atwf_config.yaml team.drive.mode=standby)\n"
+                        "- meaning: no one is driving work. This is an ABNORMAL STALL.\n"
                         "\n"
-                        "Required (choose ONE and execute now, with evidence):\n"
-                        "1) Kickoff next iteration: send assignments (owner + next action + ETA) to PM/Arch/Dev/QA via atwf send/report-to; include msg ids.\n"
-                        "2) Switch to standby: edit config (team.drive.mode=standby) and tell liaison/user why (e.g., waiting for input).\n"
-                        "3) Declare a blocker: document the blocker + who must act + handoff id.\n"
-                        "\n"
-                        "Quick checks:\n"
+                        "1) Diagnose now:\n"
                         "- atwf state\n"
                         "- atwf list\n"
-                        "- atwf inbox\n"
+                        "- atwf inbox (your own inbox)\n"
+                        "\n"
+                        'Summarize why the team reached "all idle + inbox empty", find the root cause, then re-drive the team back to work.\n'
                     )
                     _write_inbox_message(
                         team_dir,
@@ -6340,9 +6337,9 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
                         body=body,
                     )
                     short = (
-                        "[DRIVE] team stalled: all idle + inbox empty\n"
-                        f"inbox id={msg_id} (run: atwf inbox-open {msg_id})\n"
-                        "Action required: kickoff next iteration OR set: config team.drive.mode=standby\n"
+                        "[DRIVE] team stalled: ALL IDLE + INBOX EMPTY\n"
+                        f"inbox id={msg_id} (open: atwf inbox-open {msg_id})\n"
+                        "Action: diagnose root cause, then re-drive the team back to work.\n"
                     )
                     wrapped = _wrap_team_message(
                         team_dir,
