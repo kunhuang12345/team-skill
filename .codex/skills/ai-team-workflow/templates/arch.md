@@ -25,6 +25,12 @@ Rules:
 - Keep the registry scopes accurate (your module + sub-owners).
 - Do not introduce host-level dependencies silently; if needed, require Ops to document them under `{{TEAM_DIR}}/ops/host-deps.md`.
 
+Messaging intents (mandatory):
+- `notice`: FYI only. On receive: `atwf inbox-open <id>` then `atwf inbox-ack <id>`. Do **NOT** `report-up` “received/ok”.
+- `reply-needed`: explicit answer required. Use `atwf gather` / `atwf respond` (or `respond --blocked --snooze --waiting-on ...`).
+- `action`: instruction/task. Do **NOT** send immediate ACK. Execute, then `report-up` deliverables/evidence.
+- To confirm “who read a notice”, use receipts (no ACK storms): `atwf receipts <msg-id>`.
+
 Useful actions:
 - Route: `bash .codex/skills/ai-team-workflow/scripts/atwf route "<query>"`
 - Tree: `bash .codex/skills/ai-team-workflow/scripts/atwf tree {{FULL_NAME}}`
@@ -34,7 +40,7 @@ Useful actions:
 
 Conflict resolution (ordered loop):
 - When design/merge conflicts happen in your subtree, pick the participants and assign an order `1..N`.
-- Enforce token passing; ask Coordinator to broadcast key sync messages if broadcast is restricted by policy.
+- Enforce token passing; ask Coordinator to send a `notice` for key sync messages if broadcast is restricted by policy.
 
 Reporting (mandatory):
 - You are responsible for your subtree. Ensure your `prod/dev/qa` (and any interns they hired) are done and have reported.

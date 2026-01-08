@@ -35,7 +35,19 @@ _INBOX_DIR = "inbox"
 _INBOX_UNREAD_DIR = "unread"
 _INBOX_READ_DIR = "read"
 _INBOX_OVERFLOW_DIR = "overflow"
-_INBOX_MAX_UNREAD_DEFAULT = 5
+_INBOX_MAX_UNREAD_DEFAULT = 15
+
+_REQUESTS_DIR = "requests"
+_REQUEST_META_FILE = "meta.json"
+_REQUEST_RESPONSES_DIR = "responses"
+_REQUEST_STATUS_OPEN = "open"
+_REQUEST_STATUS_DONE = "done"
+_REQUEST_STATUS_TIMED_OUT = "timed_out"
+_REQUEST_TARGET_STATUS_PENDING = "pending"
+_REQUEST_TARGET_STATUS_REPLIED = "replied"
+_REQUEST_TARGET_STATUS_BLOCKED = "blocked"
+_REQUEST_DEADLINE_DEFAULT_S = 3600.0
+_REQUEST_BLOCK_SNOOZE_DEFAULT_S = 900.0  # 15 minutes
 
 _STATE_DIR = "state"
 _STATE_STATUS_WORKING = "working"
@@ -43,16 +55,42 @@ _STATE_STATUS_DRAINING = "draining"
 _STATE_STATUS_IDLE = "idle"
 _STATE_STATUSES = {_STATE_STATUS_WORKING, _STATE_STATUS_DRAINING, _STATE_STATUS_IDLE}
 
+_DRIVE_MODE_RUNNING = "running"
+_DRIVE_MODE_STANDBY = "standby"
+_DRIVE_MODES = {_DRIVE_MODE_RUNNING, _DRIVE_MODE_STANDBY}
+
 _STATE_INBOX_CHECK_INTERVAL_DEFAULT = 60.0
 _STATE_IDLE_WAKE_DELAY_DEFAULT = 60.0
 _STATE_WATCH_INTERVAL_DEFAULT = 60.0
+_STATE_ACTIVITY_WINDOW_DEFAULT = 120.0
+_STATE_ACTIVE_GRACE_PERIOD_DEFAULT = 180.0
+_STATE_ACTIVITY_CAPTURE_LINES_DEFAULT = 200
+_STATE_AUTO_ENTER_ENABLED_DEFAULT = True
+_STATE_AUTO_ENTER_COOLDOWN_DEFAULT = 30.0
+_STATE_AUTO_ENTER_TAIL_WINDOW_LINES_DEFAULT = 80
+_STATE_AUTO_ENTER_PATTERNS_DEFAULT = ("3. No, and tell Codex what to do differently (esc)",)
+_DRIVE_MODE_DEFAULT = _DRIVE_MODE_RUNNING
+_DRIVE_DRIVER_ROLE_DEFAULT = "coord"
+_DRIVE_BACKUP_ROLE_DEFAULT = "pm"
+_DRIVE_COOLDOWN_DEFAULT = 600.0
 _STATE_WORKING_STALE_THRESHOLD_DEFAULT = 180.0
 _STATE_WORKING_ALERT_COOLDOWN_DEFAULT = 600.0
 _STATE_WAKE_MESSAGE_DEFAULT = "INBOX wake: you have unread messages. Run: bash .codex/skills/ai-team-workflow/scripts/atwf inbox"
+_STATE_REPLY_WAKE_MESSAGE_DEFAULT = "REPLY wake: you have pending reply-needed. Run: bash .codex/skills/ai-team-workflow/scripts/atwf reply-needed"
 
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _parse_iso_dt(raw: str) -> datetime | None:
+    s = (raw or "").strip()
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s)
+    except Exception:
+        return None
 
 
 def _eprint(msg: str) -> None:
@@ -119,6 +157,10 @@ def _inbox_root(team_dir: Path) -> Path:
     return team_dir / _INBOX_DIR
 
 
+def _requests_root(team_dir: Path) -> Path:
+    return team_dir / _REQUESTS_DIR
+
+
 def _state_root(team_dir: Path) -> Path:
     return team_dir / _STATE_DIR
 
@@ -140,6 +182,22 @@ def _inbox_thread_dir(team_dir: Path, *, to_base: str, from_base: str, state: st
 
 def _inbox_message_path(team_dir: Path, *, to_base: str, from_base: str, state: str, msg_id: str) -> Path:
     return _inbox_thread_dir(team_dir, to_base=to_base, from_base=from_base, state=state) / f"{msg_id}.md"
+
+
+def _request_dir(team_dir: Path, *, request_id: str) -> Path:
+    return _requests_root(team_dir) / request_id.strip()
+
+
+def _request_meta_path(team_dir: Path, *, request_id: str) -> Path:
+    return _request_dir(team_dir, request_id=request_id) / _REQUEST_META_FILE
+
+
+def _request_responses_dir(team_dir: Path, *, request_id: str) -> Path:
+    return _request_dir(team_dir, request_id=request_id) / _REQUEST_RESPONSES_DIR
+
+
+def _reply_drive_state_path(team_dir: Path) -> Path:
+    return _state_root(team_dir) / "reply_drive.json"
 
 
 def _expand_path(path: str) -> Path:
@@ -575,6 +633,38 @@ def _cfg_get_intish(cfg: dict[str, Any], *paths: tuple[str, ...], default: int) 
     return int(default)
 
 
+def _cfg_get_boolish(cfg: dict[str, Any], *paths: tuple[str, ...], default: bool) -> bool:
+    for p in paths:
+        v = _cfg_get(cfg, p)
+        if isinstance(v, bool):
+            return v
+        if v is None:
+            continue
+        if isinstance(v, (int, float)):
+            return bool(v)
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s in {"1", "true", "yes", "y", "on"}:
+                return True
+            if s in {"0", "false", "no", "n", "off"}:
+                return False
+    return bool(default)
+
+
+def _cfg_get_str_list(cfg: dict[str, Any], path: tuple[str, ...], *, default: tuple[str, ...]) -> list[str]:
+    v = _cfg_get(cfg, path)
+    if isinstance(v, list):
+        out: list[str] = []
+        for item in v:
+            if isinstance(item, str) and item.strip():
+                out.append(item.strip())
+        if out:
+            return out
+    if isinstance(v, str) and v.strip():
+        return [v.strip()]
+    return [s for s in default if s]
+
+
 @lru_cache(maxsize=1)
 def _inbox_max_unread_per_thread() -> int:
     cfg = _read_yaml_or_json(_config_file())
@@ -620,10 +710,175 @@ def _state_watch_interval_s() -> float:
 
 
 @lru_cache(maxsize=1)
+def _state_activity_window_s() -> float:
+    cfg = _read_yaml_or_json(_config_file())
+    n = _cfg_get_floatish(cfg, ("team", "state", "activity_window"), default=_STATE_ACTIVITY_WINDOW_DEFAULT)
+    if n < 10:
+        n = 10.0
+    if n > 3600:
+        n = 3600.0
+    return float(n)
+
+
+@lru_cache(maxsize=1)
+def _state_active_grace_period_s() -> float:
+    cfg = _read_yaml_or_json(_config_file())
+    n = _cfg_get_floatish(cfg, ("team", "state", "active_grace_period"), default=_STATE_ACTIVE_GRACE_PERIOD_DEFAULT)
+    if n < 0:
+        n = 0.0
+    if n > 3600:
+        n = 3600.0
+    return float(n)
+
+
+@lru_cache(maxsize=1)
+def _state_activity_capture_lines() -> int:
+    cfg = _read_yaml_or_json(_config_file())
+    n = _cfg_get_intish(cfg, ("team", "state", "activity_capture_lines"), default=_STATE_ACTIVITY_CAPTURE_LINES_DEFAULT)
+    if n < 20:
+        n = 20
+    if n > 5000:
+        n = 5000
+    return int(n)
+
+
+@lru_cache(maxsize=1)
+def _state_auto_enter_enabled() -> bool:
+    cfg = _read_yaml_or_json(_config_file())
+    return _cfg_get_boolish(cfg, ("team", "state", "auto_enter", "enabled"), default=_STATE_AUTO_ENTER_ENABLED_DEFAULT)
+
+
+@lru_cache(maxsize=1)
+def _state_auto_enter_cooldown_s() -> float:
+    cfg = _read_yaml_or_json(_config_file())
+    n = _cfg_get_floatish(cfg, ("team", "state", "auto_enter", "cooldown"), default=_STATE_AUTO_ENTER_COOLDOWN_DEFAULT)
+    if n < 0:
+        n = 0.0
+    if n > 3600:
+        n = 3600.0
+    return float(n)
+
+
+@lru_cache(maxsize=1)
+def _state_auto_enter_tail_window_lines() -> int:
+    cfg = _read_yaml_or_json(_config_file())
+    n = _cfg_get_intish(cfg, ("team", "state", "auto_enter", "tail_window_lines"), default=_STATE_AUTO_ENTER_TAIL_WINDOW_LINES_DEFAULT)
+    if n < 10:
+        n = 10
+    if n > 1000:
+        n = 1000
+    return int(n)
+
+
+@lru_cache(maxsize=1)
+def _state_auto_enter_patterns() -> list[str]:
+    cfg = _read_yaml_or_json(_config_file())
+    patterns = _cfg_get_str_list(cfg, ("team", "state", "auto_enter", "patterns"), default=_STATE_AUTO_ENTER_PATTERNS_DEFAULT)
+    out: list[str] = []
+    for p in patterns:
+        s = (p or "").strip()
+        if s and s not in out:
+            out.append(s)
+    return out
+
+
+def _normalize_drive_mode(raw: str) -> str:
+    s = (raw or "").strip().lower()
+    if s in {"on", "enable", "enabled", "true", "1", "run", "running"}:
+        return _DRIVE_MODE_RUNNING
+    if s in {"off", "disable", "disabled", "false", "0", "standby", "idle"}:
+        return _DRIVE_MODE_STANDBY
+    return s
+
+
+@lru_cache(maxsize=1)
+def _drive_mode_config_default() -> str:
+    cfg = _read_yaml_or_json(_config_file())
+    raw_mode = _cfg_get_str(cfg, ("team", "drive", "mode"), default="")
+    if raw_mode.strip():
+        mode = _normalize_drive_mode(raw_mode)
+        return mode if mode in _DRIVE_MODES else _DRIVE_MODE_DEFAULT
+    enabled = _cfg_get_boolish(cfg, ("team", "drive", "enabled"), default=(True if _DRIVE_MODE_DEFAULT == _DRIVE_MODE_RUNNING else False))
+    return _DRIVE_MODE_RUNNING if enabled else _DRIVE_MODE_STANDBY
+
+
+def _drive_mode_config_hot() -> str:
+    """
+    Drive mode is controlled by config and must be hot-reloaded by the watcher.
+
+    Requirement: only `team.drive.mode` is treated as authoritative and is re-read
+    each watcher tick. Other config values remain cached and require watcher restart.
+    """
+    cfg = _read_yaml_or_json(_config_file())
+    raw_mode = _cfg_get_str(cfg, ("team", "drive", "mode"), default="")
+    if raw_mode.strip():
+        mode = _normalize_drive_mode(raw_mode)
+        return mode if mode in _DRIVE_MODES else _DRIVE_MODE_DEFAULT
+    # Back-compat: older configs may use `team.drive.enabled`.
+    return _drive_mode_config_default()
+
+
+@lru_cache(maxsize=1)
+def _drive_driver_role() -> str:
+    cfg = _read_yaml_or_json(_config_file())
+    role = _cfg_get_str(cfg, ("team", "drive", "driver_role"), default=_DRIVE_DRIVER_ROLE_DEFAULT)
+    role = role.strip() or _policy().root_role
+    return _require_role(role)
+
+
+@lru_cache(maxsize=1)
+def _drive_backup_role() -> str:
+    cfg = _read_yaml_or_json(_config_file())
+    role = _cfg_get_str(cfg, ("team", "drive", "backup_role"), default=_DRIVE_BACKUP_ROLE_DEFAULT)
+    role = role.strip() or _DRIVE_BACKUP_ROLE_DEFAULT
+    return _require_role(role)
+
+
+@lru_cache(maxsize=1)
+def _drive_cooldown_s() -> float:
+    cfg = _read_yaml_or_json(_config_file())
+    n = _cfg_get_floatish(cfg, ("team", "drive", "cooldown"), default=_DRIVE_COOLDOWN_DEFAULT)
+    if n < 0:
+        n = 0.0
+    if n > 86400:
+        n = 86400.0
+    return float(n)
+
+
+@lru_cache(maxsize=1)
 def _state_wake_message() -> str:
     cfg = _read_yaml_or_json(_config_file())
     msg = _cfg_get_str(cfg, ("team", "state", "wake_message"), default=_STATE_WAKE_MESSAGE_DEFAULT)
     return msg.strip() or _STATE_WAKE_MESSAGE_DEFAULT
+
+
+@lru_cache(maxsize=1)
+def _state_reply_wake_message() -> str:
+    cfg = _read_yaml_or_json(_config_file())
+    msg = _cfg_get_str(cfg, ("team", "state", "reply_wake_message"), default=_STATE_REPLY_WAKE_MESSAGE_DEFAULT)
+    return msg.strip() or _STATE_REPLY_WAKE_MESSAGE_DEFAULT
+
+
+@lru_cache(maxsize=1)
+def _request_deadline_s() -> float:
+    cfg = _read_yaml_or_json(_config_file())
+    n = _cfg_get_floatish(cfg, ("team", "reply", "deadline"), default=_REQUEST_DEADLINE_DEFAULT_S)
+    if n < 60:
+        n = 60.0
+    if n > 86400:
+        n = 86400.0
+    return float(n)
+
+
+@lru_cache(maxsize=1)
+def _request_block_snooze_default_s() -> float:
+    cfg = _read_yaml_or_json(_config_file())
+    n = _cfg_get_floatish(cfg, ("team", "reply", "blocked_snooze"), default=_REQUEST_BLOCK_SNOOZE_DEFAULT_S)
+    if n < 30:
+        n = 30.0
+    if n > 86400:
+        n = 86400.0
+    return float(n)
 
 
 @lru_cache(maxsize=1)
@@ -1409,6 +1664,7 @@ def _ensure_share_layout(team_dir: Path) -> None:
     _design_dir(team_dir).mkdir(parents=True, exist_ok=True)
     _ops_dir(team_dir).mkdir(parents=True, exist_ok=True)
     _inbox_root(team_dir).mkdir(parents=True, exist_ok=True)
+    _requests_root(team_dir).mkdir(parents=True, exist_ok=True)
     _state_root(team_dir).mkdir(parents=True, exist_ok=True)
 
 
@@ -1424,6 +1680,186 @@ def _agent_state_path(team_dir: Path, *, full: str) -> Path:
     return _state_root(team_dir) / f"{_slugify(full)}.json"
 
 
+def _drive_state_path(team_dir: Path) -> Path:
+    return _state_root(team_dir) / "drive.json"
+
+
+def _default_drive_state(*, mode: str) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "created_at": _now(),
+        "updated_at": _now(),
+        "mode": _normalize_drive_mode(mode) if mode else _DRIVE_MODE_DEFAULT,
+        "last_triggered_at": "",
+        "last_msg_id": "",
+        "last_reason": "",
+        "last_driver_full": "",
+    }
+
+
+def _load_drive_state_unlocked(team_dir: Path, *, mode_default: str) -> dict[str, Any]:
+    path = _drive_state_path(team_dir)
+    data = _read_json(path) if path.is_file() else {}
+    if not data:
+        data = _default_drive_state(mode=mode_default)
+        _write_json_atomic(path, data)
+        return data
+
+    data.setdefault("version", 1)
+    data.setdefault("created_at", _now())
+    data["updated_at"] = _now()
+    data.setdefault("last_triggered_at", "")
+    data.setdefault("last_msg_id", "")
+    data.setdefault("last_reason", "")
+    data.setdefault("last_driver_full", "")
+
+    # Config is authoritative; keep the drive state's `mode` as an informational mirror.
+    mode = _normalize_drive_mode(str(mode_default or ""))
+    if mode not in _DRIVE_MODES:
+        mode = _DRIVE_MODE_DEFAULT
+    data["mode"] = mode
+    return data
+
+
+def _write_drive_state(team_dir: Path, *, update: dict[str, Any]) -> dict[str, Any]:
+    lock = _state_lock_path(team_dir)
+    with _locked(lock):
+        _ensure_share_layout(team_dir)
+        data = _load_drive_state_unlocked(team_dir, mode_default=_drive_mode_config_hot())
+        for k, v in update.items():
+            data[k] = v
+        data["updated_at"] = _now()
+        _write_json_atomic(_drive_state_path(team_dir), data)
+        return data
+
+
+def _set_drive_mode_config(mode: str) -> str:
+    """
+    Operator utility: update `team.drive.mode` in the config file in-place.
+    This is intentionally conservative to preserve comments and other formatting.
+    """
+    mode = _normalize_drive_mode(mode)
+    if mode not in _DRIVE_MODES:
+        raise SystemExit(f"❌ invalid drive mode: {mode!r} (allowed: running|standby)")
+
+    path = _config_file()
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise SystemExit(f"❌ config file missing: {path}")
+    except OSError as e:
+        raise SystemExit(f"❌ failed to read config file: {path} ({e})")
+
+    lines = raw.splitlines(keepends=True)
+    in_team = False
+    team_indent: int | None = None
+    in_drive = False
+    drive_indent: int | None = None
+    changed = False
+
+    def leading_spaces(s: str) -> int:
+        return len(s) - len(s.lstrip(" "))
+
+    for i, line in enumerate(lines):
+        stripped = line.lstrip(" ")
+        if not stripped.strip() or stripped.lstrip().startswith("#"):
+            continue
+        indent = leading_spaces(line)
+        key = stripped.split(":", 1)[0].strip()
+
+        if not in_team:
+            if key == "team" and stripped.startswith("team:"):
+                in_team = True
+                team_indent = indent
+                in_drive = False
+                drive_indent = None
+            continue
+
+        if team_indent is not None and indent <= team_indent and not stripped.startswith("-"):
+            in_team = False
+            in_drive = False
+            drive_indent = None
+            team_indent = None
+            continue
+
+        if not in_drive:
+            if key == "drive" and stripped.startswith("drive:"):
+                in_drive = True
+                drive_indent = indent
+            continue
+
+        if drive_indent is not None and indent <= drive_indent and not stripped.startswith("-"):
+            in_drive = False
+            drive_indent = None
+            continue
+
+        if key != "mode" or not stripped.startswith("mode:"):
+            continue
+
+        suffix = ""
+        if "#" in stripped:
+            idx = stripped.find("#")
+            suffix = " " + stripped[idx:].rstrip("\n")
+        newline = "\n" if line.endswith("\n") else ""
+        lines[i] = (" " * indent) + f"mode: {mode}" + suffix + newline
+        changed = True
+        break
+
+    if not changed:
+        raise SystemExit(f"❌ failed to locate `team.drive.mode` in config: {path}")
+
+    new_raw = "".join(lines)
+    try:
+        _write_text_atomic(path, new_raw)
+    except OSError as e:
+        raise SystemExit(f"❌ failed to write config file: {path} ({e})")
+    return mode
+
+
+def _default_reply_drive_state() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "created_at": _now(),
+        "updated_at": _now(),
+        "last_triggered_at": "",
+        "last_reason": "",
+        "last_request_id": "",
+        "last_target_base": "",
+        "last_target_full": "",
+    }
+
+
+def _load_reply_drive_state_unlocked(team_dir: Path) -> dict[str, Any]:
+    path = _reply_drive_state_path(team_dir)
+    data = _read_json(path) if path.is_file() else {}
+    if not data:
+        data = _default_reply_drive_state()
+        _write_json_atomic(path, data)
+        return data
+
+    data.setdefault("version", 1)
+    data.setdefault("created_at", _now())
+    data["updated_at"] = _now()
+    data.setdefault("last_triggered_at", "")
+    data.setdefault("last_reason", "")
+    data.setdefault("last_request_id", "")
+    data.setdefault("last_target_base", "")
+    data.setdefault("last_target_full", "")
+    return data
+
+
+def _write_reply_drive_state(team_dir: Path, *, update: dict[str, Any]) -> dict[str, Any]:
+    lock = _state_lock_path(team_dir)
+    with _locked(lock):
+        _ensure_share_layout(team_dir)
+        data = _load_reply_drive_state_unlocked(team_dir)
+        for k, v in update.items():
+            data[k] = v
+        data["updated_at"] = _now()
+        _write_json_atomic(_reply_drive_state_path(team_dir), data)
+        return data
+
+
 def _normalize_agent_status(raw: str) -> str:
     s = (raw or "").strip().lower()
     if s in {"work", "working", "busy"}:
@@ -1435,6 +1871,34 @@ def _normalize_agent_status(raw: str) -> str:
     return s
 
 
+_DURATION_RE = re.compile(r"^([0-9]+(?:\\.[0-9]+)?)\\s*([a-zA-Z]+)?$")
+
+
+def _parse_duration_seconds(raw: str, *, default_s: float) -> float:
+    s = (raw or "").strip()
+    if not s:
+        return float(default_s)
+    m = _DURATION_RE.match(s)
+    if not m:
+        return float(default_s)
+    try:
+        n = float(m.group(1))
+    except Exception:
+        return float(default_s)
+    unit = (m.group(2) or "").strip().lower()
+    if not unit:
+        return float(n)
+    if unit in {"s", "sec", "secs", "second", "seconds"}:
+        return float(n)
+    if unit in {"m", "min", "mins", "minute", "minutes"}:
+        return float(n) * 60.0
+    if unit in {"h", "hr", "hrs", "hour", "hours"}:
+        return float(n) * 3600.0
+    if unit in {"d", "day", "days"}:
+        return float(n) * 86400.0
+    return float(default_s)
+
+
 def _default_agent_state(*, full: str, base: str, role: str) -> dict[str, Any]:
     return {
         "version": 1,
@@ -1444,9 +1908,16 @@ def _default_agent_state(*, full: str, base: str, role: str) -> dict[str, Any]:
         "base": base,
         "role": role,
         "status": _STATE_STATUS_WORKING,
+        "status_source": "init",
         "last_inbox_check_at": "",
         "last_inbox_unread": 0,
         "last_inbox_overflow": 0,
+        "last_output_hash": "",
+        "last_output_capture_at": "",
+        "last_output_change_at": "",
+        "auto_enter_last_sent_at": "",
+        "auto_enter_last_reason": "",
+        "auto_enter_count": 0,
         "idle_since": "",
         "idle_inbox_empty_at": "",
         "wakeup_scheduled_at": "",
@@ -1473,12 +1944,19 @@ def _load_agent_state_unlocked(team_dir: Path, *, full: str, base: str, role: st
     data.setdefault("base", base)
     data.setdefault("role", role)
     data.setdefault("status", _STATE_STATUS_WORKING)
+    data.setdefault("status_source", "init")
     data["updated_at"] = _now()
 
     status = _normalize_agent_status(str(data.get("status", "")))
     if status not in _STATE_STATUSES:
         status = _STATE_STATUS_WORKING
     data["status"] = status
+    data.setdefault("last_output_hash", "")
+    data.setdefault("last_output_capture_at", "")
+    data.setdefault("last_output_change_at", "")
+    data.setdefault("auto_enter_last_sent_at", "")
+    data.setdefault("auto_enter_last_reason", "")
+    data.setdefault("auto_enter_count", 0)
     return data
 
 
@@ -1779,6 +2257,298 @@ def _mark_inbox_read(team_dir: Path, *, to_base: str, msg_id: str) -> Path | Non
             except Exception:
                 pass
         return dst if dst.is_file() else None
+
+
+_REQUEST_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def _request_response_path(team_dir: Path, *, request_id: str, target_base: str) -> Path:
+    request_id = request_id.strip()
+    if not request_id:
+        raise SystemExit("❌ request id missing")
+    return _request_responses_dir(team_dir, request_id=request_id) / f"{_slugify(target_base)}.md"
+
+
+def _resolve_request_id(team_dir: Path, raw: str) -> str:
+    s = (raw or "").strip()
+    if not s:
+        raise SystemExit("❌ request id missing")
+    if _REQUEST_ID_RE.match(s) and _request_dir(team_dir, request_id=s).is_dir():
+        return s
+    if s.isdigit():
+        alt = f"req-{s}"
+        if _request_dir(team_dir, request_id=alt).is_dir():
+            return alt
+    if s.startswith("req-") and s[4:].isdigit():
+        alt2 = s[4:]
+        if _request_dir(team_dir, request_id=alt2).is_dir():
+            return alt2
+    return s
+
+
+def _list_request_ids(team_dir: Path) -> list[str]:
+    root = _requests_root(team_dir)
+    if not root.is_dir():
+        return []
+    out: list[str] = []
+    for p in root.iterdir():
+        if p.is_dir():
+            name = p.name.strip()
+            if name:
+                out.append(name)
+    out.sort()
+    return out
+
+
+def _load_request_meta(team_dir: Path, *, request_id: str) -> dict[str, Any]:
+    request_id = _resolve_request_id(team_dir, request_id)
+    path = _request_meta_path(team_dir, request_id=request_id)
+    data = _read_json(path) if path.is_file() else {}
+    if not isinstance(data, dict) or not data:
+        raise SystemExit(f"❌ request not found: {request_id}")
+    data.setdefault("version", 1)
+    data.setdefault("id", request_id)
+    data.setdefault("created_at", "")
+    data.setdefault("updated_at", "")
+    status = str(data.get("status", "") or "").strip() or _REQUEST_STATUS_OPEN
+    if status not in {_REQUEST_STATUS_OPEN, _REQUEST_STATUS_DONE, _REQUEST_STATUS_TIMED_OUT}:
+        status = _REQUEST_STATUS_OPEN
+    data["status"] = status
+    targets = data.get("targets")
+    if not isinstance(targets, dict):
+        data["targets"] = {}
+    return data
+
+
+def _update_request_meta(team_dir: Path, *, request_id: str, updater) -> dict[str, Any]:
+    request_id = _resolve_request_id(team_dir, request_id)
+    lock = team_dir / ".lock"
+    with _locked(lock):
+        _ensure_share_layout(team_dir)
+        path = _request_meta_path(team_dir, request_id=request_id)
+        data = _read_json(path) if path.is_file() else {}
+        if not isinstance(data, dict) or not data:
+            raise SystemExit(f"❌ request not found: {request_id}")
+        updater(data)
+        data["updated_at"] = _now()
+        _write_json_atomic(path, data)
+        return data
+
+
+def _request_all_replied(meta: dict[str, Any]) -> bool:
+    targets = meta.get("targets")
+    if not isinstance(targets, dict) or not targets:
+        return False
+    for _k, t in targets.items():
+        if not isinstance(t, dict):
+            return False
+        if str(t.get("status", "")).strip() != _REQUEST_TARGET_STATUS_REPLIED:
+            return False
+    return True
+
+
+def _render_request_result(team_dir: Path, meta: dict[str, Any], *, final_status: str) -> str:
+    request_id = str(meta.get("id", "") or "").strip()
+    topic = str(meta.get("topic", "") or "").strip()
+    created_at = str(meta.get("created_at", "") or "").strip()
+    deadline_at = str(meta.get("deadline_at", "") or "").strip()
+
+    from_info = meta.get("from") if isinstance(meta.get("from"), dict) else {}
+    from_base = str(from_info.get("base", "") or "").strip()
+    from_role = str(from_info.get("role", "") or "").strip()
+    from_full = str(from_info.get("full", "") or "").strip()
+
+    meta_path = _request_meta_path(team_dir, request_id=request_id) if request_id else _requests_root(team_dir)
+    responses_dir = _request_responses_dir(team_dir, request_id=request_id) if request_id else _requests_root(team_dir)
+
+    lines: list[str] = []
+    header = "[REPLY-NEEDED RESULT]"
+    if final_status == _REQUEST_STATUS_TIMED_OUT:
+        header += " timed_out"
+    lines.append(header)
+    if request_id:
+        lines.append(f"- request_id: {request_id}")
+    if topic:
+        lines.append(f"- topic: {topic}")
+    if from_base or from_full:
+        lines.append(f"- from: {from_base or from_full} (role={from_role or '?'})")
+    if created_at:
+        lines.append(f"- created_at: {created_at}")
+    if deadline_at:
+        lines.append(f"- deadline_at: {deadline_at}")
+    lines.append(f"- meta: `{meta_path}`")
+    lines.append(f"- responses: `{responses_dir}`")
+
+    targets = meta.get("targets")
+    if not isinstance(targets, dict) or not targets:
+        lines.append("- targets: (none)")
+        return "\n".join(lines).rstrip() + "\n"
+
+    replied: list[str] = []
+    pending: list[str] = []
+    for base, t in targets.items():
+        if not isinstance(t, dict):
+            pending.append(str(base))
+            continue
+        role = str(t.get("role", "") or "").strip() or "?"
+        st = str(t.get("status", "") or "").strip() or _REQUEST_TARGET_STATUS_PENDING
+        if st == _REQUEST_TARGET_STATUS_REPLIED:
+            resp_file = str(t.get("response_file", "") or "").strip()
+            resp_note = f" file={resp_file}" if resp_file else ""
+            replied.append(f"{base} (role={role}){resp_note}")
+            continue
+        blocked_until = str(t.get("blocked_until", "") or "").strip()
+        waiting_on = str(t.get("waiting_on", "") or "").strip()
+        extra: list[str] = []
+        if blocked_until:
+            extra.append(f"blocked_until={blocked_until}")
+        if waiting_on:
+            extra.append(f"waiting_on={waiting_on}")
+        extra_s = (" " + " ".join(extra)) if extra else ""
+        pending.append(f"{base} (role={role} status={st}{extra_s})")
+
+    if replied:
+        lines.append("")
+        lines.append("Replied:")
+        for item in replied:
+            lines.append(f"- {item}")
+    if pending:
+        lines.append("")
+        lines.append("Pending:")
+        for item in pending:
+            lines.append(f"- {item}")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _scan_reply_requests(
+    team_dir: Path,
+    *,
+    now_dt: datetime,
+) -> tuple[list[tuple[str, str]], bool, list[tuple[str, str, str, str]], dict[str, int]]:
+    """
+    Returns:
+    - finalizable: [(request_id, final_status)] for requests that should be auto-finalized.
+    - has_pending: whether any open request has any non-replied target.
+    - due: [(request_id, target_base, target_role, target_status)] targets that are due (not replied, not snoozed).
+    - waiters: {base -> count} reverse-dependency counts from waiting_on.
+    """
+    finalizable: list[tuple[str, str]] = []
+    has_pending = False
+    due: list[tuple[str, str, str, str]] = []
+    waiters: dict[str, int] = {}
+
+    for req_id in _list_request_ids(team_dir):
+        meta_path = _request_meta_path(team_dir, request_id=req_id)
+        if not meta_path.is_file():
+            continue
+        meta = _read_json(meta_path)
+        if not isinstance(meta, dict) or not meta:
+            continue
+        if str(meta.get("status", "")).strip() != _REQUEST_STATUS_OPEN:
+            continue
+
+        targets = meta.get("targets")
+        if not isinstance(targets, dict) or not targets:
+            continue
+
+        if _request_all_replied(meta):
+            finalizable.append((req_id, _REQUEST_STATUS_DONE))
+            continue
+
+        deadline_dt = _parse_iso_dt(str(meta.get("deadline_at", "") or ""))
+        if deadline_dt is not None and now_dt >= deadline_dt:
+            finalizable.append((req_id, _REQUEST_STATUS_TIMED_OUT))
+            continue
+
+        for base, t in targets.items():
+            if not isinstance(t, dict):
+                has_pending = True
+                due.append((req_id, str(base), "?", _REQUEST_TARGET_STATUS_PENDING))
+                continue
+            st = str(t.get("status", "") or "").strip() or _REQUEST_TARGET_STATUS_PENDING
+            if st == _REQUEST_TARGET_STATUS_REPLIED:
+                continue
+            has_pending = True
+            role = str(t.get("role", "") or "").strip() or "?"
+            waiting_on = str(t.get("waiting_on", "") or "").strip()
+            if waiting_on:
+                waiters[waiting_on] = int(waiters.get(waiting_on, 0) or 0) + 1
+            blocked_until = _parse_iso_dt(str(t.get("blocked_until", "") or ""))
+            if blocked_until is not None and now_dt < blocked_until:
+                continue
+            due.append((req_id, str(base), role, st))
+
+    return finalizable, has_pending, due, waiters
+
+
+def _finalize_request(
+    team_dir: Path,
+    registry_data: dict[str, Any],
+    *,
+    request_id: str,
+    msg_id: str,
+    final_status: str,
+    now_iso: str,
+) -> bool:
+    if final_status not in {_REQUEST_STATUS_DONE, _REQUEST_STATUS_TIMED_OUT}:
+        return False
+
+    now_dt = _parse_iso_dt(now_iso) or datetime.now()
+
+    lock = team_dir / ".lock"
+    with _locked(lock):
+        meta_path = _request_meta_path(team_dir, request_id=request_id)
+        meta = _read_json(meta_path) if meta_path.is_file() else {}
+        if not isinstance(meta, dict) or not meta:
+            return False
+        if str(meta.get("status", "")).strip() != _REQUEST_STATUS_OPEN:
+            return False
+        if str(meta.get("final_msg_id", "") or "").strip():
+            return False
+
+        all_replied = _request_all_replied(meta)
+        deadline_dt = _parse_iso_dt(str(meta.get("deadline_at", "") or ""))
+        timed_out = deadline_dt is not None and now_dt >= deadline_dt and not all_replied
+
+        if final_status == _REQUEST_STATUS_DONE and not all_replied:
+            return False
+        if final_status == _REQUEST_STATUS_TIMED_OUT and not timed_out:
+            return False
+
+        from_info = meta.get("from") if isinstance(meta.get("from"), dict) else {}
+        to_base = str(from_info.get("base", "") or "").strip() or str(from_info.get("full", "") or "").strip()
+        to_full = str(from_info.get("full", "") or "").strip()
+        to_role = str(from_info.get("role", "") or "").strip() or "?"
+        if to_base:
+            m = _resolve_member(registry_data, to_base) or {}
+            to_full = str(m.get("full", "")).strip() or to_full or to_base
+            to_role = _member_role(m) or to_role
+
+        if not to_base:
+            return False
+
+        body = _render_request_result(team_dir, meta, final_status=final_status)
+        _write_inbox_message_unlocked(
+            team_dir,
+            msg_id=msg_id,
+            kind="reply-needed-result",
+            from_full="atwf-reply",
+            from_base="atwf-reply",
+            from_role="system",
+            to_full=to_full or to_base,
+            to_base=to_base,
+            to_role=to_role,
+            body=body,
+        )
+        _inbox_enforce_unread_limit_unlocked(team_dir, to_base=to_base, from_base="atwf-reply", max_unread=_inbox_max_unread_per_thread())
+
+        meta["status"] = final_status
+        meta["finalized_at"] = now_iso
+        meta["final_msg_id"] = msg_id
+        meta["updated_at"] = now_iso
+        _write_json_atomic(meta_path, meta)
+        return True
 
 
 def _ensure_task_and_design_files(team_dir: Path, *, task_content: str | None, task_source: str | None) -> Path | None:
@@ -3175,6 +3945,40 @@ def _tmux_running(session: str) -> bool:
     return res.returncode == 0
 
 
+def _tmux_capture_tail(session: str, *, lines: int) -> str | None:
+    if not session.strip():
+        return None
+    n = int(lines) if int(lines) > 0 else 200
+    start = f"-{n}"
+    res = subprocess.run(
+        ["tmux", "capture-pane", "-p", "-t", session, "-S", start],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    if res.returncode != 0:
+        return None
+    return res.stdout
+
+
+def _tmux_send_enter(session: str) -> bool:
+    if not session.strip():
+        return False
+    res = subprocess.run(
+        ["tmux", "send-keys", "-t", session, "C-m"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return res.returncode == 0
+
+
+def _text_digest(raw: str) -> str:
+    s = (raw or "").replace("\r\n", "\n").replace("\r", "\n")
+    return hashlib.sha1(s.encode("utf-8", errors="ignore")).hexdigest()
+
+
 def _tree_children(data: dict[str, Any]) -> dict[str, list[str]]:
     members = data.get("members", [])
     if not isinstance(members, list):
@@ -3730,6 +4534,12 @@ def cmd_broadcast(args: argparse.Namespace) -> int:
     data = _load_registry(registry)
     policy = _policy()
 
+    # Hard constraint: require explicit intent via `atwf notice` / `atwf action`.
+    # Members running inside their worker tmux sessions must not use legacy broadcast.
+    self_full = _tmux_self_full()
+    if self_full and _resolve_member(data, self_full):
+        raise SystemExit("❌ use `atwf notice` or `atwf action` (legacy `broadcast` is disabled for team members)")
+
     actor_full = _resolve_actor_full(data, as_target=getattr(args, "as_target", None))
     actor_m = _resolve_member(data, actor_full)
     if not actor_m:
@@ -4054,6 +4864,12 @@ def cmd_send(args: argparse.Namespace) -> int:
     data = _load_registry(registry)
     policy = _policy()
 
+    # Hard constraint: require explicit intent via `atwf notice` / `atwf action`.
+    # Members running inside their worker tmux sessions must not use legacy send.
+    self_full = _tmux_self_full()
+    if self_full and _resolve_member(data, self_full):
+        raise SystemExit("❌ use `atwf notice <target>` or `atwf action <target>` (legacy `send` is disabled for team members)")
+
     actor_full = _resolve_actor_full(data, as_target=getattr(args, "as_target", None))
     actor_m = _resolve_member(data, actor_full)
     if not actor_m:
@@ -4117,6 +4933,674 @@ def cmd_send(args: argparse.Namespace) -> int:
     sys.stdout.write(res.stdout)
     sys.stderr.write(res.stderr)
     return res.returncode
+
+
+def _resolve_intent_targets(
+    *,
+    data: dict[str, Any],
+    policy: TeamPolicy,
+    actor_full: str,
+    targets: list[str] | None,
+    role: str | None,
+    subtree: str | None,
+    include_excluded: bool,
+) -> tuple[list[str], bool]:
+    """
+    Resolve targets and whether this is a broadcast-style delivery.
+
+    - For --role/--subtree: broadcast-style (policy.broadcast applies)
+    - For explicit targets:
+      - 1 target => direct (comm policy applies)
+      - 2+ targets => broadcast-style (policy.broadcast applies)
+    """
+    resolved: list[str] = []
+
+    if role:
+        resolved = _members_by_role(data, role)
+        is_broadcast = True
+    elif subtree:
+        root = _resolve_target_full(data, subtree)
+        if not root:
+            raise SystemExit(f"❌ subtree root not found in registry: {subtree}")
+        resolved = _subtree_fulls(data, root)
+        is_broadcast = True
+        if not include_excluded and policy.broadcast_exclude_roles:
+            filtered: list[str] = []
+            for full in resolved:
+                m = _resolve_member(data, full)
+                if _member_role(m) in policy.broadcast_exclude_roles:
+                    continue
+                filtered.append(full)
+            resolved = filtered
+    else:
+        raw = targets or []
+        if not raw:
+            raise SystemExit("❌ targets are required (or use --role/--subtree)")
+        for t in raw:
+            full = _resolve_target_full(data, str(t))
+            if not full:
+                raise SystemExit(f"❌ target not found in registry: {t}")
+            resolved.append(full)
+        is_broadcast = len({t for t in resolved if t}) > 1
+
+    # De-dupe + drop self for broadcast-style deliveries.
+    uniq: list[str] = []
+    seen: set[str] = set()
+    for full in resolved:
+        if not full:
+            continue
+        if is_broadcast and full == actor_full:
+            continue
+        if full not in seen:
+            seen.add(full)
+            uniq.append(full)
+    return uniq, is_broadcast
+
+
+def _cmd_intent_message(args: argparse.Namespace, *, kind: str) -> int:
+    """
+    Deliver an inbox-backed message with an explicit intent kind:
+    - kind=notice: FYI; recipients must not reply/ACK upward (use receipts to confirm read)
+    - kind=action: instruction; no immediate ACK required; report-up only when done
+    """
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+    policy = _policy()
+
+    actor_full = _resolve_actor_full(data, as_target=getattr(args, "as_target", None))
+    actor_m = _resolve_member(data, actor_full)
+    if not actor_m:
+        raise SystemExit(f"❌ actor not found in registry: {actor_full} (run: atwf register-self ...)")
+    actor_role = _member_role(actor_m)
+    actor_base = _member_base(actor_m) or actor_full
+
+    msg = getattr(args, "message", None)
+    if msg is None:
+        msg = _forward_stdin()
+    if msg is None:
+        raise SystemExit("❌ message missing (use --message or pipe via stdin)")
+    msg = str(msg).strip()
+    if not msg:
+        raise SystemExit("❌ empty message")
+
+    targets, is_broadcast = _resolve_intent_targets(
+        data=data,
+        policy=policy,
+        actor_full=actor_full,
+        targets=getattr(args, "targets", None),
+        role=getattr(args, "role", None),
+        subtree=getattr(args, "subtree", None),
+        include_excluded=bool(getattr(args, "include_excluded", False)),
+    )
+    if not targets:
+        raise SystemExit("❌ no targets matched")
+
+    if is_broadcast:
+        if actor_role not in policy.broadcast_allowed_roles:
+            raise SystemExit(
+                "❌ broadcast not permitted by policy.\n"
+                f"   actor: {actor_full} (role={actor_role or '?'})\n"
+                f"   allowed_roles: {', '.join(sorted(policy.broadcast_allowed_roles)) or '(none)'}"
+            )
+    else:
+        # Direct: enforce comm governance.
+        _require_comm_allowed(policy, data, actor_full=actor_full, target_full=targets[0])
+
+    msg_id = _next_msg_id(team_dir)
+    inbox_notice = f"[INBOX] id={msg_id}\nopen: atwf inbox-open {msg_id}\nack: atwf inbox-ack {msg_id}\n"
+
+    lock = team_dir / ".lock"
+    with _locked(lock):
+        _ensure_share_layout(team_dir)
+        max_unread = _inbox_max_unread_per_thread()
+        for full in targets:
+            m = _resolve_member(data, full) or {}
+            to_role = _member_role(m) or "?"
+            to_base = _member_base(m) or full
+            _write_inbox_message_unlocked(
+                team_dir,
+                msg_id=msg_id,
+                kind=kind,
+                from_full=actor_full,
+                from_base=actor_base,
+                from_role=actor_role or "?",
+                to_full=full,
+                to_base=to_base,
+                to_role=to_role,
+                body=msg,
+            )
+            _inbox_enforce_unread_limit_unlocked(
+                team_dir,
+                to_base=to_base,
+                from_base=actor_base,
+                max_unread=max_unread,
+            )
+
+    # Default: inbox-only delivery. CLI injection is discouraged.
+    if not bool(getattr(args, "notify", False)):
+        print(msg_id)
+        return 0
+
+    twf = _resolve_twf()
+    if len(targets) == 1:
+        wrapped = _wrap_team_message(
+            team_dir,
+            kind=kind,
+            sender_full=actor_full,
+            sender_role=actor_role or None,
+            to_full=targets[0],
+            body=inbox_notice,
+            msg_id=msg_id,
+        )
+        res = _run_twf(twf, ["send", targets[0], wrapped])
+        sys.stdout.write(res.stdout)
+        sys.stderr.write(res.stderr)
+        return res.returncode
+
+    failures: list[str] = []
+    max_workers = min(16, max(1, len(targets)))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(
+                _run_twf,
+                twf,
+                [
+                    "send",
+                    full,
+                    _wrap_team_message(
+                        team_dir,
+                        kind=kind,
+                        sender_full=actor_full,
+                        sender_role=actor_role or None,
+                        to_full=full,
+                        body=inbox_notice,
+                        msg_id=msg_id,
+                    ),
+                ],
+            ): full
+            for full in targets
+        }
+        for fut in as_completed(futures):
+            full = futures[fut]
+            try:
+                r = fut.result()
+            except Exception:
+                failures.append(full)
+                continue
+            if r.returncode != 0:
+                failures.append(full)
+
+    if failures:
+        raise SystemExit(f"❌ notify failures: {len(failures)} targets")
+    print(msg_id)
+    return 0
+
+
+def cmd_notice(args: argparse.Namespace) -> int:
+    return _cmd_intent_message(args, kind="notice")
+
+
+def cmd_action(args: argparse.Namespace) -> int:
+    return _cmd_intent_message(args, kind="action")
+
+
+def cmd_receipts(args: argparse.Namespace) -> int:
+    """
+    Query read receipts for a message id across recipients.
+
+    Statuses:
+    - unread: present under inbox/<to>/unread
+    - overflow: present under inbox/<to>/overflow
+    - read: present under inbox/<to>/read
+    - missing: not present under inbox/<to> at all (not a recipient, or pruned)
+    """
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    msg_id = str(getattr(args, "msg_id", "") or "").strip()
+    if not msg_id:
+        raise SystemExit("❌ msg_id is required")
+
+    targets = _select_targets_for_team_op(
+        data,
+        targets=getattr(args, "targets", None),
+        role=getattr(args, "role", None),
+        subtree=getattr(args, "subtree", None),
+    )
+    if not targets:
+        print("(no targets)")
+        return 0
+
+    rows: list[tuple[str, str, str, str]] = []
+    for full in targets:
+        m = _resolve_member(data, full) or {}
+        base = _member_base(m) or full
+        role = _member_role(m) or "?"
+        hit = _find_inbox_message_file(team_dir, to_base=base, msg_id=msg_id)
+        status = "missing"
+        if hit:
+            state, _from_base, _path = hit
+            status = state if state in {_INBOX_UNREAD_DIR, _INBOX_OVERFLOW_DIR, _INBOX_READ_DIR} else "missing"
+        rows.append((status, role, base, full))
+
+    order = {_INBOX_UNREAD_DIR: 0, _INBOX_OVERFLOW_DIR: 1, _INBOX_READ_DIR: 2, "missing": 3}
+    rows.sort(key=lambda r: (order.get(r[0], 99), r[1], r[2], r[3]))
+    for status, role, base, full in rows:
+        print("\t".join([status, role, base, full]).rstrip())
+    return 0
+
+
+def cmd_gather(args: argparse.Namespace) -> int:
+    """
+    Create a reply-needed request to multiple targets.
+
+    The request body is delivered to each target inbox; targets must use `atwf respond`
+    (or `atwf respond --blocked`) to record their reply.
+    The initiator only receives a single consolidated result when all replies arrive
+    (or when the request times out).
+    """
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+    policy = _policy()
+
+    actor_full = _resolve_actor_full(data, as_target=getattr(args, "as_target", None))
+    actor_m = _resolve_member(data, actor_full)
+    if not actor_m:
+        raise SystemExit(f"❌ actor not found in registry: {actor_full} (run: atwf register-self ...)")
+    actor_role = _member_role(actor_m)
+    actor_base = _member_base(actor_m) or actor_full
+
+    targets_raw = [str(t).strip() for t in (getattr(args, "targets", None) or []) if str(t).strip()]
+    if not targets_raw:
+        raise SystemExit("❌ gather requires at least one target")
+
+    msg = getattr(args, "message", None)
+    if msg is None:
+        msg = _forward_stdin()
+    if msg is None:
+        raise SystemExit("❌ message missing (provide as arg or via stdin)")
+    msg = str(msg).rstrip()
+    if not msg.strip():
+        raise SystemExit("❌ empty message")
+
+    topic = str(getattr(args, "topic", "") or "").strip()
+    if not topic:
+        # Use the first non-empty line as a default topic.
+        topic = _inbox_summary(msg) or "reply-needed"
+
+    deadline_s = _request_deadline_s()
+    raw_deadline = str(getattr(args, "deadline", "") or "").strip()
+    if raw_deadline:
+        deadline_s = _parse_duration_seconds(raw_deadline, default_s=deadline_s)
+    if deadline_s < 60:
+        deadline_s = 60.0
+    if deadline_s > 86400:
+        deadline_s = 86400.0
+
+    # Reserve IDs up front (avoid re-entrant locks).
+    req_seq = _next_msg_id(team_dir)
+    request_id = f"req-{req_seq}"
+
+    resolved_targets: list[tuple[str, str, str]] = []
+    seen_bases: set[str] = set()
+    for raw in targets_raw:
+        full = _resolve_target_full(data, raw)
+        if not full:
+            raise SystemExit(f"❌ target not found in registry: {raw} (use `atwf list`)")
+        _require_comm_allowed(policy, data, actor_full=actor_full, target_full=full)
+        m = _resolve_member(data, full) or {}
+        base = _member_base(m) or full
+        role = _member_role(m)
+        if base == actor_base:
+            continue
+        if base in seen_bases:
+            continue
+        seen_bases.add(base)
+        resolved_targets.append((full, base, role))
+
+    if not resolved_targets:
+        raise SystemExit("❌ gather has no valid targets after resolution/dedupe")
+
+    notify_ids = [_next_msg_id(team_dir) for _full, _base, _role in resolved_targets]
+
+    now_dt = datetime.now()
+    created_at = now_dt.isoformat(timespec="seconds")
+    deadline_at = (now_dt + timedelta(seconds=float(deadline_s))).isoformat(timespec="seconds")
+
+    meta: dict[str, Any] = {
+        "version": 1,
+        "id": request_id,
+        "created_at": created_at,
+        "updated_at": created_at,
+        "status": _REQUEST_STATUS_OPEN,
+        "topic": topic,
+        "message": msg,
+        "deadline_s": float(deadline_s),
+        "deadline_at": deadline_at,
+        "from": {"full": actor_full, "base": actor_base, "role": actor_role},
+        "targets": {},
+        "finalized_at": "",
+        "final_msg_id": "",
+    }
+
+    targets_meta: dict[str, Any] = {}
+    for (full, base, role), notify_id in zip(resolved_targets, notify_ids, strict=True):
+        targets_meta[base] = {
+            "full": full,
+            "base": base,
+            "role": role,
+            "status": _REQUEST_TARGET_STATUS_PENDING,
+            "requested_at": created_at,
+            "notify_msg_id": notify_id,
+            "blocked_until": "",
+            "blocked_reason": "",
+            "waiting_on": "",
+            "responded_at": "",
+            "response_file": "",
+        }
+    meta["targets"] = targets_meta
+
+    lock = team_dir / ".lock"
+    with _locked(lock):
+        _ensure_share_layout(team_dir)
+        req_dir = _request_dir(team_dir, request_id=request_id)
+        req_dir.mkdir(parents=True, exist_ok=True)
+        _request_responses_dir(team_dir, request_id=request_id).mkdir(parents=True, exist_ok=True)
+
+        _write_json_atomic(_request_meta_path(team_dir, request_id=request_id), meta)
+
+        for (full, base, role), notify_id in zip(resolved_targets, notify_ids, strict=True):
+            body = (
+                f"[REPLY-NEEDED] request_id={request_id}\n"
+                f"- topic: {topic}\n"
+                f"- from: {actor_base} (role={actor_role or '?'})\n"
+                f"- created_at: {created_at}\n"
+                f"- deadline_at: {deadline_at}\n"
+                "\n"
+                "Respond (required):\n"
+                f"- bash .codex/skills/ai-team-workflow/scripts/atwf respond {request_id} \"<your reply>\"\n"
+                "\n"
+                "If blocked, snooze reminders (default 15m):\n"
+                f"- bash .codex/skills/ai-team-workflow/scripts/atwf respond {request_id} --blocked --snooze 15m --waiting-on <base> \"why blocked\"\n"
+                "\n"
+                "View pending reply-needed:\n"
+                "- bash .codex/skills/ai-team-workflow/scripts/atwf reply-needed\n"
+                "\n"
+                "Message:\n"
+                f"{msg.rstrip()}\n"
+            )
+            _write_inbox_message_unlocked(
+                team_dir,
+                msg_id=notify_id,
+                kind="reply-needed",
+                from_full=actor_full,
+                from_base=actor_base,
+                from_role=actor_role,
+                to_full=full,
+                to_base=base,
+                to_role=role,
+                body=body,
+            )
+            _inbox_enforce_unread_limit_unlocked(
+                team_dir,
+                to_base=base,
+                from_base=actor_base,
+                max_unread=_inbox_max_unread_per_thread(),
+            )
+
+    print(request_id)
+    return 0
+
+
+def cmd_respond(args: argparse.Namespace) -> int:
+    """
+    Record a reply-needed response for the current worker (or --as).
+
+    - Normal reply: marks replied and writes a response file under requests/<id>/responses/.
+    - --blocked: acknowledges the request but snoozes system reminders for a duration.
+    """
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    actor_full = _resolve_actor_full(data, as_target=getattr(args, "as_target", None))
+    actor_m = _resolve_member(data, actor_full)
+    if not actor_m:
+        raise SystemExit(f"❌ actor not found in registry: {actor_full} (run: atwf register-self ...)")
+    actor_role = _member_role(actor_m)
+    actor_base = _member_base(actor_m) or actor_full
+
+    request_id = _resolve_request_id(team_dir, str(getattr(args, "request_id", "") or ""))
+    meta_path = _request_meta_path(team_dir, request_id=request_id)
+    if not meta_path.is_file():
+        raise SystemExit(f"❌ request not found: {request_id}")
+
+    msg = getattr(args, "message", None)
+    if msg is None:
+        msg = _forward_stdin()
+    msg = "" if msg is None else str(msg).rstrip()
+
+    blocked = bool(getattr(args, "blocked", False))
+    waiting_on = str(getattr(args, "waiting_on", "") or "").strip()
+    raw_snooze = str(getattr(args, "snooze", "") or "").strip()
+    snooze_s = _request_block_snooze_default_s()
+    if raw_snooze:
+        snooze_s = _parse_duration_seconds(raw_snooze, default_s=snooze_s)
+    if snooze_s < 30:
+        snooze_s = 30.0
+    if snooze_s > 86400:
+        snooze_s = 86400.0
+
+    now_dt = datetime.now()
+    now_iso = now_dt.isoformat(timespec="seconds")
+
+    # Reserve a delivery msg id in case we need to finalize this request (avoid re-entrant locks).
+    delivery_msg_id = _next_msg_id(team_dir)
+
+    notify_msg_id = ""
+    did_finalize = False
+    blocked_until_out = ""
+
+    lock = team_dir / ".lock"
+    with _locked(lock):
+        meta = _load_request_meta(team_dir, request_id=request_id)
+        if str(meta.get("status", "")).strip() in {_REQUEST_STATUS_DONE, _REQUEST_STATUS_TIMED_OUT}:
+            raise SystemExit(f"❌ request already finalized: {request_id} ({meta.get('status')})")
+
+        targets = meta.get("targets")
+        if not isinstance(targets, dict) or not targets:
+            raise SystemExit(f"❌ request has no targets: {request_id}")
+
+        key: str | None = None
+        if actor_base in targets:
+            key = actor_base
+        else:
+            for k, t in targets.items():
+                if isinstance(t, dict) and str(t.get("full", "")).strip() == actor_full:
+                    key = str(k)
+                    break
+        if not key or key not in targets or not isinstance(targets.get(key), dict):
+            raise SystemExit(f"❌ you are not a target of request {request_id} (base={actor_base})")
+
+        t = targets[key]
+        notify_msg_id = str(t.get("notify_msg_id", "") or "").strip()
+
+        if blocked:
+            reason = msg.strip() or "(blocked)"
+            blocked_until = (now_dt + timedelta(seconds=float(snooze_s))).isoformat(timespec="seconds")
+            blocked_until_out = blocked_until
+            t["status"] = _REQUEST_TARGET_STATUS_BLOCKED
+            t["blocked_until"] = blocked_until
+            t["blocked_reason"] = reason
+            t["waiting_on"] = waiting_on
+            t["responded_at"] = ""
+            t["response_file"] = ""
+        else:
+            if not msg.strip():
+                raise SystemExit("❌ reply body missing (provide as arg or via stdin)")
+            resp_dir = _request_responses_dir(team_dir, request_id=request_id)
+            resp_dir.mkdir(parents=True, exist_ok=True)
+            resp_path = _request_response_path(team_dir, request_id=request_id, target_base=actor_base)
+            payload = (
+                f"# ATWF Reply-Needed Response\n\n"
+                f"- request_id: `{request_id}`\n"
+                f"- from: `{actor_full}` (base `{actor_base}` role `{actor_role or '?'}`)\n"
+                f"- created_at: {now_iso}\n\n"
+                "---\n\n"
+                f"{msg.rstrip()}\n"
+            )
+            _write_text_atomic(resp_path, payload)
+
+            rel = ""
+            try:
+                rel = str(resp_path.relative_to(team_dir))
+            except Exception:
+                rel = str(resp_path)
+
+            t["status"] = _REQUEST_TARGET_STATUS_REPLIED
+            t["responded_at"] = now_iso
+            t["response_file"] = rel
+            t["blocked_until"] = ""
+            t["blocked_reason"] = ""
+            t["waiting_on"] = ""
+
+        meta["targets"] = targets
+        meta["updated_at"] = now_iso
+
+        # Finalize (single consolidated delivery) when complete or timed out.
+        if not str(meta.get("final_msg_id", "") or "").strip():
+            all_replied = _request_all_replied(meta)
+            deadline_dt = _parse_iso_dt(str(meta.get("deadline_at", "") or ""))
+            timed_out = (deadline_dt is not None and now_dt >= deadline_dt and not all_replied)
+            if all_replied or timed_out:
+                final_status = _REQUEST_STATUS_DONE if all_replied else _REQUEST_STATUS_TIMED_OUT
+
+                from_info = meta.get("from") if isinstance(meta.get("from"), dict) else {}
+                to_base = str(from_info.get("base", "") or "").strip() or str(from_info.get("full", "") or "").strip()
+                to_full = str(from_info.get("full", "") or "").strip()
+                to_role = str(from_info.get("role", "") or "").strip() or "?"
+                # Prefer current registry for to_full/to_role if base exists.
+                if to_base:
+                    m = _resolve_member(data, to_base) or {}
+                    to_full = str(m.get("full", "")).strip() or to_full or to_base
+                    to_role = _member_role(m) or to_role
+
+                if to_base:
+                    body = _render_request_result(team_dir, meta, final_status=final_status)
+                    _write_inbox_message_unlocked(
+                        team_dir,
+                        msg_id=delivery_msg_id,
+                        kind="reply-needed-result",
+                        from_full="atwf-reply",
+                        from_base="atwf-reply",
+                        from_role="system",
+                        to_full=to_full or to_base,
+                        to_base=to_base,
+                        to_role=to_role,
+                        body=body,
+                    )
+                    _inbox_enforce_unread_limit_unlocked(
+                        team_dir,
+                        to_base=to_base,
+                        from_base="atwf-reply",
+                        max_unread=_inbox_max_unread_per_thread(),
+                    )
+                    meta["status"] = final_status
+                    meta["finalized_at"] = now_iso
+                    meta["final_msg_id"] = delivery_msg_id
+                    did_finalize = True
+
+        _write_json_atomic(meta_path, meta)
+
+    # Ack the original reply-needed notice (do this outside lock; it has its own lock).
+    if notify_msg_id:
+        _mark_inbox_read(team_dir, to_base=actor_base, msg_id=notify_msg_id)
+
+    if blocked:
+        print(f"{request_id}\tblocked\tuntil={blocked_until_out}".rstrip())
+        return 0
+
+    if did_finalize:
+        print(f"{request_id}\treplied\tfinalized={delivery_msg_id}")
+        return 0
+    print(f"{request_id}\treplied")
+    return 0
+
+
+def cmd_reply_needed(args: argparse.Namespace) -> int:
+    """
+    List pending reply-needed requests for a target (self by default).
+    """
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    target = str(getattr(args, "target", "") or "").strip()
+    if target:
+        full = _resolve_target_full(data, target)
+        if not full:
+            raise SystemExit(f"❌ target not found in registry: {target}")
+        m = _resolve_member(data, full) or {}
+        to_base = _member_base(m) or full
+    else:
+        self_full = _tmux_self_full()
+        if not self_full:
+            raise SystemExit("❌ reply-needed must run inside tmux (or use: reply-needed --target <full|base|role>)")
+        m = _resolve_member(data, self_full)
+        if not m:
+            raise SystemExit(f"❌ current worker not found in registry: {self_full}")
+        to_base = _member_base(m) or self_full
+
+    now_dt = datetime.now()
+    rows: list[tuple[str, str, str, str, str]] = []
+
+    for req_id in _list_request_ids(team_dir):
+        meta_path = _request_meta_path(team_dir, request_id=req_id)
+        if not meta_path.is_file():
+            continue
+        meta = _read_json(meta_path)
+        if not isinstance(meta, dict) or not meta:
+            continue
+        if str(meta.get("status", "")).strip() != _REQUEST_STATUS_OPEN:
+            continue
+        targets = meta.get("targets")
+        if not isinstance(targets, dict):
+            continue
+        t = targets.get(to_base)
+        if not isinstance(t, dict):
+            continue
+        st = str(t.get("status", "") or "").strip() or _REQUEST_TARGET_STATUS_PENDING
+        if st == _REQUEST_TARGET_STATUS_REPLIED:
+            continue
+        blocked_until = str(t.get("blocked_until", "") or "").strip()
+        blocked_dt = _parse_iso_dt(blocked_until)
+        if blocked_dt is not None and now_dt < blocked_dt:
+            st = f"{st}(snoozed)"
+        topic = str(meta.get("topic", "") or "").strip()
+        from_info = meta.get("from") if isinstance(meta.get("from"), dict) else {}
+        from_base = str(from_info.get("base", "") or "").strip()
+        deadline_at = str(meta.get("deadline_at", "") or "").strip()
+        rows.append((req_id, st, topic, from_base, deadline_at))
+
+    if not rows:
+        print("(none)")
+        return 0
+
+    rows.sort(key=lambda r: r[0])
+    for req_id, st, topic, from_base, deadline_at in rows:
+        print("\t".join([req_id, st, topic, from_base, deadline_at]).rstrip())
+    return 0
+
+
+def cmd_request(args: argparse.Namespace) -> int:
+    team_dir = _default_team_dir()
+    request_id = _resolve_request_id(team_dir, str(getattr(args, "request_id", "") or ""))
+    meta = _load_request_meta(team_dir, request_id=request_id)
+    print(_render_request_result(team_dir, meta, final_status=str(meta.get("status", "") or _REQUEST_STATUS_OPEN)))
+    return 0
 
 
 def cmd_pend(args: argparse.Namespace) -> int:
@@ -4264,7 +5748,7 @@ def cmd_state_set_self(args: argparse.Namespace) -> int:
         if desired == _STATE_STATUS_IDLE:
             if cur != _STATE_STATUS_DRAINING:
                 raise SystemExit("❌ must set state to 'draining' before 'idle'")
-            unread, overflow, _ids = _inbox_unread_stats(team_dir, to_base=base)
+            unread, overflow, ids = _inbox_unread_stats(team_dir, to_base=base)
             if unread or overflow:
                 preview = ", ".join(ids[:10]) if ids else ""
                 hint = f" ids: {preview}" if preview else ""
@@ -4326,12 +5810,49 @@ def cmd_state_set(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_drive(args: argparse.Namespace) -> int:
+    """
+    Drive loop mode (human-controlled):
+    - running: watcher treats all-idle + inbox-empty as an abnormal stall and wakes the driver
+    - standby: allow the whole team to be idle with empty inbox (no drive nudge)
+    """
+    team_dir = _default_team_dir()
+
+    mode_raw = str(getattr(args, "mode", "") or "").strip()
+    if not mode_raw:
+        mode = _drive_mode_config_hot()
+        lock = _state_lock_path(team_dir)
+        with _locked(lock):
+            _ensure_share_layout(team_dir)
+            data = _load_drive_state_unlocked(team_dir, mode_default=mode)
+        print("\t".join([mode, str(data.get("last_triggered_at", "")), str(data.get("last_msg_id", ""))]).rstrip())
+        return 0
+
+    mode = _normalize_drive_mode(mode_raw)
+    if mode not in _DRIVE_MODES:
+        raise SystemExit(f"❌ invalid drive mode: {mode_raw!r} (allowed: running|standby)")
+
+    # Config is authoritative; prevent team members from switching mode in-worker.
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+    self_full = _tmux_self_full()
+    if self_full and _resolve_member(data, self_full):
+        raise SystemExit(
+            "❌ drive mode is config-controlled; team members must not change it from inside tmux.\n"
+            f"   edit: {_config_file()} (team.drive.mode)\n"
+            "   operator: run `atwf drive standby|running` outside tmux if needed."
+        )
+
+    print(_set_drive_mode_config(mode))
+    return 0
+
+
 def cmd_watch_idle(args: argparse.Namespace) -> int:
     """
     Operator-side watcher:
-    - polls inbox + agent state
-    - if a member is `idle` and has unread inbox, schedule a wakeup in 60s
-    - when due, inject a short wake message and flip state to `working`
+    - polls inbox + derives working/idle from tmux pane activity (output hash)
+    - if a member is `idle` and has pending inbox, schedule a wakeup
+    - when due, inject a short wake message and record wakeup_sent_at (grace keeps it active)
     """
     twf = _resolve_twf()
     team_dir = _default_team_dir()
@@ -4339,7 +5860,15 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
 
     interval_s = float(getattr(args, "interval", None) or _state_watch_interval_s())
     delay_s = float(getattr(args, "delay", None) or _state_idle_wake_delay_s())
+    activity_window_s = _state_activity_window_s()
+    grace_s = _state_active_grace_period_s()
+    capture_lines = _state_activity_capture_lines()
+    auto_enter_enabled = _state_auto_enter_enabled()
+    auto_enter_cooldown_s = _state_auto_enter_cooldown_s()
+    auto_enter_tail_lines = _state_auto_enter_tail_window_lines()
+    auto_enter_patterns = _state_auto_enter_patterns() if auto_enter_enabled else []
     message = str(getattr(args, "message", "") or "").strip() or _state_wake_message()
+    reply_message = _state_reply_wake_message()
     stale_s = float(getattr(args, "working_stale", None) or _state_working_stale_threshold_s())
     cooldown_s = float(getattr(args, "alert_cooldown", None) or _state_working_alert_cooldown_s())
     once = bool(getattr(args, "once", False))
@@ -4380,10 +5909,16 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
             members = []
 
         now_dt = datetime.now()
+        now_iso_tick = iso(now_dt)
+        drive_mode = _drive_mode_config_hot()
         policy = _policy()
         coord_m = _resolve_latest_by_role(data, policy.root_role)
         coord_full = str(coord_m.get("full", "")).strip() if isinstance(coord_m, dict) else ""
         coord_base = _member_base(coord_m) if isinstance(coord_m, dict) else ""
+
+        member_count = 0
+        all_idle = True
+        any_pending = False
 
         for m in members:
             if not isinstance(m, dict):
@@ -4400,9 +5935,89 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
                 st = _read_json(path)
             else:
                 st = _write_agent_state(team_dir, full=full, base=base, role=role, update={})
-            status = _normalize_agent_status(str(st.get("status", ""))) or _STATE_STATUS_WORKING
-            if status not in _STATE_STATUSES:
-                status = _STATE_STATUS_WORKING
+
+            prev_status = _normalize_agent_status(str(st.get("status", ""))) or _STATE_STATUS_WORKING
+            if prev_status not in _STATE_STATUSES:
+                prev_status = _STATE_STATUS_WORKING
+
+            unread, overflow, ids = _inbox_unread_stats(team_dir, to_base=base)
+            pending = unread + overflow
+
+            # Derive working/idle from tmux pane activity + grace after wake injection.
+            now_iso = now_iso_tick
+            last_output_change_dt = parse_dt(str(st.get("last_output_change_at", "") or ""))
+            output_update: dict[str, Any] = {}
+            auto_update: dict[str, Any] = {}
+            if _tmux_running(full):
+                tail = _tmux_capture_tail(full, lines=capture_lines)
+                if tail is not None:
+                    digest = _text_digest(tail)
+                    prev_digest = str(st.get("last_output_hash", "") or "")
+                    if digest != prev_digest or last_output_change_dt is None:
+                        last_output_change_dt = now_dt
+                    output_update = {
+                        "last_output_hash": digest,
+                        "last_output_capture_at": now_iso,
+                        "last_output_change_at": iso(last_output_change_dt),
+                    }
+                    if auto_enter_enabled and auto_enter_patterns and not dry_run:
+                        tail_lines = tail.splitlines()
+                        window = "\n".join(tail_lines[-max(1, int(auto_enter_tail_lines)) :])
+                        matched = ""
+                        for pat in auto_enter_patterns:
+                            if pat and pat in window:
+                                matched = pat
+                                break
+                        if matched:
+                            last_sent_dt = parse_dt(str(st.get("auto_enter_last_sent_at", "") or ""))
+                            age_s = (now_dt - last_sent_dt).total_seconds() if last_sent_dt else None
+                            if age_s is None or age_s >= max(0.0, auto_enter_cooldown_s):
+                                if _tmux_send_enter(full):
+                                    auto_update = {
+                                        "auto_enter_last_sent_at": now_iso,
+                                        "auto_enter_last_reason": matched,
+                                        "auto_enter_count": int(st.get("auto_enter_count", 0) or 0) + 1,
+                                    }
+                                else:
+                                    auto_update = {
+                                        "auto_enter_last_sent_at": now_iso,
+                                        "auto_enter_last_reason": matched,
+                                    }
+            wake_dt = parse_dt(str(st.get("wakeup_sent_at", "") or ""))
+            active = False
+            if last_output_change_dt is not None:
+                active = (now_dt - last_output_change_dt).total_seconds() <= max(0.0, activity_window_s)
+            if not active and wake_dt is not None and grace_s > 0:
+                active = (now_dt - wake_dt).total_seconds() <= max(0.0, grace_s)
+
+            status = _STATE_STATUS_WORKING if active else _STATE_STATUS_IDLE
+            status_update: dict[str, Any] = {
+                "status": status,
+                "status_source": "watch",
+                "last_inbox_unread": unread,
+                "last_inbox_overflow": overflow,
+            }
+            if status == _STATE_STATUS_IDLE:
+                if prev_status != _STATE_STATUS_IDLE:
+                    status_update["idle_since"] = now_iso
+                status_update["idle_inbox_empty_at"] = now_iso if pending == 0 else ""
+            else:
+                status_update["idle_since"] = ""
+                status_update["idle_inbox_empty_at"] = ""
+                status_update["wakeup_scheduled_at"] = ""
+                status_update["wakeup_due_at"] = ""
+                status_update["wakeup_reason"] = ""
+
+            if not dry_run:
+                st = _write_agent_state(team_dir, full=full, base=base, role=role, update={**output_update, **auto_update, **status_update})
+            else:
+                st = {**st, **output_update, **auto_update, **status_update}
+
+            member_count += 1
+            if pending > 0:
+                any_pending = True
+            if status != _STATE_STATUS_IDLE:
+                all_idle = False
 
             # Working stale inbox governance:
             # If the worker is working and has pending inbox messages older than N seconds,
@@ -4414,8 +6029,6 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
                 and not dry_run
                 and full != coord_full
             ):
-                unread, overflow, _ids = _inbox_unread_stats(team_dir, to_base=base)
-                pending = unread + overflow
                 if pending > 0:
                     _min_n, min_id = _inbox_pending_min_id(team_dir, to_base=base)
                     created = _inbox_message_created_at(team_dir, to_base=base, msg_id=min_id) if min_id else None
@@ -4427,6 +6040,11 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
                         last_alert_dt = parse_dt(str(st.get("stale_alert_sent_at", "") or ""))
                         alert_age_s = (now_dt - last_alert_dt).total_seconds() if last_alert_dt else None
                         should_alert = age_s >= max(1.0, stale_s)
+                        # If we just woke the worker, give them a grace period before alerting.
+                        if should_alert and wake_dt is not None and grace_s > 0:
+                            wake_age_s = (now_dt - wake_dt).total_seconds()
+                            if wake_age_s < max(1.0, grace_s):
+                                should_alert = False
                         if should_alert and check_age_s is not None:
                             should_alert = should_alert and check_age_s >= max(1.0, stale_s)
                         if should_alert and alert_age_s is not None:
@@ -4568,6 +6186,183 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
                 )
                 # Minimal wake: no body, just a reminder to read inbox.
                 _run_twf(twf, ["send", full, message])
+
+        # Auto-finalize reply-needed requests (single consolidated delivery).
+        if not dry_run:
+            finalizable, _has_pending_replies, _due_targets, _waiters = _scan_reply_requests(team_dir, now_dt=now_dt)
+            for req_id, final_status in finalizable:
+                msg_id = _next_msg_id(team_dir)
+                if _finalize_request(
+                    team_dir,
+                    data,
+                    request_id=req_id,
+                    msg_id=msg_id,
+                    final_status=final_status,
+                    now_iso=now_iso_tick,
+                ):
+                    # We wrote a new inbox message; treat as pending to avoid drive on this tick.
+                    any_pending = True
+
+        # Reply-drive: if the whole team is idle and all inboxes are empty, but reply-needed
+        # requests are pending, wake the best "debtor" instead of driving coord.
+        suppress_drive = False
+        if (
+            member_count > 0
+            and all_idle
+            and not any_pending
+            and not dry_run
+            and drive_mode == _DRIVE_MODE_RUNNING
+        ):
+            _finalizable2, has_pending_replies, due_targets, waiters = _scan_reply_requests(team_dir, now_dt=now_dt)
+            if has_pending_replies:
+                # If nothing is due (everyone snoozed), suppress drive (standby-like behavior).
+                if not due_targets:
+                    suppress_drive = True
+                else:
+                    running: list[tuple[int, str, str, str]] = []
+                    # (priority, request_id, base, full)
+                    for req_id, base, role, st in due_targets:
+                        m = _resolve_member(data, base) or {}
+                        full = str(m.get("full", "")).strip()
+                        if full and _tmux_running(full):
+                            prio = int(waiters.get(base, 0) or 0)
+                            running.append((prio, req_id, base, full))
+                    # If at least one due target is runnable, suppress drive and let reply-drive handle it.
+                    if running:
+                        suppress_drive = True
+
+                        cooldown_drive_s = _drive_cooldown_s()
+                        lock2 = _state_lock_path(team_dir)
+                        with _locked(lock2):
+                            _ensure_share_layout(team_dir)
+                            reply_state = _load_reply_drive_state_unlocked(team_dir)
+                        last_reply_dt = parse_dt(str(reply_state.get("last_triggered_at", "") or ""))
+                        allow = last_reply_dt is None or (now_dt - last_reply_dt).total_seconds() >= max(0.0, cooldown_drive_s)
+
+                        if allow:
+                            running.sort(key=lambda t: (-t[0], t[1], t[2]))
+                            _prio, rid, base, full = running[0]
+                            role = _member_role(_resolve_member(data, full) or {}) or "?"
+                            if full and _tmux_running(full):
+                                if not dry_run:
+                                    _write_agent_state(
+                                        team_dir,
+                                        full=full,
+                                        base=base,
+                                        role=role,
+                                        update={
+                                            "status": _STATE_STATUS_WORKING,
+                                            "wakeup_sent_at": now_iso_tick,
+                                            "wakeup_reason": f"reply-needed:{rid}",
+                                            "idle_since": "",
+                                            "idle_inbox_empty_at": "",
+                                        },
+                                    )
+                                _run_twf(twf, ["send", full, reply_message])
+                                _write_reply_drive_state(
+                                    team_dir,
+                                    update={
+                                        "last_triggered_at": now_iso_tick,
+                                        "last_reason": "all_idle_inbox_empty_reply_pending",
+                                        "last_request_id": rid,
+                                        "last_target_base": base,
+                                        "last_target_full": full,
+                                    },
+                                )
+                    else:
+                        # Due replies exist but no runnable tmux target; allow normal drive to intervene.
+                        suppress_drive = False
+
+        # Drive loop (anti-stall): if the whole team is idle and all inboxes are empty,
+        # wake a single driver to re-kickoff work (only when drive mode is running).
+        if (
+            member_count > 0
+            and all_idle
+            and not any_pending
+            and not dry_run
+            and drive_mode == _DRIVE_MODE_RUNNING
+            and not suppress_drive
+        ):
+            cooldown_drive_s = _drive_cooldown_s()
+            driver_role = _drive_driver_role()
+            backup_role = _drive_backup_role()
+
+            lock = _state_lock_path(team_dir)
+            with _locked(lock):
+                _ensure_share_layout(team_dir)
+                drive_state = _load_drive_state_unlocked(team_dir, mode_default=drive_mode)
+            last_drive_dt = parse_dt(str(drive_state.get("last_triggered_at", "") or ""))
+            if last_drive_dt is None or (now_dt - last_drive_dt).total_seconds() >= max(0.0, cooldown_drive_s):
+                driver_m = _resolve_latest_by_role(data, driver_role)
+                driver_full = str(driver_m.get("full", "")).strip() if isinstance(driver_m, dict) else ""
+                driver_base = _member_base(driver_m) if isinstance(driver_m, dict) else ""
+                driver_base = driver_base or driver_full
+
+                target_full = driver_full
+                target_role = driver_role
+                target_base = driver_base
+                if target_full and not _tmux_running(target_full):
+                    backup_m = _resolve_latest_by_role(data, backup_role)
+                    backup_full = str(backup_m.get("full", "")).strip() if isinstance(backup_m, dict) else ""
+                    backup_base = _member_base(backup_m) if isinstance(backup_m, dict) else ""
+                    if backup_full and _tmux_running(backup_full):
+                        target_full = backup_full
+                        target_role = backup_role
+                        target_base = backup_base or backup_full
+
+                if target_full:
+                    msg_id = _next_msg_id(team_dir)
+                    body = (
+                        "[DRIVE] team stalled: all idle + inbox empty\n"
+                        f"- detected_at: {now_iso_tick}\n"
+                        f"- mode: running (set standby: edit atwf_config.yaml team.drive.mode=standby)\n"
+                        "\n"
+                        "Required (choose ONE and execute now, with evidence):\n"
+                        "1) Kickoff next iteration: send assignments (owner + next action + ETA) to PM/Arch/Dev/QA via atwf send/report-to; include msg ids.\n"
+                        "2) Switch to standby: edit config (team.drive.mode=standby) and tell liaison/user why (e.g., waiting for input).\n"
+                        "3) Declare a blocker: document the blocker + who must act + handoff id.\n"
+                        "\n"
+                        "Quick checks:\n"
+                        "- atwf state\n"
+                        "- atwf list\n"
+                        "- atwf inbox\n"
+                    )
+                    _write_inbox_message(
+                        team_dir,
+                        msg_id=msg_id,
+                        kind="drive",
+                        from_full="atwf-drive",
+                        from_base="atwf-drive",
+                        from_role="system",
+                        to_full=target_full,
+                        to_base=target_base,
+                        to_role=target_role,
+                        body=body,
+                    )
+                    short = (
+                        "[DRIVE] team stalled: all idle + inbox empty\n"
+                        f"inbox id={msg_id} (run: atwf inbox-open {msg_id})\n"
+                        "Action required: kickoff next iteration OR set: config team.drive.mode=standby\n"
+                    )
+                    wrapped = _wrap_team_message(
+                        team_dir,
+                        kind="drive",
+                        sender_full="atwf-drive",
+                        sender_role="system",
+                        to_full=target_full,
+                        body=short,
+                        msg_id=msg_id,
+                    )
+                    _run_twf(twf, ["send", target_full, wrapped])
+                    _write_drive_state(
+                        team_dir,
+                        update={
+                            "last_triggered_at": now_iso_tick,
+                            "last_msg_id": msg_id,
+                            "last_reason": "all_idle_inbox_empty",
+                            "last_driver_full": target_full,
+                        },
+                    )
 
         if once:
             return 0
@@ -5028,6 +6823,24 @@ def build_parser() -> argparse.ArgumentParser:
     bc.add_argument("--include-excluded", action="store_true", help="include excluded roles when using --subtree")
     bc.add_argument("--notify", action="store_true", help="also inject a short inbox notice into recipients' CLIs (discouraged)")
 
+    notice = sub.add_parser("notice", help="send a notice (FYI, no reply expected; supports stdin)")
+    notice.add_argument("targets", nargs="*", help="targets (full|base|role). Ignored when --role/--subtree is used.")
+    notice.add_argument("--role", choices=enabled_roles, help="notice all members of a role")
+    notice.add_argument("--subtree", help="notice all members under a root (full|base|role)")
+    notice.add_argument("--message", default=None, help="message text (if omitted, read stdin)")
+    notice.add_argument("--as", dest="as_target", default=None, help="actor (full|base|role); required outside tmux")
+    notice.add_argument("--include-excluded", action="store_true", help="include excluded roles when using --subtree")
+    notice.add_argument("--notify", action="store_true", help="also inject inbox notice into recipient CLIs (discouraged)")
+
+    action = sub.add_parser("action", help="send an action/instruction (no immediate ACK; supports stdin)")
+    action.add_argument("targets", nargs="*", help="targets (full|base|role). Ignored when --role/--subtree is used.")
+    action.add_argument("--role", choices=enabled_roles, help="send an action to all members of a role")
+    action.add_argument("--subtree", help="send an action to all members under a root (full|base|role)")
+    action.add_argument("--message", default=None, help="message text (if omitted, read stdin)")
+    action.add_argument("--as", dest="as_target", default=None, help="actor (full|base|role); required outside tmux")
+    action.add_argument("--include-excluded", action="store_true", help="include excluded roles when using --subtree")
+    action.add_argument("--notify", action="store_true", help="also inject inbox notice into recipient CLIs (discouraged)")
+
     resolve = sub.add_parser("resolve", help="resolve a target to full tmux session name (full|base|role)")
     resolve.add_argument("target")
 
@@ -5052,6 +6865,33 @@ def build_parser() -> argparse.ArgumentParser:
     send.add_argument("--as", dest="as_target", default=None, help="actor (full|base|role); required outside tmux")
     send.add_argument("--notify", action="store_true", help="also inject inbox notice into recipient CLI (discouraged)")
 
+    gather = sub.add_parser("gather", help="create a reply-needed request to multiple targets (supports stdin)")
+    gather.add_argument("targets", nargs="+", help="targets (full|base|role)")
+    gather.add_argument("--message", default=None, help="message text (if omitted, read stdin)")
+    gather.add_argument("--topic", default="", help="request topic/title (default: first non-empty line)")
+    gather.add_argument("--deadline", default="", help="deadline duration (default: config; e.g. 1h, 30m, 900s)")
+    gather.add_argument("--as", dest="as_target", default=None, help="actor (full|base|role); required outside tmux")
+
+    respond = sub.add_parser("respond", help="reply to a reply-needed request (supports stdin)")
+    respond.add_argument("request_id", help="request id (e.g. req-000123)")
+    respond.add_argument("message", nargs="?")
+    respond.add_argument("--blocked", action="store_true", help="acknowledge but block/snooze reminders")
+    respond.add_argument("--snooze", default="", help="snooze duration for --blocked (default: config; e.g. 15m)")
+    respond.add_argument("--waiting-on", default="", help="who you are waiting on (base name, optional)")
+    respond.add_argument("--as", dest="as_target", default=None, help="actor (full|base|role); required outside tmux")
+
+    reply_needed = sub.add_parser("reply-needed", help="list pending reply-needed requests (self by default)")
+    reply_needed.add_argument("--target", default="", help="optional target to inspect (full|base|role)")
+
+    request = sub.add_parser("request", help="show request status/paths")
+    request.add_argument("request_id")
+
+    receipts = sub.add_parser("receipts", help="query read receipts for a msg id across recipients")
+    receipts.add_argument("msg_id")
+    receipts.add_argument("targets", nargs="*", help="optional targets (full|base|role); default: all members")
+    receipts.add_argument("--role", choices=enabled_roles, help="limit to a role")
+    receipts.add_argument("--subtree", help="limit to a subtree under a root (full|base|role)")
+
     handoff = sub.add_parser("handoff", help="create a handoff/permit so two members can talk directly")
     handoff.add_argument("a", help="member A (full|base|role)")
     handoff.add_argument("b", help="member B (full|base|role)")
@@ -5067,6 +6907,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     ping = sub.add_parser("ping", help="twf ping wrapper")
     ping.add_argument("name")
+
+    drive = sub.add_parser("drive", help="get/set drive mode (running|standby)")
+    drive.add_argument("mode", nargs="?", default="", help="running|standby")
 
     state = sub.add_parser("state", help="print agent state table (or one target)")
     state.add_argument("target", nargs="?", default="", help="optional target (full|base|role)")
@@ -5181,6 +7024,10 @@ def main(argv: list[str]) -> int:
         return cmd_unpause(args)
     if args.cmd == "broadcast":
         return cmd_broadcast(args)
+    if args.cmd == "notice":
+        return cmd_notice(args)
+    if args.cmd == "action":
+        return cmd_action(args)
     if args.cmd == "resolve":
         return cmd_resolve(args)
     if args.cmd == "attach":
@@ -5191,12 +7038,24 @@ def main(argv: list[str]) -> int:
         return cmd_ask(args)
     if args.cmd == "send":
         return cmd_send(args)
+    if args.cmd == "gather":
+        return cmd_gather(args)
+    if args.cmd == "respond":
+        return cmd_respond(args)
+    if args.cmd == "reply-needed":
+        return cmd_reply_needed(args)
+    if args.cmd == "request":
+        return cmd_request(args)
+    if args.cmd == "receipts":
+        return cmd_receipts(args)
     if args.cmd == "handoff":
         return cmd_handoff(args)
     if args.cmd == "pend":
         return cmd_pend(args)
     if args.cmd == "ping":
         return cmd_ping(args)
+    if args.cmd == "drive":
+        return cmd_drive(args)
     if args.cmd == "state":
         return cmd_state(args)
     if args.cmd == "state-self":

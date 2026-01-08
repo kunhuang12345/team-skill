@@ -25,6 +25,12 @@ Coordination protocol:
 - Only unresolved user-facing questions go to Liaison (via Coordinator).
 - Do not install host dependencies yourself; if something must be installed outside Docker, ask Ops and ensure it is documented in `{{TEAM_DIR}}/ops/host-deps.md`.
 
+Messaging intents (mandatory):
+- `notice`: FYI only. On receive: `atwf inbox-open <id>` then `atwf inbox-ack <id>`. Do **NOT** `report-up` “received/ok”.
+- `reply-needed`: explicit answer required. Use `atwf respond <req-id> ...` (or `--blocked --snooze --waiting-on ...`).
+- `action`: instruction/task. Do **NOT** send immediate ACK. Execute, then `report-up` deliverables/evidence.
+- To confirm “who read a notice”, use receipts (no ACK storms): `atwf receipts <msg-id>`.
+
 User escalation discipline:
 - If you think user input is needed, ask Coordinator with:
   - `[ESCALATE-TO-USER] origin: {{FULL_NAME}} question: ... already_checked: ... options: ...`
@@ -43,7 +49,7 @@ Conflict resolution (ordered loop, for design/merge conflicts):
 - After `N` speaks, loop back to `1`. If `1` declares resolved, `1` summarizes and reports up; otherwise continue.
 - Broadcast may be restricted to Coordinator by policy. Ask Coordinator to broadcast key sync messages
   (or use direct messages within allowed pairs / via a handoff):
-  - `bash .codex/skills/ai-team-workflow/scripts/atwf send coord "[REQUEST-BROADCAST] <targets...>\\n...message..."`
+  - `bash .codex/skills/ai-team-workflow/scripts/atwf action coord --message "[REQUEST-BROADCAST] <targets...>\\n...message..."`
 
 Development rules (after PM says START DEV):
 - Do **not** develop on the current branch/worktree.

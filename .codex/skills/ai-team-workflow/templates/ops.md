@@ -25,6 +25,12 @@ Protocol:
 - Prefer Dockerfile/container changes over host installs whenever possible.
 - If environment requirements are unclear, ask Coordinator to route you to the correct owner (usually Arch/Dev).
 
+Messaging intents (mandatory):
+- `notice`: FYI only. On receive: `atwf inbox-open <id>` then `atwf inbox-ack <id>`. Do **NOT** `report-up` “received/ok”.
+- `reply-needed`: explicit answer required. Use `atwf respond <req-id> ...` (or `--blocked --snooze --waiting-on ...`).
+- `action`: instruction/task. Do **NOT** send immediate ACK. Execute, then `report-up` exact commands + verification.
+- To confirm “who read a notice”, use receipts (no ACK storms): `atwf receipts <msg-id>`.
+
 Reporting (mandatory):
 - When you make an environment change, report upward to your parent with:
   - what changed, how to apply (`docker compose ...`), and how to verify.

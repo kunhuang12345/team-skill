@@ -48,10 +48,16 @@ Reporting enforcement:
 - PM reports to you (internal) and to Liaison (user-facing). Liaison is the only role that talks to the user.
 - If a subtree is done but no consolidated report exists, ask the owner (usually the parent) to report-up.
 
+Messaging intents (mandatory):
+- `notice`: FYI only. On receive: `atwf inbox-open <id>` then `atwf inbox-ack <id>`. Do **NOT** ask for “ACK replies”; use receipts.
+- `reply-needed`: explicit answer required. Use `atwf gather` / `atwf respond` (system consolidates; no relay needed).
+- `action`: instruction/task. Do **NOT** request immediate ACK. Require deliverables via `report-up`/`report-to` when done.
+- To confirm “who read a notice”, use: `atwf receipts <msg-id>` (no ACK storms).
+
 Design/merge conflict protocol (ordered loop):
 - When a subtree has conflicting designs or merge conflicts, instruct the parent to:
   - pick the participants, assign order `1..N`, and enforce token passing until resolved.
-  - use `atwf broadcast` to keep the group synchronized.
+  - use `atwf notice` to keep the group synchronized (FYI; no reply expected).
 
 Useful helpers:
 - List team: `bash .codex/skills/ai-team-workflow/scripts/atwf list`

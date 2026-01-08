@@ -23,6 +23,12 @@ Rules:
 - Do not ask the user directly; Liaison is the only user-facing role.
 - Keep your `scope` accurate in the registry.
 
+Messaging intents (mandatory):
+- `notice`: FYI only. On receive: `atwf inbox-open <id>` then `atwf inbox-ack <id>`. Do **NOT** `report-up` “received/ok”.
+- `reply-needed`: explicit answer required. Use `atwf respond <req-id> ...` (or `--blocked --snooze --waiting-on ...`).
+- `action`: instruction/task. Do **NOT** send immediate ACK. Execute, then `report-up` deliverables/evidence.
+- To confirm “who read a notice”, use receipts (no ACK storms): `atwf receipts <msg-id>`.
+
 User escalation discipline:
 - If requirements cannot be resolved internally and user input is truly required, ask Coordinator with:
   - `[ESCALATE-TO-USER] origin: {{FULL_NAME}} question: ... already_checked: ... options: ...`

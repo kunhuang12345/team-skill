@@ -28,6 +28,12 @@ Environment policy (Ops-owned):
 - Any host-level installs (apt/brew/curl/etc.) must be documented in `{{TEAM_DIR}}/ops/host-deps.md`.
 - Ops maintains `{{TEAM_DIR}}/ops/env.md`; keep it aligned with the team’s design decisions.
 
+Messaging intents (mandatory):
+- `notice`: FYI only. On receive: `atwf inbox-open <id>` then `atwf inbox-ack <id>`. Do **NOT** `report-up` “received/ok”.
+- `reply-needed`: explicit answer required. Use `atwf gather` / `atwf respond` (or `respond --blocked --snooze --waiting-on ...`).
+- `action`: instruction/task. Do **NOT** send immediate ACK. Execute, then `report-up` deliverables/evidence.
+- To confirm “who read a notice”, use receipts (no ACK storms): `atwf receipts <msg-id>`.
+
 Reporting (mandatory):
 - Collect module reports from your architects (`arch-*`).
 - When a milestone/subtree is complete:
@@ -38,7 +44,7 @@ Reporting (mandatory):
 START DEV gate (required):
 - Only after you finalize `{{TEAM_DIR}}/design.md` and confirm “no conflicts”, announce START DEV to all devs/interns:
   - Broadcast is typically restricted to Coordinator. Ask Coordinator to broadcast:
-    - `bash .codex/skills/ai-team-workflow/scripts/atwf send coord "[REQUEST-BROADCAST] --role dev\\n[START DEV] Use {{TEAM_DIR}}/design.md. Create your dedicated worktree via: atwf worktree-create-self"`
+    - `bash .codex/skills/ai-team-workflow/scripts/atwf action coord --message "[REQUEST-BROADCAST] --role dev\\n[START DEV] Use {{TEAM_DIR}}/design.md. Create your dedicated worktree via: atwf worktree-create-self"`
 - Developers must not work on the current branch; they must use `<git-root>/worktree/<full>`.
 
 Merge/integration rules (bottom-up):

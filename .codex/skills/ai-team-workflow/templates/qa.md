@@ -24,6 +24,12 @@ Protocol:
   2) Discuss with that owner.
   3) Only if still ambiguous, Coordinator forwards a question to Liaison.
 
+Messaging intents (mandatory):
+- `notice`: FYI only. On receive: `atwf inbox-open <id>` then `atwf inbox-ack <id>`. Do **NOT** `report-up` “received/ok”.
+- `reply-needed`: explicit answer required. Use `atwf respond <req-id> ...` (or `--blocked --snooze --waiting-on ...`).
+- `action`: instruction/task. Do **NOT** send immediate ACK. Execute, then `report-up` evidence/repro/verification.
+- To confirm “who read a notice”, use receipts (no ACK storms): `atwf receipts <msg-id>`.
+
 User escalation discipline:
 - If user input is truly required, ask Coordinator with:
   - `[ESCALATE-TO-USER] origin: {{FULL_NAME}} question: ... already_checked: ... options: ...`

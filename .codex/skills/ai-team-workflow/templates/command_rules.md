@@ -5,10 +5,12 @@ This rule applies to **every role** in this AI team.
 ## Allowed messaging path (required)
 
 - **Send messages only via** `atwf` wrappers (policy-enforced):
-  - Broadcast (usually only `coord`): `bash .codex/skills/ai-team-workflow/scripts/atwf broadcast ...`
-  - Direct message (wait for reply): `bash .codex/skills/ai-team-workflow/scripts/atwf ask ...`
-  - Direct message (no waiting): `bash .codex/skills/ai-team-workflow/scripts/atwf send ...`
+  - Notice (FYI, no reply expected): `bash .codex/skills/ai-team-workflow/scripts/atwf notice ...`
+  - Action (instruction, no immediate ACK): `bash .codex/skills/ai-team-workflow/scripts/atwf action ...`
+  - Reply-needed (must reply): `bash .codex/skills/ai-team-workflow/scripts/atwf gather ...` / `bash .codex/skills/ai-team-workflow/scripts/atwf respond ...`
+  - Direct question (discouraged; may require CLI injection): `bash .codex/skills/ai-team-workflow/scripts/atwf ask ...`
   - Handoff/authorization (avoid relaying): `bash .codex/skills/ai-team-workflow/scripts/atwf handoff ...`
+  - Legacy (operator-only): `atwf send` / `atwf broadcast` (disabled inside worker tmux; use `notice` / `action`)
 - Check hard permissions any time:
   - `bash .codex/skills/ai-team-workflow/scripts/atwf policy`
   - `bash .codex/skills/ai-team-workflow/scripts/atwf perms-self`
@@ -43,39 +45,98 @@ Hard rules:
 - To see your pending unread queue: `bash .codex/skills/ai-team-workflow/scripts/atwf inbox`
 - When you send many messages to the same target, check backlog first: `bash .codex/skills/ai-team-workflow/scripts/atwf inbox-pending <target>`
 
+## Message intents (hard protocol) (mandatory)
+
+All cross-role messages MUST be one of:
+
+1) `notice` (notification / FYI)
+- Sender uses: `atwf notice ...`
+- Receiver MUST: `inbox-open` → read → `inbox-ack`.
+- Receiver MUST NOT: reply upward with “received/ok/ack” via `report-up`/`action`/`ask`.
+
+2) `reply-needed` (explicit answer required)
+- Sender uses: `atwf gather ...`
+- Receiver MUST use: `atwf respond ...` (or `--blocked --snooze --waiting-on ...`).
+
+3) `action` (instruction / task)
+- Sender uses: `atwf action ...`
+- Receiver MUST NOT: send an immediate ACK message.
+- Receiver MUST: execute; when done, report deliverables/evidence via `report-up` (or `report-to`).
+
+## Notice receipts (replace ACK storms) (mandatory)
+
+To confirm “everyone read the notice”, do NOT ask for ACK replies.
+Instead, query receipts by `msg_id`:
+
+- `bash .codex/skills/ai-team-workflow/scripts/atwf receipts <msg_id>`
+
+Statuses:
+- `unread` / `overflow` / `read` / `missing`
+
+## Reply-needed requests (gather/respond) (mandatory)
+
+Use this to collect multiple replies without spamming chat threads.
+
+Hard rules:
+- If you need multiple people to reply, use `atwf gather` (not N separate `ask` + repeated summaries).
+  - Initiator: `bash .codex/skills/ai-team-workflow/scripts/atwf gather <a> <b> ... --topic "..." --message "<request>"` (or via stdin)
+- If you receive a `kind=reply-needed` inbox message, do **NOT** reply via `send/ask`.
+  Use `atwf respond` so the system can consolidate:
+  - Reply: `bash .codex/skills/ai-team-workflow/scripts/atwf respond <req-id> "<your reply>"`
+  - Blocked/snooze: `bash .codex/skills/ai-team-workflow/scripts/atwf respond <req-id> --blocked --snooze 15m --waiting-on <base> "why blocked"`
+  - List your pending reply-needed: `bash .codex/skills/ai-team-workflow/scripts/atwf reply-needed`
+- The initiator receives **one** consolidated result message (inbox-only) when all targets replied or the request times out.
+- If you see a `REPLY wake:` prompt, run `atwf reply-needed` immediately and handle the oldest due request.
+
 ## CLI injection policy (mandatory)
 
 Goal: avoid spending tokens by injecting prompts into other workers' Codex CLIs.
 
 Hard rules:
-- Default delivery is **inbox-only**: `atwf send` / `atwf broadcast` / `atwf report-*` write to inbox and do **not** inject into the recipient CLI.
+- Default delivery is **inbox-only**: `atwf notice` / `atwf action` / `atwf report-*` write to inbox and do **not** inject into the recipient CLI.
 - The **only** routine CLI injection is the operator-side watcher `atwf watch-idle`, which:
   - wakes `idle` workers when inbox has pending items
   - injects governance alerts to `coord` when `working` workers ignore inbox too long
+  - may auto-send an `Enter` keystroke when an approval menu is detected (config: `team.state.auto_enter`)
 - `--notify` / `--wait` are **operator-only exceptions** and should not be used during normal work.
 
 ## Agent state + standby protocol (mandatory)
 
-The team uses an explicit state machine to reduce token waste and prevent message pileups.
+State is **watcher-derived** (operator sidecar `atwf watch-idle`) to reduce token waste and avoid relying on workers to self-report.
 
-States:
-- `working`: you are actively executing an assigned task; you must proactively check inbox periodically.
-- `draining`: you are finishing work and clearing inbox before going idle.
-- `idle`: you are on standby; you must NOT proactively poll inbox (a watcher will wake you).
+Derived states (informational; enforced by watcher):
+- `working`: watcher sees recent tmux output activity, or the worker is within a short grace period after a wake prompt.
+- `idle`: watcher sees no recent output activity.
 
 Commands:
-- View your state: `bash .codex/skills/ai-team-workflow/scripts/atwf state-self`
-- Set your state: `bash .codex/skills/ai-team-workflow/scripts/atwf state-set-self <working|draining|idle>`
+- View your derived state: `bash .codex/skills/ai-team-workflow/scripts/atwf state-self`
 - View others: `bash .codex/skills/ai-team-workflow/scripts/atwf state <target>`
 
 Hard rules:
-- When `working`: run `bash .codex/skills/ai-team-workflow/scripts/atwf inbox` at least once per minute (or before any blocking wait). If it lists unread `id`s, you must `inbox-open` + process + `inbox-ack` them, then continue work.
-- When your assigned work is complete: do NOT jump directly to `idle`.
-  1) set `draining`
-  2) clear inbox to empty (process+ack all unread)
-  3) only then set `idle`
-- Before setting `idle`, you must confirm inbox is empty; if new messages arrive after you go `idle`, that is OK: a watcher will wake you with a short prompt.
-- When `idle`: do not poll inbox on your own; wait for a wake prompt, then set `working` and process inbox.
+- If you are actively working (or after any wake prompt): run `bash .codex/skills/ai-team-workflow/scripts/atwf inbox` at least once per minute (or before any blocking wait). If it lists unread `id`s, you must `inbox-open` + process + `inbox-ack` them, then continue work.
+- Do **NOT** use `state-set-self` as part of normal workflow; it will be overwritten by the watcher and is only for debugging.
+- When you have nothing actionable: simply wait. If new inbox arrives, the watcher will wake you with a short prompt.
+
+## Drive loop (mandatory)
+
+To prevent “everyone idle, nobody kicks off the next iteration”, the team uses a human-controlled drive loop.
+
+Commands:
+- Check drive mode: `bash .codex/skills/ai-team-workflow/scripts/atwf drive`
+- Set drive mode (config is authoritative):
+  - edit `.codex/skills/ai-team-workflow/scripts/atwf_config.yaml`: `team.drive.mode: running|standby`
+  - operator convenience: run `bash .codex/skills/ai-team-workflow/scripts/atwf drive running|standby` (must be outside worker tmux)
+
+Hard rules:
+- `team.drive.mode` in config is the ONLY truth; `atwf watch-idle` hot-reloads it each tick.
+- Team members MUST NOT switch drive mode from inside their worker tmux sessions.
+- When drive mode is `running`, **all idle + all inbox empty** is treated as an abnormal stall.
+  The watcher will wake the configured `driver_role` (default: `coord`) with a `[DRIVE]` ticket.
+- The driver must immediately do ONE:
+  1) Kick off the next iteration by assigning owners/actions/ETAs (via `atwf action` / `atwf report-to`)
+  2) Switch the team to `standby` via config (and tell Liaison/User why)
+  3) Declare a blocker and create a handoff/permit when needed
+- When drive mode is `standby`, the team is allowed to be fully idle with empty inbox (no drive nudges).
 
 ## Forbidden (do NOT do this)
 

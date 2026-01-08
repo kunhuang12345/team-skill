@@ -74,13 +74,33 @@ team:
       # Who can create handoffs/permits.
       handoff_creators: [coord, pm, arch]
 
+  # Drive loop (anti-stall)
+  #
+  # When `mode=running`, the watcher will treat "all members idle + all inbox empty"
+  # as an abnormal stall and will wake a single driver to re-kickoff work or switch
+  # to standby explicitly.
+  drive:
+    mode: running # running | standby
+    driver_role: coord     # who is woken to drive the team
+    backup_role: pm        # escalation target if driver is missing
+    cooldown: 600          # seconds between repeated drive nudges
+
+  # Reply-needed requests (fan-in replies without CLI injection)
+  #
+  # - Initiator uses: `atwf gather ...`
+  # - Targets reply via: `atwf respond ...` (or `--blocked` to snooze reminders)
+  # - Watcher will reply-drive (wake debtors) when team is stalled but replies are pending.
+  reply:
+    deadline: 3600        # seconds until auto-timeout / consolidation
+    blocked_snooze: 900   # default snooze for `atwf respond --blocked` (seconds)
+
   # Message delivery (hard default behavior)
   # - Full message bodies are stored in {{TEAM_DIR}}/inbox/...
   # - Chat prompts contain only short [INBOX] id=... notifications
   messaging:
     inbox:
       # Max active unread items per sender->recipient thread; older unread are moved to inbox/overflow.
-      max_unread_per_thread: 5
+      max_unread_per_thread: 15
 
   # Agent standby + inbox polling
   #
@@ -97,8 +117,27 @@ team:
     # Poll interval for `atwf watch-idle` (seconds).
     watch_interval: 60
 
+    # Activity-derived state (watcher-managed).
+    #
+    # The watcher infers `working` vs `idle` by sampling the worker's tmux pane output:
+    # - if the output hash changed within `activity_window`, consider it active (`working`)
+    # - after a wake injection, keep it active for `active_grace_period` to avoid flapping
+    activity_window: 120
+    active_grace_period: 180
+    activity_capture_lines: 200
+
+    # Auto-unblock: if Codex is showing an approval menu inside the worker TUI,
+    # send an Enter keystroke to accept the default choice and continue.
+    auto_enter:
+      enabled: true
+      cooldown: 30
+      tail_window_lines: 80
+      patterns:
+        - "3. No, and tell Codex what to do differently (esc)"
+
     # Minimal wake message injected into Codex TUI (no full body here).
     wake_message: "INBOX wake: you have unread messages. Run: bash .codex/skills/ai-team-workflow/scripts/atwf inbox"
+    reply_wake_message: "REPLY wake: you have pending reply-needed. Run: bash .codex/skills/ai-team-workflow/scripts/atwf reply-needed"
 
     # Governance: if a worker is `working` but has pending inbox items older than N seconds,
     # the watcher writes an inbox-only alert to coord (no CLI injection).

@@ -138,7 +138,7 @@ For design conflicts or merge conflicts within a subtree:
 - Parent selects the conflicting participants (N people) and assigns an order `1..N`.
 - Use a strict “token passing” loop: only the current number speaks; after speaking they message the next number.
 - When the last (`N`) finishes, loop back to `1`. If `1` declares the conflict resolved, `1` summarizes and reports up; otherwise continue the loop.
-- Keep everyone in sync. If broadcast is restricted by policy, ask Coordinator to broadcast key sync messages (or use direct messages / handoff).
+- Keep everyone in sync. If broadcast-style messaging is restricted by policy, ask Coordinator to send a `notice` to the right subtree/role (or use direct messages / handoff).
 
 ## Commands
 
@@ -167,20 +167,29 @@ All commands are wrappers around `twf` plus registry management:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-check-self`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf stop [--role ROLE|--subtree ROOT|targets...]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf resume [--role ROLE|--subtree ROOT|targets...]`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf pause [--role ROLE|--subtree ROOT|targets...] [--reason "..."]` (human pause; disables watcher via `share/.paused`)
-- `bash .codex/skills/ai-team-workflow/scripts/atwf unpause [--role ROLE|--subtree ROOT|targets...]` (human unpause; resumes without restarting watcher)
-- `bash .codex/skills/ai-team-workflow/scripts/atwf broadcast [--role ROLE|--subtree ROOT|targets...] --message "..."` (or stdin)
+- `bash .codex/skills/ai-team-workflow/scripts/atwf pause [--role ROLE|--subtree ROOT|targets...] [--reason "..."]` (human pause; writes `share/.paused` and stops the watcher session)
+- `bash .codex/skills/ai-team-workflow/scripts/atwf unpause [--role ROLE|--subtree ROOT|targets...]` (human unpause; clears `share/.paused` and restarts watcher so updates take effect)
+- `bash .codex/skills/ai-team-workflow/scripts/atwf notice [--role ROLE|--subtree ROOT|targets...] --message "..."` (or stdin; FYI; no reply expected)
+- `bash .codex/skills/ai-team-workflow/scripts/atwf action [--role ROLE|--subtree ROOT|targets...] --message "..."` (or stdin; instruction/task; report deliverables when done)
+- `bash .codex/skills/ai-team-workflow/scripts/atwf receipts <msg-id> [--role ROLE|--subtree ROOT|targets...]` (read receipts for notice/any msg-id)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf resolve <full|base|role>`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf attach <full|base|role>`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf route "<query>" [--role <role>]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf ask <full|base|role> ["message"]` (stdin supported)
-- `bash .codex/skills/ai-team-workflow/scripts/atwf send <full|base|role> ["message"]` (stdin supported; default inbox-only, no CLI injection)
+- Legacy (operator-only; disabled inside worker tmux):
+  - `bash .codex/skills/ai-team-workflow/scripts/atwf send <full|base|role> ["message"]`
+  - `bash .codex/skills/ai-team-workflow/scripts/atwf broadcast [--role ROLE|--subtree ROOT|targets...] --message "..."` (or stdin)
+- `bash .codex/skills/ai-team-workflow/scripts/atwf gather <a> <b> ... --message "..."` (stdin supported; reply-needed fan-in)
+- `bash .codex/skills/ai-team-workflow/scripts/atwf respond <req-id> ["message"]` (stdin supported; reply-needed response)
+- `bash .codex/skills/ai-team-workflow/scripts/atwf reply-needed [--target <full|base|role>]` (list pending reply-needed)
+- `bash .codex/skills/ai-team-workflow/scripts/atwf request <req-id>` (show request status/paths)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf handoff <a> <b> [--reason "..."] [--ttl SECONDS]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf pend <full|base|role> [N]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf ping <full|base|role>`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf drive [running|standby]` (drive mode lives in config; watcher hot-reloads; setting mode must be outside worker tmux)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf state [target]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf state-self`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf state-set-self <working|draining|idle>`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf state-set-self <working|draining|idle>` (debug only; watcher overwrites)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf watch-idle [--interval S] [--delay S] [--once]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf remove <pm-full>` (disband team; clears registry)
 
