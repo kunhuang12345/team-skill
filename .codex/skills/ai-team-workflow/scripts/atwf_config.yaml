@@ -95,18 +95,25 @@ team:
       summary: |
         [DRIVE] team stalled: ALL IDLE + INBOX EMPTY
         inbox id={{msg_id}} (open: {{open_cmd}})
-        Action: diagnose root cause, then re-drive the team back to work.
+        Rule: DO NOT change team.drive.mode or edit atwf_config.yaml (operator-only).
+        Now: diagnose (atwf state/list/inbox), then re-drive by assigning next actions (owner+ETA). If the current iteration is done, kick off the next one (PM→Prod).
       body: |
         [DRIVE] team stalled: ALL IDLE + INBOX EMPTY
         - detected_at: {{iso_ts}}
-        - meaning: no one is driving work. This is an ABNORMAL STALL.
+        - meaning: In running mode (continuous iteration), this is an ABNORMAL STALL: nobody is driving work.
+
+        Hard rule (operator-only):
+        - DO NOT change team.drive.mode.
+        - DO NOT edit .codex/skills/ai-team-workflow/scripts/atwf_config.yaml.
 
         1) Diagnose now:
         - atwf state
         - atwf list
         - atwf inbox (your own inbox)
 
-        Summarize why the team reached "all idle + inbox empty", find the root cause, then re-drive the team back to work.
+        2) Re-drive now:
+        - assign next actions (owner + next step + ETA) via atwf action
+        - if the current iteration/batch is complete, immediately kick off the next iteration: remind PM to have Prod draft the next iteration batch (features + AC/Verify), then start assignments (do not "go idle")
 
   # Reply-needed requests (fan-in replies without CLI injection)
   #
