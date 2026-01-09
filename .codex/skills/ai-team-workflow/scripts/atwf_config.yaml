@@ -20,53 +20,38 @@ share:
 # - 权限/可雇佣关系写在 policy（硬约束）里，不写在角色模板里。
 # - 组织树（谁雇佣谁、开几个 dev/qa）由 PM 在运行时决定，但必须满足下面的规则。
 team:
-  # Worker runtime environment
-  #
-  # When `env.venv` is set, every tmux worker will start Codex under that Python
-  # virtualenv so `python`/`pytest` resolve to the venv without extra setup.
-  env:
-    # Python virtualenv directory (must contain `bin/activate`). Leave empty to disable.
-    venv: "/root/.virtualenvs/py_ui_test"
-
-  # Team initialization (what `atwf init` starts automatically)
-  init:
-    # Who receives the shared task on init (via `twf ask`).
-    # Must be either the root_role or one of the init children roles.
-    task_owner_role: task_admin
-
-    # Children spawned under root_role on init (optional).
-    # - If empty/unset: defaults to [pm, user_role] (dedup + skip root_role).
-    children:
-      - role: task_admin
-        label: main
-        scope: "task dispatcher + phase gatekeeper"
-
   policy:
     # Root role (single root). Non-root roles must be created via spawn (must have a parent).
     root_role: "coord"
 
-    # Operator/user-facing role (the only role allowed to ask the user).
-    user_role: "coord"
-
     # Project-enabled roles (must have a matching templates/<role>.md).
     enabled_roles:
       - coord
-      - task_admin
-      - migrator
-      - reviewer
-      - regress
+      - pm
+      - liaison
+      - arch
+      - dev
+      - qa
+      - prod
+      - ops
 
     # Hiring policy (who can spawn which roles). PM decides actual org by spawning,
     # but the role types must be allowed here.
     can_hire:
-      coord: [task_admin]
-      task_admin: [migrator, reviewer, regress]
+      coord: [pm, liaison]
+      pm: [arch, dev, qa, prod, ops]
+      arch: [dev, qa, prod]
+      # Optional self-scaling (interns/assistants) by role label (e.g. dev-intern):
+      dev: [dev]
+      qa: [qa]
+      prod: [prod]
+      ops: [ops]
 
     # Broadcast governance
     broadcast:
       allowed_roles: [coord]
       # Default internal broadcast audience should exclude liaison unless explicitly targeted.
-      exclude_roles: []
+      exclude_roles: [liaison]
 
     # Direct communication governance (who can DM/ask whom without handoff)
     comm:
@@ -77,25 +62,17 @@ team:
       # Example: dev (including dev interns) can talk to prod/qa directly.
       direct_allow:
         # Anyone can ask coord for routing/authorization.
-        coord: [task_admin, migrator, reviewer, regress]
+        coord: [pm, arch, dev, qa, prod, ops, liaison]
+        pm: [liaison]
+        dev: [prod, qa]
+        qa: [prod, dev]
+        prod: [dev, qa]
 
       # Otherwise, cross-branch conversations require a handoff/permit (to avoid relaying).
       require_handoff: true
 
       # Who can create handoffs/permits.
-      handoff_creators: [coord, task_admin]
-
-  # Per-role spec docs (paths). These are included in bootstrap as a required
-  # reading list, and are the source of truth for each role’s checklist.
-  #
-  # Paths can be absolute, or relative to the project git root.
-  role_specs:
-    migrator:
-      - "task/workflow.md"
-    reviewer:
-      - "task/workflow.md"
-    regress:
-      - "task/workflow.md"
+      handoff_creators: [coord, pm, arch]
 
   # Drive loop (anti-stall)
   #
@@ -105,7 +82,7 @@ team:
   drive:
     mode: running # running | standby
     driver_role: coord     # who is woken to drive the team
-    backup_role: task_admin        # escalation target if driver is missing
+    backup_role: pm        # escalation target if driver is missing
     cooldown: 600          # seconds between repeated drive nudges
 
   # Reply-needed requests (fan-in replies without CLI injection)

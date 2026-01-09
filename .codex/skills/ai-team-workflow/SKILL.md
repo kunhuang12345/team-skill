@@ -48,11 +48,11 @@ Within the same share dir as `registry.json`, this skill also standardizes:
 
 ## Quick start
 
-Initialize + start the initial team + send task to the configured task owner:
+Initialize + start the initial trio + send task to PM:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf init "任务描述：/path/to/task.md"`
   - starts root: `coord-main`
-  - spawns under root: roles from `scripts/atwf_config.yaml` → `team.init.children` (default: `pm-main`, `liaison-main`)
-  - copies the task into `share/task.md`, sends it to `team.init.task_owner_role`, and prints the task owner's first reply
+  - spawns under root: `pm-main`, `liaison-main`
+  - copies the task into `share/task.md`, sends PM the shared path, and prints PM's first reply
   - starts a background sidecar: `atwf watch-idle` (tmux session `atwf-watch-idle-*`) to wake `idle` workers when inbox has unread; `atwf pause` disables watcher actions via `share/.paused`
   - note: `atwf pause` stops the watcher session; `atwf unpause` restarts it (so code/config updates take effect)
 
@@ -67,7 +67,7 @@ If you only want to create the registry (no workers):
 
 If you copied this skill from another repo and `init` reuses stale workers:
 - Delete runtime state under this skill’s `share/` (especially `share/registry.json`) and rerun `init`, or
-- Run `bash .codex/skills/ai-team-workflow/scripts/atwf init --force-new` to start a fresh team.
+- Run `bash .codex/skills/ai-team-workflow/scripts/atwf init --force-new` to start a fresh trio.
 
 Create an architect under PM:
 - preferred: PM runs inside its tmux: `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self arch user --scope "user module design + task breakdown"`
@@ -95,31 +95,14 @@ Disband the whole team (requires PM full name):
 
 Completion/progress must flow upward:
 - If you hire subordinates, you are responsible for collecting their reports and then reporting *up* only when the whole subtree is done.
-- Default chains: `dev/prod/qa -> arch -> pm -> coord -> user_role -> user` (default `user_role=liaison`); `ops -> pm -> coord -> user_role -> user`.
-
-## Per-role spec docs (config)
-
-Bootstrap messages can include a required reading list per role:
-
-```yaml
-team:
-  role_specs:
-    migrator:
-      - task/workflow.md
-    reviewer:
-      - task/workflow.md
-    regress:
-      - task/workflow.md
-```
-
-Paths can be absolute or relative to the project git root.
+- Default chains: `dev/prod/qa -> arch -> pm -> (coord + liaison) -> user`; `ops -> pm -> (coord + liaison) -> user`.
 
 Helpers (run inside tmux worker):
 - `bash .codex/skills/ai-team-workflow/scripts/atwf parent-self`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf report-up "done summary..."`
-- PM reports upward to Coordinator via `report-up`; user-facing updates are sent to `team.policy.user_role`:
+- PM reports upward to Coordinator via `report-up`; user-facing updates are sent to Liaison:
   - internal (to parent): `bash .codex/skills/ai-team-workflow/scripts/atwf report-up "status update..."`
-  - user-facing (to user_role): `bash .codex/skills/ai-team-workflow/scripts/atwf report-to <user_role> "status update for user..."`
+  - user-facing (to liaison): `bash .codex/skills/ai-team-workflow/scripts/atwf report-to liaison "status update for user..."`
 
 ## Operating rules (role protocol)
 
@@ -128,12 +111,12 @@ Helpers (run inside tmux worker):
   1. Ask **Coordinator**: “Who should I talk to?” / “Is this internal or user-facing?”
   2. Coordinator routes to the best owner using `registry.json` (`atwf route ...`).
   3. If cross-branch communication is needed, Coordinator creates a **handoff** so the two members talk directly (avoid relaying): `atwf handoff ...`
-  4. Only if a real **user decision** is required, Coordinator escalates a crisp question to **user_role**.
-  5. user_role asks the user, then reports back to Coordinator (who distributes).
+  4. Only if a real **user decision** is required, Coordinator escalates a crisp question to **Liaison**.
+  5. Liaison asks the user, then reports back to Coordinator (who distributes).
 
 User “bounce” rule (assistant is a relay):
-- If the user responds with “I don’t understand / shouldn’t this be answerable from docs?”, user_role does **not** validate internally.
-- user_role sends a `[USER-BOUNCE]` back; Coordinator routes it back down to the originator to self-confirm using existing docs (task/design/MasterGo assets).
+- If the user responds with “I don’t understand / shouldn’t this be answerable from docs?”, Liaison does **not** validate internally.
+- Liaison sends a `[USER-BOUNCE]` back; Coordinator routes it back down to the originator to self-confirm using existing docs (task/design/MasterGo assets).
 - Only re-escalate to the user when a real **user decision** is required.
 
 ## Design → Development workflow (required)
