@@ -14,7 +14,7 @@ This rule applies to **every role** in this AI team.
 - Check hard permissions any time:
   - `bash .codex/skills/ai-team-workflow/scripts/atwf policy`
   - `bash .codex/skills/ai-team-workflow/scripts/atwf perms-self`
-- Any progress/completion/design conclusion **must** be reported via `atwf report-up` (or `atwf report-to coord|liaison`) to count as “reported”; otherwise the parent may treat it as “not received”.
+- Any progress/completion/design conclusion **must** be reported via `atwf report-up` (or `atwf report-to {{USER_ROLE}}`) to count as “reported”; otherwise the parent may treat it as “not received”.
 
 ## Queue-safe message protocol (mandatory)
 

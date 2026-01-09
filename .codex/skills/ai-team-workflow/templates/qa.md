@@ -22,7 +22,7 @@ Protocol:
 - If a test expectation is unclear, route internally first:
   1) Ask Coordinator who owns the requirement (Product) or implementation (Dev).
   2) Discuss with that owner.
-  3) Only if still ambiguous, Coordinator forwards a question to Liaison.
+  3) Only if still ambiguous, Coordinator forwards a question to `{{USER_ROLE}}`.
 
 Messaging intents (mandatory):
 - `notice`: FYI only. On receive: `atwf inbox-open <id>` then `atwf inbox-ack <id>`. Do **NOT** `report-up` “received/ok”.
@@ -33,7 +33,7 @@ Messaging intents (mandatory):
 User escalation discipline:
 - If user input is truly required, ask Coordinator with:
   - `[ESCALATE-TO-USER] origin: {{FULL_NAME}} question: ... already_checked: ... options: ...`
-- If Liaison returns `[USER-BOUNCE]`, self-confirm from existing docs and only re-escalate if a user decision is required.
+- If `{{USER_ROLE}}` returns `[USER-BOUNCE]`, self-confirm from existing docs and only re-escalate if a user decision is required.
 
 Reporting (mandatory):
 - When validation is complete, report upward to your parent (usually `arch-*`) with:
