@@ -26,8 +26,8 @@ Batch reporting rule (no trickle updates):
 Dispatch protocol (mandatory):
 - Input comes from `coord` as an `action` message containing at least:
   - Java suite (FQN) to migrate
-  - `MODULE` (explicit string used for task folder + id)
   - base ref/branch to branch from (or `HEAD` if not specified)
+- `MODULE` is derived from the FQN (see step 0). Only ask `coord` if the FQN does not match the expected scope.
 - Your job is to:
   1) create a **shared worktree** for this task chain (one worktree for all 3 children),
   2) copy required `task/` docs into that worktree (since `task/` is not versioned),
@@ -41,15 +41,16 @@ Goal: for each suite/task, create a dedicated Git worktree (dir + branch). Becau
 
 ### 0) Read required inputs (from coord)
 
-Do NOT ask the user for these. If any field is missing, send a `reply-needed` to `coord` to request it.
+Do NOT ask the user for these. If required data is missing, send a `reply-needed` to `coord` to request it.
 
 - Java suite (FQN), example: `com.qingshuschooltest.testcase.web.degree.ExerciseScoreSuite`
-- `MODULE`, example: `degree`
 - `BASE_REF`, example: `x-hk-degree` (or use `HEAD`)
 
 Extract:
 - `SUITE_NAME`: last segment of the FQN (example: `ExerciseScoreSuite`)
 - `SUITE_SLUG`: a lowercase/kebab identifier for branches/dirs (example: `exercise-score-suite`)
+- `MODULE`: first segment after `com.qingshuschooltest.testcase.web.` (example: `degree`)
+  - If the FQN does NOT contain `.testcase.web.<module>.`, you MUST ask `coord` for `MODULE` (do not guess).
 - `TASK_ID`: `<module>-<suite_slug>` (example: `degree-exercise-score-suite`)
 
 ### 1) Create the shared worktree (run once; in REPO_ROOT)

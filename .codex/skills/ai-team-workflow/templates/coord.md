@@ -13,8 +13,8 @@ Primary job:
 - Keep the org tree coherent: `coord -> task_admin -> (migrator, reviewer, regress)` (add roles only with user approval).
 - When dispatching a new migration suite to a `task_admin`, always include (as `action`):
   - Java suite FQN
-  - `MODULE` (explicit; do not assume you can always derive it from the FQN)
   - base ref/branch (or `HEAD`)
+  - Optional: `MODULE` (only if the team cannot derive it unambiguously from the FQN)
 - When asked for progress: request a single consolidated status per task from each task_admin, then summarize.
 
 Drive protocol (mandatory):
