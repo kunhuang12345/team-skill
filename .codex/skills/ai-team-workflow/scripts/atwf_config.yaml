@@ -2,7 +2,7 @@
 #
 # This file is YAML (or JSON) and is parsed via `yaml.safe_load` when available.
 #
-# Share dir (where registry/task/design/ops live):
+# Share dir (where registry/task/design/state live):
 # - If set (non-empty), it overrides the default shared state directory.
 # - Recommended: absolute path
 # - Relative paths are resolved from the skill root (`.codex/skills/ai-team-workflow/`)
@@ -18,7 +18,7 @@ share:
 #
 # Notes:
 # - 权限/可雇佣关系写在 policy（硬约束）里，不写在角色模板里。
-# - 组织树（谁雇佣谁、开几个 dev/qa）由 PM 在运行时决定，但必须满足下面的规则。
+# - 本分支是迁移团队：组织树固定为 `coord -> task_admin -> (migrator, reviewer, regress)`。
 team:
   # Worker runtime environment
   #
@@ -35,7 +35,7 @@ team:
     task_owner_role: task_admin
 
     # Children spawned under root_role on init (optional).
-    # - If empty/unset: defaults to [pm, user_role] (dedup + skip root_role).
+    # - If empty/unset: defaults to [task_admin, user_role] (dedup + skip root_role).
     children:
       - role: task_admin
         label: main
@@ -56,8 +56,8 @@ team:
       - reviewer
       - regress
 
-    # Hiring policy (who can spawn which roles). PM decides actual org by spawning,
-    # but the role types must be allowed here.
+    # Hiring policy (who can spawn which roles). The operator/runtime team decides
+    # the actual org by spawning, but the role types must be allowed here.
     can_hire:
       coord: [task_admin]
       task_admin: [migrator, reviewer, regress]
@@ -65,25 +65,23 @@ team:
     # Broadcast governance
     broadcast:
       allowed_roles: [coord]
-      # Default internal broadcast audience should exclude liaison unless explicitly targeted.
       exclude_roles: []
 
-    # Direct communication governance (who can DM/ask whom without handoff)
+    # Direct communication governance (who can DM/ask whom)
     comm:
       # Allow parent<->child communications regardless of role.
       allow_parent_child: true
 
       # Role-to-role direct communication matrix (bidirectional).
-      # Example: dev (including dev interns) can talk to prod/qa directly.
+      # For this migration team, keep topology strict:
+      # - task_admin <-> coord
+      # - task_admin <-> (migrator/reviewer/regress) is covered by parent-child allowance.
       direct_allow:
-        # Anyone can ask coord for routing/authorization.
-        coord: [task_admin, migrator, reviewer, regress]
+        coord: [task_admin]
+        task_admin: [coord]
 
-      # Otherwise, cross-branch conversations require a handoff/permit (to avoid relaying).
-      require_handoff: true
-
-      # Who can create handoffs/permits.
-      handoff_creators: [coord, task_admin]
+      require_handoff: false
+      handoff_creators: []
 
   # Per-role spec docs (paths). These are included in bootstrap as a required
   # reading list, and are the source of truth for each role’s checklist.
@@ -104,8 +102,8 @@ team:
   # to standby explicitly.
   drive:
     mode: running # running | standby
-    driver_role: coord     # who is woken to drive the team
-    backup_role: task_admin        # escalation target if driver is missing
+    driver_role: task_admin     # (migration team) who is woken to drive a stalled task subtree
+    backup_role: coord          # fallback if task_admin is missing
     cooldown: 600          # seconds between repeated drive nudges
 
   # Reply-needed requests (fan-in replies without CLI injection)
@@ -125,7 +123,7 @@ team:
       # Max active unread items per sender->recipient thread; older unread are moved to inbox/overflow.
       max_unread_per_thread: 15
 
-  # Agent standby + inbox polling
+    # Agent standby + inbox polling
   #
   # Notes:
   # - "working" agents should proactively check inbox periodically to avoid queue buildup.
@@ -163,6 +161,6 @@ team:
     reply_wake_message: "REPLY wake: you have pending reply-needed. Run: bash .codex/skills/ai-team-workflow/scripts/atwf reply-needed"
 
     # Governance: if a worker is `working` but has pending inbox items older than N seconds,
-    # the watcher writes an inbox-only alert to coord (no CLI injection).
+    # the watcher writes an inbox-only alert to the owning task_admin (and injects a short notice if they are running).
     working_stale_threshold: 180
     working_alert_cooldown: 600

@@ -2,19 +2,41 @@
 
 This rule applies to **every role** in this AI team.
 
+This branch is a **dedicated migration team** with a strict 4-node task chain.
+
 ## Allowed messaging path (required)
 
 - **Send messages only via** `atwf` wrappers (policy-enforced):
   - Notice (FYI, no reply expected): `bash .codex/skills/ai-team-workflow/scripts/atwf notice ...`
   - Action (instruction, no immediate ACK): `bash .codex/skills/ai-team-workflow/scripts/atwf action ...`
   - Reply-needed (must reply): `bash .codex/skills/ai-team-workflow/scripts/atwf gather ...` / `bash .codex/skills/ai-team-workflow/scripts/atwf respond ...`
-  - Direct question (discouraged; may require CLI injection): `bash .codex/skills/ai-team-workflow/scripts/atwf ask ...`
-  - Handoff/authorization (avoid relaying): `bash .codex/skills/ai-team-workflow/scripts/atwf handoff ...`
-  - Legacy (operator-only): `atwf send` / `atwf broadcast` (disabled inside worker tmux; use `notice` / `action`)
+  - Legacy (operator-only): `atwf ask` / `atwf send` / `atwf broadcast` (discouraged; use inbox-backed `notice` / `action`)
 - Check hard permissions any time:
   - `bash .codex/skills/ai-team-workflow/scripts/atwf policy`
   - `bash .codex/skills/ai-team-workflow/scripts/atwf perms-self`
 - Any progress/completion/design conclusion **must** be reported via `atwf report-up` (or `atwf report-to {{USER_ROLE}}`) to count as “reported”; otherwise the parent may treat it as “not received”.
+
+## Migration team topology (hard constraint)
+
+- The only supported org tree is:
+  - `coord` (user-facing root)
+    - `task_admin-*` (one per migration task)
+      - `migrator-*`
+      - `reviewer-*`
+      - `regress-*`
+- For each task, the chain is **exactly 4 nodes**: `task_admin + migrator + reviewer + regress`.
+- Normal communication must stay within the chain:
+  - `migrator/reviewer/regress` report to `task_admin` only.
+  - `task_admin` reports to `coord` only.
+
+## Shared worktree (hard constraint)
+
+- For each task chain, `task_admin` creates **one shared Git worktree** and sends the absolute `WORKTREE_DIR` to `migrator/reviewer/regress` via `atwf action`.
+- `WORKTREE_DIR` is authoritative for the task chain. All work must happen inside it (`cd <WORKTREE_DIR>`).
+- Concurrency rule:
+  - only `migrator` may modify/commit code inside `WORKTREE_DIR`
+  - `reviewer` and `regress` are read-only (diff/test only; never edit files; never commit)
+- Child roles must NOT create their own worktree for the task (do not run `atwf worktree-create-self` unless explicitly instructed by `task_admin`).
 
 ## Queue-safe message protocol (mandatory)
 
@@ -33,7 +55,7 @@ Hard rules:
 - If the same `id` appears multiple times, **process it once** (dedupe).
 - Reply **once per batch**. Start your reply with: `ACK ids: 000123, 000124`.
 - Do not re-quote entire incoming messages; reference by `id` to save tokens.
-- For `kind=send|broadcast|bootstrap|handoff|task`: keep replies minimal (ACK + any required action only).
+- For `kind=send|broadcast|bootstrap|task`: keep replies minimal (ACK + any required action only).
 
 ## Inbox-backed message bodies (mandatory)
 
@@ -119,15 +141,18 @@ Hard rules:
 
 ## Drive loop (mandatory)
 
-To prevent “everyone idle, nobody kicks off the next iteration”, the team uses a human-controlled drive loop.
+To prevent “stalled work with nobody driving”, the team uses a human-controlled drive loop.
 
 Hard rules:
 - `team.drive.mode` is USER/OPERATOR-ONLY configuration.
 - Any worker (including `coord`) MUST NOT edit: `.codex/skills/ai-team-workflow/scripts/atwf_config.yaml`.
-- `[DRIVE]` means **“ALL IDLE + INBOX EMPTY = abnormal stall”** (no one is driving work).
-- On `[DRIVE]`, the driver’s only job is:
+- For this migration team, `[DRIVE]` is evaluated **per task chain** (one chain per `task_admin-*`):
+  - chain must be complete: `task_admin + migrator + reviewer + regress` (exactly 4 nodes)
+  - and the chain must be stalled: all 4 nodes `idle` + all 4 inboxes empty
+  - the `[DRIVE]` ticket is delivered to the corresponding `task_admin-*` (not to `coord`).
+- On `[DRIVE]`, the task_admin’s only job is:
   - diagnose the root cause (run: `atwf state`, `atwf list`, `atwf inbox`), and
-  - re-drive work by assigning `action` tasks (owners + next action + ETA) or presenting concrete blocker evidence (with handoff when needed).
+  - re-drive work by assigning `action` tasks (owners + next action + ETA) or presenting concrete blocker evidence.
 
 ## Forbidden (do NOT do this)
 
@@ -152,5 +177,5 @@ If you must debug a delivery issue, ask **Coordinator** for approval and documen
 
 ## If you think an exception is needed
 
-- Ask **Coordinator** first and wait for approval.
-- If approved, document the exact command and outcome in `{{TEAM_DIR}}/design/<your-full>.md` so the team can reproduce/debug.
+- Ask your **task_admin** first and wait for approval.
+- If the exception impacts multiple tasks or team governance, escalate to **coord**.

@@ -13,6 +13,11 @@ Hard rules (must follow):
   - PASS, or
   - FAIL with a **full issue list** (grouped by severity).
 
+Worktree rule (shared worktree; read-only):
+- Your `task_admin` will send you the absolute `WORKTREE_DIR` (shared worktree) in an `action` message.
+- You MUST review from inside that directory (`cd <WORKTREE_DIR>`).
+- You MUST NOT modify files or commit anything in that worktree. Only report the issue list.
+
 Messaging intents (mandatory):
 - `notice`: FYI only. On receive: `atwf inbox-open <id>` then `atwf inbox-ack <id>`. Do **NOT** `report-up` “received/ok”.
 - `reply-needed`: explicit answer required. Use `atwf respond <req-id> ...` (or `--blocked --snooze --waiting-on ...`).

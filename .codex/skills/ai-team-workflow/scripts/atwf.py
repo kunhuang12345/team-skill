@@ -20,11 +20,9 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_ROLES = ("task_admin", "migrator", "reviewer", "regress", "coord", "pm", "arch", "prod", "dev", "qa", "ops", "liaison")
+DEFAULT_ROLES = ("coord", "task_admin", "migrator", "reviewer", "regress")
 DEFAULT_ROLE_SCOPES: dict[str, str] = {
     "coord": "internal routing + escalation triage",
-    "liaison": "user communication + clarifications",
-    "pm": "overall delivery / milestone planning",
     "task_admin": "single-task dispatcher + phase gatekeeper",
     "migrator": "execute migration per workflow/specs",
     "reviewer": "code quality gate (review changed files only)",
@@ -391,7 +389,7 @@ def _policy() -> TeamPolicy:
         enabled = set(default_enabled)
 
     root_role = _norm_role(_cfg_get_str(cfg, ("team", "policy", "root_role"), default="coord")) or "coord"
-    user_role = _norm_role(_cfg_get_str(cfg, ("team", "policy", "user_role"), default="liaison")) or "liaison"
+    user_role = _norm_role(_cfg_get_str(cfg, ("team", "policy", "user_role"), default="coord")) or "coord"
 
     if enabled and root_role not in enabled:
         raise SystemExit(f"❌ policy.root_role={root_role!r} is not in enabled_roles")
@@ -723,10 +721,10 @@ def _init_children_specs(policy: TeamPolicy) -> list[tuple[str, str, str]]:
 
     Config:
       - team.init.children: list of:
-          - "pm"
-          - {role: pm, label: main, scope: "..."}
-      - team.init.children_roles: ["pm", "liaison"] (legacy/simple)
-    Default (when unset): ["pm", policy.user_role] (dedup + skip root_role).
+          - "task_admin"
+          - {role: task_admin, label: main, scope: "..."}
+      - team.init.children_roles: ["task_admin"] (legacy/simple)
+    Default (when unset): ["task_admin", policy.user_role] (dedup + skip root_role).
     """
     cfg = _read_yaml_or_json(_config_file())
 
@@ -757,7 +755,7 @@ def _init_children_specs(policy: TeamPolicy) -> list[tuple[str, str, str]]:
                     parsed.append((r, "main", DEFAULT_ROLE_SCOPES.get(r, "")))
 
     if not parsed:
-        first = "task_admin" if "task_admin" in policy.enabled_roles else "pm"
+        first = "task_admin" if "task_admin" in policy.enabled_roles else policy.root_role
         parsed = [(first, "main", DEFAULT_ROLE_SCOPES.get(first, "")), (policy.user_role, "main", DEFAULT_ROLE_SCOPES.get(policy.user_role, ""))]
 
     out: list[tuple[str, str, str]] = []
@@ -786,7 +784,7 @@ def _init_task_owner_role() -> str:
     policy = _policy()
     if "task_admin" in policy.enabled_roles:
         return "task_admin"
-    return "pm" if "pm" in policy.enabled_roles else policy.root_role
+    return policy.root_role
 
 
 @lru_cache(maxsize=1)
@@ -1711,18 +1709,6 @@ def _design_summary_path(team_dir: Path) -> Path:
     return team_dir / "design.md"
 
 
-def _ops_dir(team_dir: Path) -> Path:
-    return team_dir / "ops"
-
-
-def _ops_env_notes_path(team_dir: Path) -> Path:
-    return _ops_dir(team_dir) / "env.md"
-
-
-def _ops_host_deps_path(team_dir: Path) -> Path:
-    return _ops_dir(team_dir) / "host-deps.md"
-
-
 def _design_member_path(team_dir: Path, full: str) -> Path:
     safe = full.strip()
     if not safe:
@@ -1787,7 +1773,6 @@ def _read_task_content(args: argparse.Namespace) -> tuple[str | None, str | None
 def _ensure_share_layout(team_dir: Path) -> None:
     team_dir.mkdir(parents=True, exist_ok=True)
     _design_dir(team_dir).mkdir(parents=True, exist_ok=True)
-    _ops_dir(team_dir).mkdir(parents=True, exist_ok=True)
     _inbox_root(team_dir).mkdir(parents=True, exist_ok=True)
     _requests_root(team_dir).mkdir(parents=True, exist_ok=True)
     _state_root(team_dir).mkdir(parents=True, exist_ok=True)
@@ -1811,7 +1796,7 @@ def _drive_state_path(team_dir: Path) -> Path:
 
 def _default_drive_state(*, mode: str) -> dict[str, Any]:
     return {
-        "version": 1,
+        "version": 2,
         "created_at": _now(),
         "updated_at": _now(),
         "mode": _normalize_drive_mode(mode) if mode else _DRIVE_MODE_DEFAULT,
@@ -1819,6 +1804,8 @@ def _default_drive_state(*, mode: str) -> dict[str, Any]:
         "last_msg_id": "",
         "last_reason": "",
         "last_driver_full": "",
+        # Per-task drive tracking (keyed by task_admin full name).
+        "tasks": {},
     }
 
 
@@ -1830,13 +1817,17 @@ def _load_drive_state_unlocked(team_dir: Path, *, mode_default: str) -> dict[str
         _write_json_atomic(path, data)
         return data
 
-    data.setdefault("version", 1)
+    data.setdefault("version", 2)
     data.setdefault("created_at", _now())
     data["updated_at"] = _now()
     data.setdefault("last_triggered_at", "")
     data.setdefault("last_msg_id", "")
     data.setdefault("last_reason", "")
     data.setdefault("last_driver_full", "")
+    tasks = data.get("tasks")
+    if not isinstance(tasks, dict):
+        tasks = {}
+    data["tasks"] = tasks
 
     # Config is authoritative; keep the drive state's `mode` as an informational mirror.
     mode = _normalize_drive_mode(str(mode_default or ""))
@@ -1943,7 +1934,7 @@ def _set_drive_mode_config(mode: str) -> str:
 
 def _default_reply_drive_state() -> dict[str, Any]:
     return {
-        "version": 1,
+        "version": 2,
         "created_at": _now(),
         "updated_at": _now(),
         "last_triggered_at": "",
@@ -1951,6 +1942,8 @@ def _default_reply_drive_state() -> dict[str, Any]:
         "last_request_id": "",
         "last_target_base": "",
         "last_target_full": "",
+        # Per-task reply-drive tracking (keyed by task_admin full name).
+        "tasks": {},
     }
 
 
@@ -1962,7 +1955,7 @@ def _load_reply_drive_state_unlocked(team_dir: Path) -> dict[str, Any]:
         _write_json_atomic(path, data)
         return data
 
-    data.setdefault("version", 1)
+    data.setdefault("version", 2)
     data.setdefault("created_at", _now())
     data["updated_at"] = _now()
     data.setdefault("last_triggered_at", "")
@@ -1970,6 +1963,10 @@ def _load_reply_drive_state_unlocked(team_dir: Path) -> dict[str, Any]:
     data.setdefault("last_request_id", "")
     data.setdefault("last_target_base", "")
     data.setdefault("last_target_full", "")
+    tasks = data.get("tasks")
+    if not isinstance(tasks, dict):
+        tasks = {}
+    data["tasks"] = tasks
     return data
 
 
@@ -2691,44 +2688,11 @@ def _ensure_task_and_design_files(team_dir: Path, *, task_content: str | None, t
 
     summary_path = _design_summary_path(team_dir)
     if not summary_path.exists():
-        seed = "# Consolidated Design\n\n"
+        seed = "# Team Notes\n\n"
         if task_path.exists():
             seed += f"- Task: `{task_path}`\n\n"
-        seed += "PM should consolidate module/team designs into this file.\n"
+        seed += "Use this file for any consolidated notes relevant to the migration tasks.\n"
         _write_text_atomic(summary_path, seed)
-
-    env_notes_path = _ops_env_notes_path(team_dir)
-    if not env_notes_path.exists():
-        seed = (
-            "# Ops: Environment Notes\n\n"
-            "## Policy (development-time)\n"
-            "- Ops manages the project environment.\n"
-            "- Ops can only operate local Docker (no remote hosts).\n"
-            "- For a single project, all services must live in a single `docker-compose` file.\n"
-            "- If anything must be installed on the host (e.g. `apt`, `brew`, `curl` download/unpack), it must be recorded in:\n"
-            f"  - `{_ops_host_deps_path(team_dir)}`\n\n"
-            "## Docker Compose\n"
-            "- Keep one compose file for the whole project (commonly repo root `docker-compose.yml` or `compose.yaml`).\n"
-            "- Prefer bind mounts + named volumes; avoid undocumented host paths.\n"
-            "- Put secrets in `.env` (not committed) and document required keys.\n\n"
-            "## Change Log\n"
-            "- Record noteworthy environment changes here (date + what + why).\n"
-        )
-        _write_text_atomic(env_notes_path, seed)
-
-    host_deps_path = _ops_host_deps_path(team_dir)
-    if not host_deps_path.exists():
-        seed = (
-            "# Ops: Host Dependencies (must document)\n\n"
-            "Record any dependencies installed outside Docker (OS-level installs, downloaded binaries, etc.).\n\n"
-            "## APT (Linux)\n"
-            "- (date) `sudo apt-get install ...`  # why\n\n"
-            "## Brew (macOS)\n"
-            "- (date) `brew install ...`  # why\n\n"
-            "## Downloaded binaries\n"
-            "- (date) url: ...  dest: ...  sha256: ...  # why\n"
-        )
-        _write_text_atomic(host_deps_path, seed)
 
     return task_path if task_path.exists() else None
 
@@ -3173,7 +3137,7 @@ def _init_trio(
         root_full, _ = up_root(role=root_role, base=base_root, scope=DEFAULT_ROLE_SCOPES.get(root_role, ""))
         out[root_role] = root_full
 
-    # 2) Children under root (PM + Liaison).
+    # 2) Children under root (configured roles, typically task_admin).
     for role, base, scope in init_children:
         child_full: str | None = None
         if not force_new:
@@ -3371,7 +3335,7 @@ def cmd_spawn(args: argparse.Namespace) -> int:
         raise SystemExit(f"❌ parent not found in registry: {parent_full}")
     parent_role = str(parent_m.get("role", "")).strip()
     if not parent_role:
-        raise SystemExit(f"❌ parent has no role recorded: {parent_full}")
+        raise SystemExit(f"❌ parent role missing in registry: {parent_full}")
     policy = _policy()
     allowed = policy.can_hire.get(parent_role, frozenset())
     if role not in allowed:
@@ -3541,7 +3505,10 @@ def cmd_report_up(args: argparse.Namespace) -> int:
     parent = sender.get("parent")
     parent_full = str(parent).strip() if isinstance(parent, str) else ""
     if not parent_full:
-        raise SystemExit("❌ no parent recorded for this worker (root). Use report-to <coord|liaison|name> instead.")
+        root_role = _policy().root_role
+        user_role = _policy().user_role
+        hint = "|".join(sorted({root_role, user_role, "name"}))
+        raise SystemExit(f"❌ no parent recorded for this worker (root). Use report-to <{hint}> instead.")
 
     parent_m = _resolve_member(data, parent_full) or {}
     to_role = _member_role(parent_m)
@@ -6038,6 +6005,19 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
         if not isinstance(members, list):
             members = []
 
+        member_by_full: dict[str, dict[str, Any]] = {}
+        parent_by_full: dict[str, str] = {}
+        for m in members:
+            if not isinstance(m, dict):
+                continue
+            full0 = str(m.get("full", "")).strip()
+            if not full0:
+                continue
+            member_by_full[full0] = m
+            parent = m.get("parent")
+            parent_s = str(parent).strip() if isinstance(parent, str) else ""
+            parent_by_full[full0] = parent_s
+
         now_dt = datetime.now()
         now_iso_tick = iso(now_dt)
         drive_mode = _drive_mode_config_hot()
@@ -6049,6 +6029,10 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
         member_count = 0
         all_idle = True
         any_pending = False
+        status_by_full: dict[str, str] = {}
+        base_by_full: dict[str, str] = {}
+        role_by_full: dict[str, str] = {}
+        pending_by_full: dict[str, int] = {}
 
         for m in members:
             if not isinstance(m, dict):
@@ -6148,18 +6132,51 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
                 any_pending = True
             if status != _STATE_STATUS_IDLE:
                 all_idle = False
+            status_by_full[full] = status
+            base_by_full[full] = base
+            role_by_full[full] = role
+            pending_by_full[full] = int(pending)
 
             # Working stale inbox governance:
             # If the worker is working and has pending inbox messages older than N seconds,
-            # write an inbox-only alert to coord (cooldown applies).
+            # write an inbox-only alert to the owning task_admin (cooldown applies).
             if (
-                coord_full
-                and coord_base
-                and status == _STATE_STATUS_WORKING
+                status == _STATE_STATUS_WORKING
                 and not dry_run
-                and full != coord_full
             ):
                 if pending > 0:
+                    # Find the nearest task_admin ancestor for this worker.
+                    # If the worker itself is task_admin, alert coord instead (avoid self-alert loops).
+                    alert_full = ""
+                    alert_base = ""
+                    alert_role = ""
+                    if (role or "").strip() == "task_admin":
+                        if coord_full and coord_base and full != coord_full:
+                            alert_full = coord_full
+                            alert_base = coord_base
+                            alert_role = policy.root_role
+                    else:
+                        cur = full
+                        for _ in range(16):
+                            p = parent_by_full.get(cur, "").strip()
+                            if not p:
+                                break
+                            parent_member = member_by_full.get(p) or {}
+                            pr = str(parent_member.get("role", "")).strip()
+                            if pr == "task_admin":
+                                alert_full = p
+                                alert_base = _member_base(parent_member) or p
+                                alert_role = "task_admin"
+                                break
+                            cur = p
+                        if not alert_full and coord_full and coord_base:
+                            alert_full = coord_full
+                            alert_base = coord_base
+                            alert_role = policy.root_role
+
+                    if not alert_full or not alert_base:
+                        continue
+
                     _min_n, min_id = _inbox_pending_min_id(team_dir, to_base=base)
                     created = _inbox_message_created_at(team_dir, to_base=base, msg_id=min_id) if min_id else None
                     if created is not None:
@@ -6200,29 +6217,30 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
                                 from_full="atwf-watch",
                                 from_base="atwf-watch",
                                 from_role="system",
-                                to_full=coord_full,
-                                to_base=coord_base,
-                                to_role=policy.root_role,
+                                to_full=alert_full,
+                                to_base=alert_base,
+                                to_role=alert_role,
                                 body=body,
                             )
-                            # Also inject a short notice into coord's CLI so the coordinator
-                            # sees governance alerts even if they aren't polling inbox.
-                            short = (
-                                "[ALERT] stale inbox while working\n"
-                                f"worker={base} role={role or '?'} pending={unread}+{overflow} "
-                                f"oldest={min_id} age_s={int(age_s)}\n"
-                                f"inbox id={msg_id} (run: atwf inbox-open {msg_id} --target coord)\n"
-                            )
-                            wrapped = _wrap_team_message(
-                                team_dir,
-                                kind="alert-stale-inbox",
-                                sender_full="atwf-watch",
-                                sender_role="system",
-                                to_full=coord_full,
-                                body=short,
-                                msg_id=msg_id,
-                            )
-                            _run_twf(twf, ["send", coord_full, wrapped])
+                            # Also inject a short notice into the alert target's CLI so they
+                            # see governance alerts even if they aren't polling inbox.
+                            if _tmux_running(alert_full):
+                                short = (
+                                    "[ALERT] stale inbox while working\n"
+                                    f"worker={base} role={role or '?'} pending={unread}+{overflow} "
+                                    f"oldest={min_id} age_s={int(age_s)}\n"
+                                    f"inbox id={msg_id} (run: atwf inbox-open {msg_id})\n"
+                                )
+                                wrapped = _wrap_team_message(
+                                    team_dir,
+                                    kind="alert-stale-inbox",
+                                    sender_full="atwf-watch",
+                                    sender_role="system",
+                                    to_full=alert_full,
+                                    body=short,
+                                    msg_id=msg_id,
+                                )
+                                _run_twf(twf, ["send", alert_full, wrapped])
                             _write_agent_state(
                                 team_dir,
                                 full=full,
@@ -6333,117 +6351,163 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
                     # We wrote a new inbox message; treat as pending to avoid drive on this tick.
                     any_pending = True
 
-        # Reply-drive: if the whole team is idle and all inboxes are empty, but reply-needed
-        # requests are pending, wake the best "debtor" instead of driving coord.
-        suppress_drive = False
+        # Refresh pending stats after any finalize writes, so drive checks do not
+        # spuriously fire on the same tick.
+        if not dry_run:
+            for full, base in list(base_by_full.items()):
+                if not base:
+                    continue
+                unread, overflow, _ids = _inbox_unread_stats(team_dir, to_base=base)
+                pending_by_full[full] = int(unread + overflow)
+
+        # Task-level reply-drive + drive:
+        # Treat each task_admin subtree as an independent migration task.
+        # We do NOT use the root-level "all team idle" drive in this migration team.
         if (
             member_count > 0
-            and all_idle
-            and not any_pending
             and not dry_run
             and drive_mode == _DRIVE_MODE_RUNNING
         ):
-            _finalizable2, has_pending_replies, due_targets, waiters = _scan_reply_requests(team_dir, now_dt=now_dt)
-            if has_pending_replies:
-                # If nothing is due (everyone snoozed), suppress drive (standby-like behavior).
-                if not due_targets:
-                    suppress_drive = True
-                else:
-                    running: list[tuple[int, str, str, str]] = []
-                    # (priority, request_id, base, full)
-                    for req_id, base, role, st in due_targets:
-                        m = _resolve_member(data, base) or {}
+            children_map = _tree_children(data)
+            task_admins = _members_by_role(data, "task_admin")
+            if task_admins:
+                cooldown_drive_s = _drive_cooldown_s()
+
+                # Scan reply-needed once; we'll filter per task subtree.
+                _finalizable2, _has_pending_replies, due_targets, waiters = _scan_reply_requests(team_dir, now_dt=now_dt)
+
+                lock3 = _state_lock_path(team_dir)
+                with _locked(lock3):
+                    _ensure_share_layout(team_dir)
+                    drive_state = _load_drive_state_unlocked(team_dir, mode_default=drive_mode)
+                    reply_state = _load_reply_drive_state_unlocked(team_dir)
+
+                drive_tasks = drive_state.get("tasks")
+                if not isinstance(drive_tasks, dict):
+                    drive_tasks = {}
+                reply_tasks = reply_state.get("tasks")
+                if not isinstance(reply_tasks, dict):
+                    reply_tasks = {}
+
+                drive_tasks_dirty = False
+                reply_tasks_dirty = False
+
+                def subtree_nodes(root_full: str) -> list[str]:
+                    seen: set[str] = set()
+                    out: list[str] = []
+                    stack = [root_full]
+                    while stack:
+                        cur = stack.pop()
+                        if cur in seen:
+                            continue
+                        seen.add(cur)
+                        if cur in status_by_full:
+                            out.append(cur)
+                        for c in children_map.get(cur, []):
+                            if c and c not in seen:
+                                stack.append(c)
+                    return out
+
+                for admin_full in sorted(task_admins):
+                    nodes = subtree_nodes(admin_full)
+                    if not nodes:
+                        continue
+                    # This migration team treats a "task chain" as exactly 4 nodes:
+                    #   task_admin + migrator + reviewer + regress.
+                    # Do not drive on incomplete chains (e.g., task_admin created but workers not spawned yet).
+                    if len(nodes) != 4:
+                        continue
+                    roles_present = {str(role_by_full.get(n, "") or "").strip() for n in nodes}
+                    if roles_present != {"task_admin", "migrator", "reviewer", "regress"}:
+                        continue
+                    # Stalled task = all idle + no inbox pending anywhere in the task subtree.
+                    if not all(status_by_full.get(n) == _STATE_STATUS_IDLE for n in nodes):
+                        continue
+                    if any(int(pending_by_full.get(n, 0) or 0) > 0 for n in nodes):
+                        continue
+
+                    # Cooldown per task_admin.
+                    rec = drive_tasks.get(admin_full)
+                    if not isinstance(rec, dict):
+                        rec = {}
+                    last_drive_dt = parse_dt(str(rec.get("last_triggered_at", "") or ""))
+                    if last_drive_dt is not None and (now_dt - last_drive_dt).total_seconds() < max(0.0, cooldown_drive_s):
+                        continue
+
+                    # Reply-drive per task subtree (wake a debtor instead of driving the admin).
+                    subtree_set = set(nodes)
+                    has_pending_in_subtree = False
+                    for base, cnt in waiters.items():
+                        try:
+                            n = int(cnt or 0)
+                        except Exception:
+                            n = 0
+                        if n <= 0:
+                            continue
+                        m = _resolve_member(data, str(base)) or {}
                         full = str(m.get("full", "")).strip()
-                        if full and _tmux_running(full):
+                        if full and full in subtree_set:
+                            has_pending_in_subtree = True
+                            break
+
+                    runnable: list[tuple[int, str, str, str]] = []
+                    if due_targets:
+                        for req_id, base, _role, _st in due_targets:
+                            m = _resolve_member(data, base) or {}
+                            full = str(m.get("full", "")).strip()
+                            if not full or full not in subtree_set:
+                                continue
+                            if not _tmux_running(full):
+                                continue
                             prio = int(waiters.get(base, 0) or 0)
-                            running.append((prio, req_id, base, full))
-                    # If at least one due target is runnable, suppress drive and let reply-drive handle it.
-                    if running:
-                        suppress_drive = True
+                            runnable.append((prio, req_id, base, full))
 
-                        cooldown_drive_s = _drive_cooldown_s()
-                        lock2 = _state_lock_path(team_dir)
-                        with _locked(lock2):
-                            _ensure_share_layout(team_dir)
-                            reply_state = _load_reply_drive_state_unlocked(team_dir)
-                        last_reply_dt = parse_dt(str(reply_state.get("last_triggered_at", "") or ""))
-                        allow = last_reply_dt is None or (now_dt - last_reply_dt).total_seconds() >= max(0.0, cooldown_drive_s)
+                    if has_pending_in_subtree:
+                        # If nothing is due (everyone snoozed), suppress drive for this task.
+                        if not runnable:
+                            continue
 
-                        if allow:
-                            running.sort(key=lambda t: (-t[0], t[1], t[2]))
-                            _prio, rid, base, full = running[0]
-                            role = _member_role(_resolve_member(data, full) or {}) or "?"
+                        rrec = reply_tasks.get(admin_full)
+                        if not isinstance(rrec, dict):
+                            rrec = {}
+                        last_reply_dt = parse_dt(str(rrec.get("last_triggered_at", "") or ""))
+                        allow_reply = last_reply_dt is None or (now_dt - last_reply_dt).total_seconds() >= max(0.0, cooldown_drive_s)
+                        if allow_reply:
+                            runnable.sort(key=lambda t: (-t[0], t[1], t[2]))
+                            _prio, rid, base, full = runnable[0]
+                            role = role_by_full.get(full) or _member_role(_resolve_member(data, full) or {}) or "?"
                             if full and _tmux_running(full):
-                                if not dry_run:
-                                    _write_agent_state(
-                                        team_dir,
-                                        full=full,
-                                        base=base,
-                                        role=role,
-                                        update={
-                                            "status": _STATE_STATUS_WORKING,
-                                            "wakeup_sent_at": now_iso_tick,
-                                            "wakeup_reason": f"reply-needed:{rid}",
-                                            "idle_since": "",
-                                            "idle_inbox_empty_at": "",
-                                        },
-                                    )
-                                _run_twf(twf, ["send", full, reply_message])
-                                _write_reply_drive_state(
+                                _write_agent_state(
                                     team_dir,
+                                    full=full,
+                                    base=base,
+                                    role=role,
                                     update={
-                                        "last_triggered_at": now_iso_tick,
-                                        "last_reason": "all_idle_inbox_empty_reply_pending",
-                                        "last_request_id": rid,
-                                        "last_target_base": base,
-                                        "last_target_full": full,
+                                        "status": _STATE_STATUS_WORKING,
+                                        "wakeup_sent_at": now_iso_tick,
+                                        "wakeup_reason": f"reply-needed:{rid}",
+                                        "idle_since": "",
+                                        "idle_inbox_empty_at": "",
                                     },
                                 )
-                    else:
-                        # Due replies exist but no runnable tmux target; allow normal drive to intervene.
-                        suppress_drive = False
+                                _run_twf(twf, ["send", full, reply_message])
+                                reply_tasks[admin_full] = {
+                                    "last_triggered_at": now_iso_tick,
+                                    "last_reason": "task_idle_inbox_empty_reply_pending",
+                                    "last_request_id": rid,
+                                    "last_target_base": base,
+                                    "last_target_full": full,
+                                }
+                                reply_tasks_dirty = True
+                        # Regardless of reply-drive cooldown, suppress drive when reply-needed is pending.
+                        continue
 
-        # Drive loop (anti-stall): if the whole team is idle and all inboxes are empty,
-        # wake a single driver to re-kickoff work (only when drive mode is running).
-        if (
-            member_count > 0
-            and all_idle
-            and not any_pending
-            and not dry_run
-            and drive_mode == _DRIVE_MODE_RUNNING
-            and not suppress_drive
-        ):
-            cooldown_drive_s = _drive_cooldown_s()
-            driver_role = _drive_driver_role()
-            backup_role = _drive_backup_role()
-
-            lock = _state_lock_path(team_dir)
-            with _locked(lock):
-                _ensure_share_layout(team_dir)
-                drive_state = _load_drive_state_unlocked(team_dir, mode_default=drive_mode)
-            last_drive_dt = parse_dt(str(drive_state.get("last_triggered_at", "") or ""))
-            if last_drive_dt is None or (now_dt - last_drive_dt).total_seconds() >= max(0.0, cooldown_drive_s):
-                driver_m = _resolve_latest_by_role(data, driver_role)
-                driver_full = str(driver_m.get("full", "")).strip() if isinstance(driver_m, dict) else ""
-                driver_base = _member_base(driver_m) if isinstance(driver_m, dict) else ""
-                driver_base = driver_base or driver_full
-
-                target_full = driver_full
-                target_role = driver_role
-                target_base = driver_base
-                if target_full and not _tmux_running(target_full):
-                    backup_m = _resolve_latest_by_role(data, backup_role)
-                    backup_full = str(backup_m.get("full", "")).strip() if isinstance(backup_m, dict) else ""
-                    backup_base = _member_base(backup_m) if isinstance(backup_m, dict) else ""
-                    if backup_full and _tmux_running(backup_full):
-                        target_full = backup_full
-                        target_role = backup_role
-                        target_base = backup_base or backup_full
-
-                if target_full:
+                    # Drive the task_admin (write inbox + inject a short prompt if tmux is running).
+                    admin_base = base_by_full.get(admin_full) or _member_base(_resolve_member(data, admin_full) or {}) or admin_full
                     msg_id = _next_msg_id(team_dir)
                     body = (
-                        "[DRIVE] team stalled: ALL IDLE + INBOX EMPTY\n"
+                        "[DRIVE] task stalled: ALL IDLE + INBOX EMPTY\n"
+                        f"- task_admin: {admin_full}\n"
                         f"- detected_at: {now_iso_tick}\n"
                         "- meaning: no one is driving work. This is an ABNORMAL STALL.\n"
                         "\n"
@@ -6452,7 +6516,7 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
                         "- atwf list\n"
                         "- atwf inbox (your own inbox)\n"
                         "\n"
-                        'Summarize why the team reached "all idle + inbox empty", find the root cause, then re-drive the team back to work.\n'
+                        'Summarize why the task reached "all idle + inbox empty", find the root cause, then re-drive the task back to work.\n'
                     )
                     _write_inbox_message(
                         team_dir,
@@ -6461,35 +6525,41 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
                         from_full="atwf-drive",
                         from_base="atwf-drive",
                         from_role="system",
-                        to_full=target_full,
-                        to_base=target_base,
-                        to_role=target_role,
+                        to_full=admin_full,
+                        to_base=admin_base,
+                        to_role="task_admin",
                         body=body,
                     )
-                    short = (
-                        "[DRIVE] team stalled: ALL IDLE + INBOX EMPTY\n"
-                        f"inbox id={msg_id} (open: atwf inbox-open {msg_id})\n"
-                        "Action: diagnose root cause, then re-drive the team back to work.\n"
-                    )
-                    wrapped = _wrap_team_message(
-                        team_dir,
-                        kind="drive",
-                        sender_full="atwf-drive",
-                        sender_role="system",
-                        to_full=target_full,
-                        body=short,
-                        msg_id=msg_id,
-                    )
-                    _run_twf(twf, ["send", target_full, wrapped])
-                    _write_drive_state(
-                        team_dir,
-                        update={
-                            "last_triggered_at": now_iso_tick,
-                            "last_msg_id": msg_id,
-                            "last_reason": "all_idle_inbox_empty",
-                            "last_driver_full": target_full,
-                        },
-                    )
+                    if _tmux_running(admin_full):
+                        short = (
+                            "[DRIVE] task stalled: ALL IDLE + INBOX EMPTY\n"
+                            f"task_admin={admin_base}\n"
+                            f"inbox id={msg_id} (open: atwf inbox-open {msg_id})\n"
+                            "Action: diagnose root cause, then re-drive the task back to work.\n"
+                        )
+                        wrapped = _wrap_team_message(
+                            team_dir,
+                            kind="drive",
+                            sender_full="atwf-drive",
+                            sender_role="system",
+                            to_full=admin_full,
+                            body=short,
+                            msg_id=msg_id,
+                        )
+                        _run_twf(twf, ["send", admin_full, wrapped])
+
+                    drive_tasks[admin_full] = {
+                        "last_triggered_at": now_iso_tick,
+                        "last_msg_id": msg_id,
+                        "last_reason": "task_idle_inbox_empty",
+                        "last_driver_full": admin_full,
+                    }
+                    drive_tasks_dirty = True
+
+                if reply_tasks_dirty:
+                    _write_reply_drive_state(team_dir, update={"tasks": reply_tasks})
+                if drive_tasks_dirty:
+                    _write_drive_state(team_dir, update={"tasks": drive_tasks})
 
         if once:
             return 0
@@ -6738,17 +6808,18 @@ def cmd_remove(args: argparse.Namespace) -> int:
     team_dir = _default_team_dir()
     registry = _registry_path(team_dir)
 
-    pm_full = _require_full_name(args.pm_full)
+    root_full = _require_full_name(args.root_full)
+    root_role = _policy().root_role
 
     lock = team_dir / ".lock"
     with _locked(lock):
         data = _load_registry(registry)
-        pm = _resolve_member(data, pm_full)
-        if not pm:
-            raise SystemExit(f"❌ pm not found in registry: {pm_full}")
-        role = str(pm.get("role", "")).strip()
-        if role != "pm":
-            raise SystemExit(f"❌ remove only supports PM. Provided worker role={role!r} full={pm_full}")
+        root = _resolve_member(data, root_full)
+        if not root:
+            raise SystemExit(f"❌ root not found in registry: {root_full}")
+        role = str(root.get("role", "")).strip()
+        if role != root_role:
+            raise SystemExit(f"❌ remove expects root_role={root_role!r}. Provided worker role={role!r} full={root_full}")
 
         members = data.get("members", [])
         if not isinstance(members, list) or not members:
@@ -6764,7 +6835,7 @@ def cmd_remove(args: argparse.Namespace) -> int:
                 continue
             to_remove.append(full)
 
-    # Remove everything recorded in the registry (team disband), with PM last.
+    # Remove everything recorded in the registry (team disband), with root last.
     uniq: list[str] = []
     seen: set[str] = set()
     for full in to_remove:
@@ -6772,8 +6843,8 @@ def cmd_remove(args: argparse.Namespace) -> int:
             seen.add(full)
             uniq.append(full)
 
-    uniq_no_pm = [n for n in uniq if n != pm_full]
-    ordered = uniq_no_pm + [pm_full] if pm_full in seen else uniq_no_pm
+    uniq_no_root = [n for n in uniq if n != root_full]
+    ordered = uniq_no_root + [root_full] if root_full in seen else uniq_no_root
 
     if args.dry_run:
         print("\n".join(ordered))
@@ -6805,11 +6876,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="atwf", add_help=True)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    init = sub.add_parser("init", help="init registry and start initial team (root_role + pm + liaison)")
+    init = sub.add_parser("init", help="init registry and start initial team (root_role + configured children)")
     init.add_argument("task", nargs="?", help="task description (saved to share/task.md); or pipe via stdin")
     init.add_argument("--task-file", help="task file path to copy into share/task.md")
     init.add_argument("--registry-only", action="store_true", help="only create registry, do not start workers")
-    init.add_argument("--force-new", action="store_true", help="always start a fresh trio (even if one exists)")
+    init.add_argument("--force-new", action="store_true", help="always start a fresh team (even if one exists)")
     init.add_argument("--no-bootstrap", action="store_true", help="skip sending role templates on creation")
 
     reset = sub.add_parser("reset", help="reset local environment (delete worker state + share; preserve account pool by default)")
@@ -7055,7 +7126,7 @@ def build_parser() -> argparse.ArgumentParser:
     watch_idle.add_argument("--interval", type=float, default=None, help="poll interval seconds (default: config)")
     watch_idle.add_argument("--delay", type=float, default=None, help="wake delay seconds (default: config)")
     watch_idle.add_argument("--message", default="", help="wake message injected into Codex TUI (default: config)")
-    watch_idle.add_argument("--working-stale", type=float, default=None, help="alert coord if a working worker has pending inbox older than N seconds (default: config)")
+    watch_idle.add_argument("--working-stale", type=float, default=None, help="alert task_admin if a working worker has pending inbox older than N seconds (default: config)")
     watch_idle.add_argument("--alert-cooldown", type=float, default=None, help="minimum seconds between alerts per worker (default: config)")
     watch_idle.add_argument("--once", action="store_true", help="run one tick then exit")
     watch_idle.add_argument("--dry-run", action="store_true", help="do not write/send; print nothing, but still polls")
@@ -7077,6 +7148,10 @@ def build_parser() -> argparse.ArgumentParser:
     boot = sub.add_parser("bootstrap", help="send the role prompt template to a worker")
     boot.add_argument("name")
     boot.add_argument("role", choices=enabled_roles)
+
+    remove = sub.add_parser("remove", help="disband the whole team (requires root full name)")
+    remove.add_argument("root_full", help="full name of the root worker (<base>-YYYYmmdd-HHMMSS-pid)")
+    remove.add_argument("--dry-run", action="store_true", help="print workers to remove, without removing")
 
     return p
 
@@ -7203,6 +7278,8 @@ def main(argv: list[str]) -> int:
         return cmd_inbox_pending(args)
     if args.cmd == "bootstrap":
         return cmd_bootstrap(args)
+    if args.cmd == "remove":
+        return cmd_remove(args)
 
     raise SystemExit("❌ unreachable")
 

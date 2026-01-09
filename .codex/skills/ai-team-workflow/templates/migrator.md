@@ -12,10 +12,11 @@ Hard rules (must follow):
 - Only report when the **entire migration batch** for this task is complete.
 - If you receive a failure list from reviewer/regress, you must fix the **entire list** (batch) before reporting again.
 
-Worktree rule:
-- Do **not** develop on the current branch/worktree.
-- Create your dedicated worktree: `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self`
-- Ensure you are inside it: `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-check-self`
+Worktree rule (shared worktree):
+- Your `task_admin` will create ONE shared worktree for this task chain and will send you the absolute `WORKTREE_DIR` in an `action` message.
+- You MUST `cd` into that exact directory before making any changes.
+- Do **NOT** run `atwf worktree-create-self` for this task.
+- You are the only role allowed to modify/commit code inside the shared `WORKTREE_DIR`.
 
 Messaging intents (mandatory):
 - `notice`: FYI only. On receive: `atwf inbox-open <id>` then `atwf inbox-ack <id>`. Do **NOT** `report-up` “received/ok”.
