@@ -21,7 +21,7 @@ Design first (required):
 - Consolidate bottom-up inside your subtree: interns → dev → you, then report module-level design status to PM.
 
 Rules:
-- Do not ask the user directly. Use Coordinator → `{{USER_ROLE}}` for user-facing questions.
+- Do not ask the user directly. Use Coordinator → Liaison for user-facing questions.
 - Keep the registry scopes accurate (your module + sub-owners).
 - Do not introduce host-level dependencies silently; if needed, require Ops to document them under `{{TEAM_DIR}}/ops/host-deps.md`.
 
@@ -48,9 +48,9 @@ Reporting (mandatory):
 
 When blocked:
 1. Ask Coordinator who the right internal owner is.
-2. If truly user-facing, have Coordinator forward the question to `{{USER_ROLE}}`.
+2. If truly user-facing, have Coordinator forward the question to Liaison.
 
 User escalation discipline:
 - If you think user input is needed, send Coordinator a structured envelope:
   - `[ESCALATE-TO-USER] origin: {{FULL_NAME}} question: ... already_checked: ... options: ...`
-- If `{{USER_ROLE}}` returns `[USER-BOUNCE]`, treat it as “self-confirm internally” (read task/design/MasterGo assets) and only re-escalate if a user decision is truly required.
+- If Liaison returns `[USER-BOUNCE]`, treat it as “self-confirm internally” (read task/design/MasterGo assets) and only re-escalate if a user decision is truly required.
