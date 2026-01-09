@@ -845,6 +845,47 @@ def _drive_cooldown_s() -> float:
     return float(n)
 
 
+def _render_drive_template(template: str, *, iso_ts: str, msg_id: str) -> str:
+    s = (template or "").replace("\r\n", "\n").replace("\r", "\n")
+    s = s.replace("{{iso_ts}}", iso_ts)
+    s = s.replace("{{msg_id}}", msg_id)
+    s = s.replace("{{open_cmd}}", f"bash .codex/skills/ai-team-workflow/scripts/atwf inbox-open {msg_id}")
+    return s
+
+
+def _drive_message_body(*, iso_ts: str, msg_id: str) -> str:
+    cfg = _read_yaml_or_json(_config_file())
+    raw = _cfg_get_str(cfg, ("team", "drive", "message", "body"), default="")
+    if raw.strip():
+        return _render_drive_template(raw, iso_ts=iso_ts, msg_id=msg_id).rstrip() + "\n"
+    default = (
+        "[DRIVE] team stalled: ALL IDLE + INBOX EMPTY\n"
+        "- detected_at: {{iso_ts}}\n"
+        "- meaning: no one is driving work. This is an ABNORMAL STALL.\n"
+        "\n"
+        "1) Diagnose now:\n"
+        "- atwf state\n"
+        "- atwf list\n"
+        "- atwf inbox (your own inbox)\n"
+        "\n"
+        'Summarize why the team reached "all idle + inbox empty", find the root cause, then re-drive the team back to work.\n'
+    )
+    return _render_drive_template(default, iso_ts=iso_ts, msg_id=msg_id)
+
+
+def _drive_message_summary(*, iso_ts: str, msg_id: str) -> str:
+    cfg = _read_yaml_or_json(_config_file())
+    raw = _cfg_get_str(cfg, ("team", "drive", "message", "summary"), default="")
+    if raw.strip():
+        return _render_drive_template(raw, iso_ts=iso_ts, msg_id=msg_id).rstrip() + "\n"
+    default = (
+        "[DRIVE] team stalled: ALL IDLE + INBOX EMPTY\n"
+        "inbox id={{msg_id}} (open: {{open_cmd}})\n"
+        "Action: diagnose root cause, then re-drive the team back to work.\n"
+    )
+    return _render_drive_template(default, iso_ts=iso_ts, msg_id=msg_id)
+
+
 @lru_cache(maxsize=1)
 def _state_wake_message() -> str:
     cfg = _read_yaml_or_json(_config_file())
@@ -6312,18 +6353,7 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
 
                 if target_full:
                     msg_id = _next_msg_id(team_dir)
-                    body = (
-                        "[DRIVE] team stalled: ALL IDLE + INBOX EMPTY\n"
-                        f"- detected_at: {now_iso_tick}\n"
-                        "- meaning: no one is driving work. This is an ABNORMAL STALL.\n"
-                        "\n"
-                        "1) Diagnose now:\n"
-                        "- atwf state\n"
-                        "- atwf list\n"
-                        "- atwf inbox (your own inbox)\n"
-                        "\n"
-                        'Summarize why the team reached "all idle + inbox empty", find the root cause, then re-drive the team back to work.\n'
-                    )
+                    body = _drive_message_body(iso_ts=now_iso_tick, msg_id=msg_id)
                     _write_inbox_message(
                         team_dir,
                         msg_id=msg_id,
@@ -6336,11 +6366,7 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
                         to_role=target_role,
                         body=body,
                     )
-                    short = (
-                        "[DRIVE] team stalled: ALL IDLE + INBOX EMPTY\n"
-                        f"inbox id={msg_id} (open: atwf inbox-open {msg_id})\n"
-                        "Action: diagnose root cause, then re-drive the team back to work.\n"
-                    )
+                    short = _drive_message_summary(iso_ts=now_iso_tick, msg_id=msg_id)
                     wrapped = _wrap_team_message(
                         team_dir,
                         kind="drive",

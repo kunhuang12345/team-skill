@@ -84,6 +84,29 @@ team:
     driver_role: coord     # who is woken to drive the team
     backup_role: pm        # escalation target if driver is missing
     cooldown: 600          # seconds between repeated drive nudges
+    message:
+      # Summary is what gets injected into the driver’s Codex prompt (short).
+      # Body is stored in inbox-open <msg_id> (full details).
+      #
+      # Placeholders:
+      # - {{iso_ts}}   detection timestamp (ISO8601)
+      # - {{msg_id}}   inbox message id
+      # - {{open_cmd}} open command for the inbox body
+      summary: |
+        [DRIVE] team stalled: ALL IDLE + INBOX EMPTY
+        inbox id={{msg_id}} (open: {{open_cmd}})
+        Action: diagnose root cause, then re-drive the team back to work.
+      body: |
+        [DRIVE] team stalled: ALL IDLE + INBOX EMPTY
+        - detected_at: {{iso_ts}}
+        - meaning: no one is driving work. This is an ABNORMAL STALL.
+
+        1) Diagnose now:
+        - atwf state
+        - atwf list
+        - atwf inbox (your own inbox)
+
+        Summarize why the team reached "all idle + inbox empty", find the root cause, then re-drive the team back to work.
 
   # Reply-needed requests (fan-in replies without CLI injection)
   #
