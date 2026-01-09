@@ -27,7 +27,8 @@ Dispatch protocol (mandatory):
 - Input comes from `coord` as an `action` message containing at least:
   - Java suite (FQN) to migrate
   - base ref/branch to branch from (or `HEAD` if not specified)
-- `MODULE` is derived from the FQN (see step 0). Only ask `coord` if the FQN does not match the expected scope.
+- The suite to migrate is exactly the FQN from `coord`. Do not pick a different suite.
+- `MODULE` is derived from the FQN (see step 0) per the repo workflow.
 - Your job is to:
   1) create a **shared worktree** for this task chain (one worktree for all 3 children),
   2) copy required `task/` docs into that worktree (since `task/` is not versioned),
@@ -50,7 +51,6 @@ Extract:
 - `SUITE_NAME`: last segment of the FQN (example: `ExerciseScoreSuite`)
 - `SUITE_SLUG`: a lowercase/kebab identifier for branches/dirs (example: `exercise-score-suite`)
 - `MODULE`: first segment after `com.qingshuschooltest.testcase.web.` (example: `degree`)
-  - If the FQN does NOT contain `.testcase.web.<module>.`, you MUST ask `coord` for `MODULE` (do not guess).
 - `TASK_ID`: `<module>-<suite_slug>` (example: `degree-exercise-score-suite`)
 
 ### 1) Create the shared worktree (run once; in REPO_ROOT)
