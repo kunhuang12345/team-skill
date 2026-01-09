@@ -20,11 +20,15 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_ROLES = ("pm", "arch", "prod", "dev", "qa", "ops", "coord", "liaison")
+DEFAULT_ROLES = ("task_admin", "migrator", "reviewer", "regress", "coord", "pm", "arch", "prod", "dev", "qa", "ops", "liaison")
 DEFAULT_ROLE_SCOPES: dict[str, str] = {
     "coord": "internal routing + escalation triage",
     "liaison": "user communication + clarifications",
     "pm": "overall delivery / milestone planning",
+    "task_admin": "single-task dispatcher + phase gatekeeper",
+    "migrator": "execute migration per workflow/specs",
+    "reviewer": "code quality gate (review changed files only)",
+    "regress": "regression testing gate (batch run per checklist/specs)",
 }
 FULL_NAME_RE = re.compile(r"^.+-[0-9]{8}-[0-9]{6}-[0-9]+$")
 
@@ -71,7 +75,7 @@ _STATE_AUTO_ENTER_TAIL_WINDOW_LINES_DEFAULT = 80
 _STATE_AUTO_ENTER_PATTERNS_DEFAULT = ("3. No, and tell Codex what to do differently (esc)",)
 _DRIVE_MODE_DEFAULT = _DRIVE_MODE_RUNNING
 _DRIVE_DRIVER_ROLE_DEFAULT = "coord"
-_DRIVE_BACKUP_ROLE_DEFAULT = "pm"
+_DRIVE_BACKUP_ROLE_DEFAULT = "task_admin"
 _DRIVE_COOLDOWN_DEFAULT = 600.0
 _STATE_WORKING_STALE_THRESHOLD_DEFAULT = 180.0
 _STATE_WORKING_ALERT_COOLDOWN_DEFAULT = 600.0
@@ -316,6 +320,7 @@ def _cfg_get_str(cfg: dict[str, Any], *paths: tuple[str, ...], default: str = ""
 @dataclass(frozen=True)
 class TeamPolicy:
     root_role: str
+    user_role: str
     enabled_roles: frozenset[str]
     can_hire: dict[str, frozenset[str]]
 
@@ -386,9 +391,12 @@ def _policy() -> TeamPolicy:
         enabled = set(default_enabled)
 
     root_role = _norm_role(_cfg_get_str(cfg, ("team", "policy", "root_role"), default="coord")) or "coord"
+    user_role = _norm_role(_cfg_get_str(cfg, ("team", "policy", "user_role"), default="liaison")) or "liaison"
 
     if enabled and root_role not in enabled:
         raise SystemExit(f"❌ policy.root_role={root_role!r} is not in enabled_roles")
+    if enabled and user_role not in enabled:
+        raise SystemExit(f"❌ policy.user_role={user_role!r} is not in enabled_roles")
 
     if templates:
         missing_templates = sorted(r for r in enabled if (td := (_templates_dir() / f"{r}.md")) and not td.is_file())
@@ -453,6 +461,7 @@ def _policy() -> TeamPolicy:
 
     return TeamPolicy(
         root_role=root_role,
+        user_role=user_role,
         enabled_roles=frozenset(sorted(enabled)),
         can_hire=can_hire,
         broadcast_allowed_roles=frozenset(sorted(bc_allowed)),
@@ -663,6 +672,121 @@ def _cfg_get_str_list(cfg: dict[str, Any], path: tuple[str, ...], *, default: tu
     if isinstance(v, str) and v.strip():
         return [v.strip()]
     return [s for s in default if s]
+
+
+@lru_cache(maxsize=1)
+def _team_env_venv() -> str:
+    cfg = _read_yaml_or_json(_config_file())
+    raw = _cfg_get_str(cfg, ("team", "env", "venv"), default="")
+    return raw.strip()
+
+
+def _team_role_specs(role: str) -> list[str]:
+    """
+    Read role spec docs from config:
+
+      team:
+        role_specs:
+          migrator: [task/workflow.md, task/specs/migration.md]
+          reviewer: [task/specs/review.md]
+          regress:  [task/specs/regression.md]
+    """
+    r = _norm_role(role)
+    if not r:
+        return []
+    cfg = _read_yaml_or_json(_config_file())
+    raw = _cfg_get(cfg, ("team", "role_specs"))
+    if not isinstance(raw, dict):
+        return []
+    v = raw.get(r)
+    if isinstance(v, str) and v.strip():
+        return [v.strip()]
+    if isinstance(v, list):
+        out: list[str] = []
+        for item in v:
+            if isinstance(item, str) and item.strip():
+                out.append(item.strip())
+        return out
+    return []
+
+
+def _twf_default_up_args() -> list[str]:
+    venv = _team_env_venv()
+    if not venv:
+        return []
+    return ["--venv", venv]
+
+
+def _init_children_specs(policy: TeamPolicy) -> list[tuple[str, str, str]]:
+    """
+    Return init children as [(role, label, scope)].
+
+    Config:
+      - team.init.children: list of:
+          - "pm"
+          - {role: pm, label: main, scope: "..."}
+      - team.init.children_roles: ["pm", "liaison"] (legacy/simple)
+    Default (when unset): ["pm", policy.user_role] (dedup + skip root_role).
+    """
+    cfg = _read_yaml_or_json(_config_file())
+
+    raw_children = _cfg_get(cfg, ("team", "init", "children"))
+    parsed: list[tuple[str, str, str]] = []
+    if isinstance(raw_children, list):
+        for item in raw_children:
+            if isinstance(item, str):
+                r = _norm_role(item)
+                if r:
+                    parsed.append((r, "main", DEFAULT_ROLE_SCOPES.get(r, "")))
+                continue
+            if isinstance(item, dict):
+                r = _norm_role(item.get("role"))
+                if not r:
+                    continue
+                label = str(item.get("label") or "main").strip() or "main"
+                scope = str(item.get("scope") or "").strip() or DEFAULT_ROLE_SCOPES.get(r, "")
+                parsed.append((r, label, scope))
+                continue
+
+    if not parsed:
+        roles = _cfg_get_str_list(cfg, ("team", "init", "children_roles"), default=())
+        if roles:
+            for item in roles:
+                r = _norm_role(item)
+                if r:
+                    parsed.append((r, "main", DEFAULT_ROLE_SCOPES.get(r, "")))
+
+    if not parsed:
+        first = "task_admin" if "task_admin" in policy.enabled_roles else "pm"
+        parsed = [(first, "main", DEFAULT_ROLE_SCOPES.get(first, "")), (policy.user_role, "main", DEFAULT_ROLE_SCOPES.get(policy.user_role, ""))]
+
+    out: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    for role_raw, label_raw, scope_raw in parsed:
+        role = _require_role(role_raw)
+        if role == policy.root_role:
+            continue
+        if role in seen:
+            raise SystemExit(f"❌ team.init.children has duplicate role: {role}")
+        seen.add(role)
+        label = (label_raw or "").strip() or "main"
+        scope = (scope_raw or "").strip() or DEFAULT_ROLE_SCOPES.get(role, "")
+        out.append((role, label, scope))
+
+    return out
+
+
+@lru_cache(maxsize=1)
+def _init_task_owner_role() -> str:
+    cfg = _read_yaml_or_json(_config_file())
+    raw = _cfg_get_str(cfg, ("team", "init", "task_owner_role"), default="")
+    role = _norm_role(raw)
+    if role:
+        return _require_role(role)
+    policy = _policy()
+    if "task_admin" in policy.enabled_roles:
+        return "task_admin"
+    return "pm" if "pm" in policy.enabled_roles else policy.root_role
 
 
 @lru_cache(maxsize=1)
@@ -1492,6 +1616,7 @@ def _render_template(raw: str, *, role: str, full: str, base: str, registry: Pat
         .replace("{{BASE_NAME}}", base)
         .replace("{{REGISTRY_PATH}}", str(registry))
         .replace("{{TEAM_DIR}}", str(team_dir))
+        .replace("{{USER_ROLE}}", _policy().user_role)
     )
 
 
@@ -2880,21 +3005,25 @@ def cmd_init(args: argparse.Namespace) -> int:
         no_bootstrap=bool(args.no_bootstrap),
     )
 
-    root_role = _policy().root_role
-    pm_full = trio.get("pm", "")
-    if not pm_full:
-        raise SystemExit("❌ failed to resolve PM worker")
+    policy = _policy()
+    root_role = policy.root_role
+    task_owner_role = _init_task_owner_role()
 
-    root_full = trio.get(root_role, "")
-    liaison_full = trio.get("liaison", "")
+    root_full = trio.get(root_role, "").strip()
+    task_owner_full = trio.get(task_owner_role, "").strip()
+    if not task_owner_full:
+        raise SystemExit(f"❌ init task_owner_role={task_owner_role!r} is not started (check team.init.children / team.init.task_owner_role)")
+
     _eprint("✅ initial team ready:")
-    if pm_full:
-        _eprint(f"   pm:      {pm_full}")
-    if root_full:
-        _eprint(f"   {root_role}:   {root_full}")
-    if liaison_full:
-        _eprint(f"   liaison: {liaison_full}")
-    _eprint(f"   tip: enter a role via: atwf attach pm|{root_role}|liaison")
+    for role in sorted(trio.keys()):
+        full = trio.get(role, "").strip()
+        if not full:
+            continue
+        tag = " (task owner)" if role == task_owner_role else ""
+        _eprint(f"   {role}: {full}{tag}")
+
+    tip_roles = "|".join(sorted(set([root_role, task_owner_role, *trio.keys()])))
+    _eprint(f"   tip: enter a role via: atwf attach {tip_roles}")
 
     # If account_pool is enabled in twf_config and team_cycle is selected,
     # start a background watcher that rotates the whole team when limits are hit.
@@ -2903,14 +3032,14 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     if task_path:
         msg = "[TASK]\n" f"Shared task file: {task_path}\n" "Please read it and proceed.\n"
-        sender_full = root_full.strip() or "atwf-init"
+        sender_full = root_full or "atwf-init"
         sender_m = _resolve_member(_load_registry(registry), sender_full) or {}
         from_role = _member_role(sender_m) or root_role
         from_base = _member_base(sender_m) or sender_full
 
-        pm_m = _resolve_member(_load_registry(registry), pm_full) or {}
-        to_role = _member_role(pm_m) or "pm"
-        to_base = _member_base(pm_m) or pm_full
+        to_m = _resolve_member(_load_registry(registry), task_owner_full) or {}
+        to_role = _member_role(to_m) or task_owner_role
+        to_base = _member_base(to_m) or task_owner_full
 
         msg_id = _next_msg_id(team_dir)
         _write_inbox_message(
@@ -2920,7 +3049,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             from_full=sender_full,
             from_base=from_base,
             from_role=from_role,
-            to_full=pm_full,
+            to_full=task_owner_full,
             to_base=to_base,
             to_role=to_role,
             body=msg,
@@ -2931,11 +3060,11 @@ def cmd_init(args: argparse.Namespace) -> int:
             kind="task",
             sender_full=sender_full,
             sender_role=from_role or None,
-            to_full=pm_full,
+            to_full=task_owner_full,
             body=notice,
             msg_id=msg_id,
         )
-        res = _run_twf(twf, ["ask", pm_full, wrapped])
+        res = _run_twf(twf, ["ask", task_owner_full, wrapped])
         sys.stdout.write(res.stdout)
         sys.stderr.write(res.stderr)
         return res.returncode
@@ -2957,29 +3086,13 @@ def _init_trio(
     policy = _policy()
     root_role = policy.root_role
 
-    want_pm = "pm"
-    want_liaison = "liaison"
-    required = {root_role, want_pm, want_liaison}
-    missing = sorted(r for r in required if r not in policy.enabled_roles)
-    if missing:
-        raise SystemExit(f"❌ init requires enabled_roles to include: {', '.join(missing)}")
-
     base_root = _base_name(root_role, "main")
 
-    child_roles = [r for r in [want_pm, want_liaison] if r != root_role]
-    for child_role in child_roles:
-        if child_role not in policy.can_hire.get(root_role, frozenset()):
-            raise SystemExit(f"❌ policy.can_hire: {root_role} cannot hire {child_role} (init needs it)")
-
     init_children: list[tuple[str, str, str]] = []
-    for child_role in child_roles:
-        init_children.append(
-            (
-                child_role,
-                _base_name(child_role, "main"),
-                DEFAULT_ROLE_SCOPES.get(child_role, ""),
-            )
-        )
+    for child_role, label, scope in _init_children_specs(policy):
+        if child_role not in policy.can_hire.get(root_role, frozenset()):
+            raise SystemExit(f"❌ policy.can_hire: {root_role} cannot hire {child_role} (team.init.children)")
+        init_children.append((child_role, _base_name(child_role, label), scope))
 
     out: dict[str, str] = {}
 
@@ -3083,7 +3196,7 @@ def _init_trio(
 
 
 def _start_worker(twf: Path, *, base: str, up_args: list[str]) -> tuple[str, Path]:
-    res = _run_twf(twf, ["up", base, *up_args])
+    res = _run_twf(twf, ["up", base, *_twf_default_up_args(), *up_args])
     if res.returncode != 0:
         raise SystemExit(res.stderr.strip() or f"❌ twf up failed (code {res.returncode})")
     session_file = res.stdout.strip()
@@ -3095,7 +3208,7 @@ def _start_worker(twf: Path, *, base: str, up_args: list[str]) -> tuple[str, Pat
 
 
 def _spawn_worker(twf: Path, *, parent_full: str, child_base: str, up_args: list[str]) -> tuple[str, Path]:
-    res = _run_twf(twf, ["spawn", parent_full, child_base, *up_args])
+    res = _run_twf(twf, ["spawn", parent_full, child_base, *_twf_default_up_args(), *up_args])
     if res.returncode != 0:
         raise SystemExit(res.stderr.strip() or f"❌ twf spawn failed (code {res.returncode})")
     session_file = res.stdout.strip()
@@ -3117,6 +3230,22 @@ def _bootstrap_worker(
     team_dir: Path,
 ) -> None:
     pieces: list[str] = []
+
+    spec_paths = _team_role_specs(role)
+    if spec_paths:
+        project_root = _expected_project_root()
+        bullets = []
+        for p in spec_paths:
+            # For display only: resolve relative paths from project root so workers
+            # see stable, clickable paths regardless of current working directory.
+            try:
+                pp = Path(p).expanduser()
+                if not pp.is_absolute():
+                    pp = (project_root / pp).resolve()
+                bullets.append(f"- {pp}")
+            except Exception:
+                bullets.append(f"- {p}")
+        pieces.append("Required specs (must follow):\n" + "\n".join(bullets))
 
     rules_path = _templates_dir() / "command_rules.md"
     if rules_path.is_file():
@@ -3714,6 +3843,7 @@ def cmd_policy(_: argparse.Namespace) -> int:
     policy = _policy()
     print(f"config: {_config_file()}")
     print(f"root_role: {policy.root_role}")
+    print(f"user_role: {policy.user_role}")
     print(f"enabled_roles: {', '.join(sorted(policy.enabled_roles))}")
 
     print("can_hire:")
