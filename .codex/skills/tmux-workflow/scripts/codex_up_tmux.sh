@@ -6,7 +6,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 usage() {
   cat <<'USAGE' >&2
 Usage:
-  codex_up_tmux.sh [--session NAME] [--session-file PATH] [--cmd "codex ..."] [--attach]
+  codex_up_tmux.sh [--session NAME] [--session-file PATH] [--cmd "codex ..."] [--venv VENV_DIR|ACTIVATE] [--attach]
 
 Defaults:
   - session-file: ./.codex-tmux-session.json
@@ -145,6 +145,7 @@ session_file="${TWF_SESSION_FILE:-.codex-tmux-session.json}"
 tmux_session="${TWF_TMUX_SESSION:-}"
 codex_cmd="${TWF_CODEX_CMD:-}"
 attach=0
+venv=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -154,6 +155,8 @@ while [[ $# -gt 0 ]]; do
       session_file="${2:-}"; shift 2 ;;
     --cmd)
       codex_cmd="${2:-}"; shift 2 ;;
+    --venv)
+      venv="${2:-}"; shift 2 ;;
     --attach)
       attach=1; shift ;;
     -h|--help)
@@ -206,6 +209,20 @@ if [[ -z "$tmux_session" ]]; then
   tmux_session="codex-$hash"
 fi
 
+activate_script=""
+if [[ -n "$venv" ]]; then
+  venv="$(python3 -c 'import sys; from pathlib import Path; print(str(Path(sys.argv[1]).expanduser()))' "$venv")"
+  if [[ -d "$venv" ]]; then
+    activate_script="$venv/bin/activate"
+  else
+    activate_script="$venv"
+  fi
+  if [[ ! -f "$activate_script" ]]; then
+    echo "❌ --venv expects a venv directory (with bin/activate) or an activate script path; not found: $activate_script" >&2
+    exit 1
+  fi
+fi
+
 # Per-worker CODEX_HOME isolation: ~/.codex-workers/<worker_id>
 worker_id="$tmux_session"
 codex_workers_dir="${TWF_WORKERS_DIR:-$HOME/.codex-workers}"
@@ -235,7 +252,13 @@ if tmux has-session -t "$tmux_session" >/dev/null 2>&1; then
 else
   echo "🚀 Starting tmux session: $tmux_session" >&2
   quoted_worker_home="$(python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$worker_home")"
-  tmux new-session -d -s "$tmux_session" -c "$work_dir" "env CODEX_HOME=$quoted_worker_home $codex_cmd"
+  if [[ -n "$activate_script" ]]; then
+    quoted_activate="$(python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$activate_script")"
+    launch="source $quoted_activate && export CODEX_HOME=$quoted_worker_home && exec $codex_cmd"
+    tmux new-session -d -s "$tmux_session" -c "$work_dir" bash -lc "$launch"
+  else
+    tmux new-session -d -s "$tmux_session" -c "$work_dir" "env CODEX_HOME=$quoted_worker_home $codex_cmd"
+  fi
 fi
 
 tmux set-environment -t "$tmux_session" CODEX_HOME "$worker_home" >/dev/null 2>&1 || true
