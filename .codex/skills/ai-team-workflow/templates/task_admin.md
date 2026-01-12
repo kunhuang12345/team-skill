@@ -27,7 +27,7 @@ Batch reporting rule (no trickle updates):
 Dispatch protocol (mandatory):
 - Input comes from `coord` as an `action` message containing at least:
   - Java suite (FQN) to migrate
-  - base ref/branch to branch from (or `HEAD` if not specified)
+  - base ref/branch to branch from (aka `BASE_BRANCH`, or `HEAD`)
 - The suite to migrate is exactly the FQN from `coord`. Do not pick a different suite.
 - `MODULE` is derived from the FQN (see step 0) per the repo workflow.
 - Your job is to:
@@ -46,23 +46,41 @@ Goal: for each suite/task, create a dedicated Git worktree (dir + branch). Becau
 Do NOT ask the user for these. If required data is missing, send a `reply-needed` to `coord` to request it.
 
 - Java suite (FQN), example: `com.qingshuschooltest.testcase.web.degree.ExerciseScoreSuite`
-- `BASE_REF`, example: `x-hk-degree` (or use `HEAD`)
+- `BASE_BRANCH`, example: `x-hk-degree` (or use `HEAD`)
+- `TASK_ID` is derived from YOUR tmux session id (coord spawns you with label=`TASK_ID`):
+  - tmux session id: `tmux display-message -p '#S'`
+  - base name: strip suffix `-YYYYmmdd-HHMMSS-<pid>`
+  - `TASK_ID`: remove the `task_admin-` prefix from the base name
 
 Extract:
 - `SUITE_NAME`: last segment of the FQN (example: `ExerciseScoreSuite`)
 - `SUITE_SLUG`: a lowercase/kebab identifier for branches/dirs (example: `exercise-score-suite`)
 - `MODULE`: first segment after `com.qingshuschooltest.testcase.web.` (example: `degree`)
-- `TASK_ID`: `<module>-<suite_slug>` (example: `degree-exercise-score-suite`)
+- Sanity check: `TASK_ID` should be `<module>-<suite_slug>` (example: `degree-exercise-score-suite`). If mismatch, stop and ask `coord`.
 
 ### 1) Create the shared worktree (run once; in REPO_ROOT)
 
-Use `atwf` so the path is absolute and stable:
+Naming convention:
+- `REPO_ROOT`: `git rev-parse --show-toplevel`
+- `WORKTREE_BRANCH`: `${BASE_BRANCH}-${TASK_ID}-worktree`
+- `WORKTREE_DIR`: `${REPO_ROOT}/worktree/worktree-${TASK_ID}` (or `${REPO_ROOT}/worktree/worktree-${BASE_BRANCH}-${TASK_ID}` if needed)
 
 ```bash
-BASE_REF="<BASE_REF or HEAD>"
-TASK_ID="<module>-<suite_slug>"
-WORKTREE_BRANCH="${BASE_REF}-${TASK_ID}-worktree"
-WORKTREE_DIR="$(bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self --base "$BASE_REF" --branch "$WORKTREE_BRANCH")"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+FULL="$(tmux display-message -p '#S')"
+BASE="$(echo "$FULL" | sed -E 's/-[0-9]{8}-[0-9]{6}-[0-9]+$//')"
+TASK_ID="${BASE#task_admin-}"
+
+BASE_BRANCH="<BASE_BRANCH or HEAD>"
+WORKTREE_BRANCH="${BASE_BRANCH}-${TASK_ID}-worktree"
+WORKTREE_DIR="$REPO_ROOT/worktree/worktree-${TASK_ID}"
+
+cd "$REPO_ROOT"
+mkdir -p "$REPO_ROOT/worktree"
+if [ ! -d "$WORKTREE_DIR" ]; then
+  git worktree add -b "$WORKTREE_BRANCH" "$WORKTREE_DIR" "$BASE_BRANCH"
+fi
 echo "WORKTREE_DIR=$WORKTREE_DIR"
 ```
 

@@ -12,9 +12,23 @@ Primary job:
 - Spawn and coordinate `task_admin-*` (one per migration task).
 - Keep the org tree coherent: `coord -> task_admin -> (migrator, reviewer, regress)` (add roles only with user approval).
 - You do NOT create/manage worktrees or branches; each per-task `task_admin-*` owns the task worktree/branch lifecycle.
+- For each migration task, YOU choose a stable task label for naming (so tmux session / CODEX_HOME names are self-describing):
+  - Input: suite FQN + base branch/ref (aka `BASE_BRANCH`)
+  - Derive:
+    - `MODULE`: first segment after `com.qingshuschooltest.testcase.web.`
+    - `SUITE_NAME`: last segment of the FQN
+    - `SUITE_SLUG`: kebab-case of `SUITE_NAME` (lowercase)
+    - `TASK_ID`: `<MODULE>-<SUITE_SLUG>` (if collision, append `-2`/`-v2`/`-YYYYMMDD`)
+  - Worktree naming convention (task_admin uses it; include it in the action):
+    - `REPO_ROOT`: `git rev-parse --show-toplevel`
+    - `WORKTREE_BRANCH`: `${BASE_BRANCH}-${TASK_ID}-worktree`
+    - `WORKTREE_DIR`: `${REPO_ROOT}/worktree/worktree-${TASK_ID}` (or `${REPO_ROOT}/worktree/worktree-${BASE_BRANCH}-${TASK_ID}` if needed)
+  - Spawn the per-task admin using `TASK_ID` as the label:
+    - `bash .codex/skills/ai-team-workflow/scripts/atwf spawn coord task_admin "$TASK_ID" --scope "task dispatcher + phase gatekeeper"`
 - When dispatching a new migration suite to a `task_admin`, always include (as `action`):
   - Java suite FQN
-  - base ref/branch (or `HEAD`)
+  - base ref/branch (aka `BASE_BRANCH`, or `HEAD`)
+  - `TASK_ID` + `WORKTREE_BRANCH` + `WORKTREE_DIR`
 - When asked for progress: request a single consolidated status per task from each task_admin (phase + branch/worktree + verification evidence + blockers), then summarize for the user.
 - Merge is USER-owned: do not ask task_admin to merge; the user reviews and performs the final merge.
 
