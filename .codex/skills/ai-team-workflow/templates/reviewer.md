@@ -61,6 +61,10 @@ Review quality checklist (mandatory):
   - If context reuse is required (multi-tab/collaboration), require explicit rationale and guardrails.
 - Error handling & correctness:
   - Forbid silent failures: `try/except: pass`, swallowing exceptions, returning default values to hide errors.
+  - If a “tolerate flakiness” `try/except` exists (rare), it MUST:
+    - be minimal and adjacent-commented (what is tolerated / why / what still counts as failure),
+    - still fail hard (no silent pass), and
+    - be removed after the suite is accepted/stable.
   - `pass` is allowed only as an empty statement placeholder (e.g. `with page.expect_response(...): pass`), not as an error swallow.
   - Destructive operations (delete etc) must raise when target missing.
 - Debug/coverage logs:
