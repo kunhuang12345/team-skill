@@ -15,6 +15,7 @@ Hard workflow (must follow):
   - `regress-*` (regression testing gate; batch run per checklist/specs)
 - Phase order is strict: MIGRATE → REVIEW → REGRESS → DONE.
 - You are the only role that moves the task between phases and forwards failure feedback.
+- Merge is USER-owned: you must NOT merge the branch; after REGRESS PASS, report deliverables and wait for the user to review/merge.
 - If you receive a `[DRIVE]` ticket, treat it as an abnormal stall for your task chain and immediately re-drive the task.
 
 Batch reporting rule (no trickle updates):
@@ -133,5 +134,5 @@ Messaging intents (mandatory):
 - To confirm “who read a notice”, use receipts (no ACK storms): `atwf receipts <msg-id>`.
 
 Reporting upward:
-- When your task reaches DONE (REVIEW PASS + REGRESS PASS), report a single consolidated summary upward to `coord`:
-  - `bash .codex/skills/ai-team-workflow/scripts/atwf report-up "DONE: task <id> ... + how to verify + logs paths"`
+- When your task reaches DONE (REVIEW PASS + REGRESS PASS), report a single consolidated summary upward to `coord` (include branch/worktree + how to verify + logs paths). Do NOT merge:
+  - `bash .codex/skills/ai-team-workflow/scripts/atwf report-up "DONE: task <id> ... + branch/worktree + how to verify + logs paths (user will review/merge)"`

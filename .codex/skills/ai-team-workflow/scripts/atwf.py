@@ -729,6 +729,11 @@ def _init_children_specs(policy: TeamPolicy) -> list[tuple[str, str, str]]:
     cfg = _read_yaml_or_json(_config_file())
 
     raw_children = _cfg_get(cfg, ("team", "init", "children"))
+    # Treat an explicit empty list as "no init children". This migration-team branch
+    # prefers booting only the root (coord) and spawning one task_admin per task.
+    if isinstance(raw_children, list) and not raw_children:
+        return []
+
     parsed: list[tuple[str, str, str]] = []
     if isinstance(raw_children, list):
         for item in raw_children:
@@ -2974,16 +2979,18 @@ def cmd_init(args: argparse.Namespace) -> int:
     task_owner_role = _init_task_owner_role()
 
     root_full = trio.get(root_role, "").strip()
-    task_owner_full = trio.get(task_owner_role, "").strip()
-    if not task_owner_full:
-        raise SystemExit(f"❌ init task_owner_role={task_owner_role!r} is not started (check team.init.children / team.init.task_owner_role)")
+    if not root_full:
+        raise SystemExit(f"❌ init root_role={root_role!r} is not started (check team.policy.root_role)")
+
+    task_owner_full = trio.get(task_owner_role, "").strip() or root_full
+    task_owner_role_effective = task_owner_role if trio.get(task_owner_role, "").strip() else root_role
 
     _eprint("✅ initial team ready:")
     for role in sorted(trio.keys()):
         full = trio.get(role, "").strip()
         if not full:
             continue
-        tag = " (task owner)" if role == task_owner_role else ""
+        tag = " (task owner)" if role == task_owner_role_effective else ""
         _eprint(f"   {role}: {full}{tag}")
 
     tip_roles = "|".join(sorted(set([root_role, task_owner_role, *trio.keys()])))
@@ -2994,7 +3001,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     _ensure_cap_watch_team(twf=twf, team_dir=team_dir, registry=registry)
     _ensure_watch_idle_team(twf=twf, team_dir=team_dir, registry=registry)
 
-    if task_path:
+    if task_path and task_owner_full:
         msg = "[TASK]\n" f"Shared task file: {task_path}\n" "Please read it and proceed.\n"
         sender_full = root_full or "atwf-init"
         sender_m = _resolve_member(_load_registry(registry), sender_full) or {}
@@ -3002,7 +3009,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         from_base = _member_base(sender_m) or sender_full
 
         to_m = _resolve_member(_load_registry(registry), task_owner_full) or {}
-        to_role = _member_role(to_m) or task_owner_role
+        to_role = _member_role(to_m) or task_owner_role_effective
         to_base = _member_base(to_m) or task_owner_full
 
         msg_id = _next_msg_id(team_dir)
@@ -3033,7 +3040,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         sys.stderr.write(res.stderr)
         return res.returncode
 
-    _eprint("   next: atwf init \"任务描述：...\" (or: atwf init --task-file /abs/path).")
+    _eprint("   next: spawn a task chain via: atwf spawn coord task_admin <label> --scope \"...\"")
     return 0
 
 

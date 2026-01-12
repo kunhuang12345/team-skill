@@ -32,14 +32,11 @@ team:
   init:
     # Who receives the shared task on init (via `twf ask`).
     # Must be either the root_role or one of the init children roles.
-    task_owner_role: task_admin
+    task_owner_role: coord
 
     # Children spawned under root_role on init (optional).
-    # - If empty/unset: defaults to [task_admin, user_role] (dedup + skip root_role).
-    children:
-      - role: task_admin
-        label: main
-        scope: "task dispatcher + phase gatekeeper"
+    # - Set to [] to boot root only; spawn one task_admin per migration task later.
+    children: []
 
   policy:
     # Root role (single root). Non-root roles must be created via spawn (must have a parent).

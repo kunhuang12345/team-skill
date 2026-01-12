@@ -35,20 +35,26 @@ Print the resolved paths:
 
 ## Quick start
 
-Initialize + start the initial team + send task to the configured task owner:
-- `bash .codex/skills/ai-team-workflow/scripts/atwf init "任务描述：..."` (or `--task-file <path>`)
+Initialize + start the team (no task required):
+- `bash .codex/skills/ai-team-workflow/scripts/atwf init`
   - starts root: `coord-main`
-  - spawns under root: from `scripts/atwf_config.yaml` → `team.init.children` (default: `task_admin-main`)
-  - writes `share/task.md` and sends a task notification to `team.init.task_owner_role` (default: `task_admin`)
+  - does NOT start any `task_admin` yet (one `task_admin` is created per migration task)
   - starts watcher sidecar: `atwf watch-idle` (tmux session `atwf-watch-idle-*`)
+
+Create a migration task chain (one `task_admin` per task):
+- `bash .codex/skills/ai-team-workflow/scripts/atwf spawn coord task_admin <label> --scope "task dispatcher + phase gatekeeper"`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf attach task_admin-<label>`
+- In the `task_admin-*` tmux: spawn the 3 fixed children (use the same `<label>`):
+  - `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self migrator <label> --scope "migration execution"`
+  - `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self reviewer <label> --scope "code quality gate (changed files only)"`
+  - `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self regress <label> --scope "regression test gate (batch)"`
 
 Enter a role:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf attach coord|task_admin|migrator|reviewer|regress`
 
-Create a full task chain (run inside the `task_admin-*` tmux):
-- `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self migrator main --scope "migration execution"`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self reviewer main --scope "code quality gate (changed files only)"`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self regress main --scope "regression test gate (batch)"`
+Dispatch task details (from `coord` to the per-task `task_admin-*`):
+- `bash .codex/skills/ai-team-workflow/scripts/atwf action task_admin-<label> --as coord --message "FQN=...\\nBASE_REF=...\\n..."`
+  - Note: `task_admin` owns worktree/branch creation and must NOT merge; the user reviews and performs the final merge.
 
 Disband the whole team:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf remove <coord-full>`
