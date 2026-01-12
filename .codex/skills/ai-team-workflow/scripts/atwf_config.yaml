@@ -85,7 +85,8 @@ team:
   #
   # Paths can be absolute, or relative to the project git root.
   role_specs:
-    migrator: []
+    migrator:
+      - task/workflow.md
     reviewer: []
     regress: []
 
