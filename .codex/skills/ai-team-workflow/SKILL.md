@@ -88,7 +88,7 @@ All commands are wrappers around `twf` plus registry/inbox management:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf inbox` / `inbox-open <id>` / `inbox-ack <id>` / `receipts <msg-id>`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf notice ...` / `action ...`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf gather ...` / `respond ...` / `reply-needed`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create[-self]` / `worktree-check-self`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-path[-self]` / `worktree-create[-self]` / `worktree-check-self`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf pause` / `unpause` / `stop` / `resume`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf watch-idle`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf remove <coord-full>`

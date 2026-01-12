@@ -17,6 +17,10 @@ Worktree rule (shared worktree):
 - You MUST `cd` into that exact directory before making any changes.
 - Do **NOT** run `atwf worktree-create-self` for this task.
 - You are the only role allowed to modify/commit code inside the shared `WORKTREE_DIR`.
+- If you lost the path or want to verify you are in the right place:
+  - print expected path: `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-path-self`
+  - verify cwd: `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-check-self`
+  - if the dir does not exist, ask `task_admin` to create it (do NOT create it yourself).
 
 Messaging intents (mandatory):
 - `notice`: FYI only. On receive: `atwf inbox-open <id>` then `atwf inbox-ack <id>`. Do **NOT** `report-up` “received/ok”.

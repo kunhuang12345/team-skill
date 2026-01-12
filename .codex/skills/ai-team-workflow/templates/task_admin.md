@@ -47,10 +47,10 @@ Do NOT ask the user for these. If required data is missing, send a `reply-needed
 
 - Java suite (FQN), example: `com.qingshuschooltest.testcase.web.degree.ExerciseScoreSuite`
 - `BASE_BRANCH`, example: `x-hk-degree` (or use `HEAD`)
-- `TASK_ID` is derived from YOUR tmux session id (coord spawns you with label=`TASK_ID`):
-  - tmux session id: `tmux display-message -p '#S'`
-  - base name: strip suffix `-YYYYmmdd-HHMMSS-<pid>`
-  - `TASK_ID`: remove the `task_admin-` prefix from the base name
+- `TASK_ID` is your task label (coord spawns you with label=`TASK_ID`).
+- Canonical shared worktree dir for this task chain (source of truth):
+  - `WORKTREE_DIR="$(bash .codex/skills/ai-team-workflow/scripts/atwf worktree-path-self)"`
+  - `TASK_ID="$(basename "$WORKTREE_DIR" | sed 's/^worktree-//')"`
 
 Extract:
 - `SUITE_NAME`: last segment of the FQN (example: `ExerciseScoreSuite`)
@@ -61,27 +61,19 @@ Extract:
 ### 1) Create the shared worktree (run once; in REPO_ROOT)
 
 Naming convention:
-- `REPO_ROOT`: `git rev-parse --show-toplevel`
 - `WORKTREE_BRANCH`: `${BASE_BRANCH}-${TASK_ID}-worktree`
-- `WORKTREE_DIR`: `${REPO_ROOT}/worktree/worktree-${TASK_ID}` (or `${REPO_ROOT}/worktree/worktree-${BASE_BRANCH}-${TASK_ID}` if needed)
+- `WORKTREE_DIR`: `<git-root>/worktree/worktree-${TASK_ID}` (derived by `atwf worktree-path-self`)
 
 ```bash
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-
-FULL="$(tmux display-message -p '#S')"
-BASE="$(echo "$FULL" | sed -E 's/-[0-9]{8}-[0-9]{6}-[0-9]+$//')"
-TASK_ID="${BASE#task_admin-}"
-
 BASE_BRANCH="<BASE_BRANCH or HEAD>"
+WORKTREE_DIR="$(bash .codex/skills/ai-team-workflow/scripts/atwf worktree-path-self)"
+TASK_ID="$(basename "$WORKTREE_DIR" | sed 's/^worktree-//')"
 WORKTREE_BRANCH="${BASE_BRANCH}-${TASK_ID}-worktree"
-WORKTREE_DIR="$REPO_ROOT/worktree/worktree-${TASK_ID}"
+REPO_ROOT="$(cd "$(dirname "$WORKTREE_DIR")/.." && pwd -P)"
 
 cd "$REPO_ROOT"
-mkdir -p "$REPO_ROOT/worktree"
-if [ ! -d "$WORKTREE_DIR" ]; then
-  git worktree add -b "$WORKTREE_BRANCH" "$WORKTREE_DIR" "$BASE_BRANCH"
-fi
-echo "WORKTREE_DIR=$WORKTREE_DIR"
+WORKTREE_DIR="$(bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self --base "$BASE_BRANCH" --branch "$WORKTREE_BRANCH")"
+echo "WORKTREE_DIR=$WORKTREE_DIR (TASK_ID=$TASK_ID)"
 ```
 
 This `WORKTREE_DIR` is the single source of truth for this task chain. All child roles must `cd` into it.
@@ -91,6 +83,8 @@ This `WORKTREE_DIR` is the single source of truth for this task chain. All child
 Run in REPO_ROOT after creating the worktree:
 
 ```bash
+REPO_ROOT="$(cd "$(dirname "$WORKTREE_DIR")/.." && pwd -P)"
+cd "$REPO_ROOT"
 dst="$WORKTREE_DIR/task"
 mkdir -p "$dst"
 cp -a task/Test_Suite_Structure_Guide.md "$dst/"

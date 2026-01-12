@@ -4381,6 +4381,9 @@ def cmd_worktree_create(args: argparse.Namespace) -> int:
     wt_dir.mkdir(parents=True, exist_ok=True)
 
     m = _resolve_member(data, full) or {}
+    role = _member_role(m)
+    if role != "task_admin":
+        raise SystemExit(f"❌ worktree-create is restricted to task_admin (target role={role!r})")
     task_id = _task_id_from_member(m)
     if not task_id:
         raise SystemExit(f"❌ cannot derive TASK_ID from target={target!r} (role/base mismatch)")
@@ -4425,6 +4428,7 @@ def cmd_worktree_check_self(_: argparse.Namespace) -> int:
     registry = _registry_path(team_dir)
     data = _load_registry(registry)
     m = _resolve_member(data, full) or {}
+    role = _member_role(m)
     task_id = _task_id_from_member(m)
     if not task_id:
         raise SystemExit(f"❌ cannot derive TASK_ID from current worker: {full}")
@@ -4440,7 +4444,11 @@ def cmd_worktree_check_self(_: argparse.Namespace) -> int:
     _eprint("❌ not in the task worktree")
     _eprint(f"   expected: {expected}")
     _eprint(f"   cwd:      {cwd}")
-    _eprint(f"   fix:      bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self && cd {expected}")
+    if role == "task_admin":
+        _eprint(f"   fix:      bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self && cd {expected}")
+    else:
+        _eprint(f"   fix:      cd {expected}")
+        _eprint("             (if missing: ask task_admin to create it; do NOT run worktree-create-self)")
     return 1
 
 
@@ -7040,12 +7048,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("worktree-path-self", help="print the shared task worktree path for the current tmux worker")
 
-    wtc = sub.add_parser("worktree-create", help="create a shared task git worktree under <git-root>/worktree/worktree-<TASK_ID>")
+    wtc = sub.add_parser(
+        "worktree-create",
+        help="task_admin: create a shared task git worktree under <git-root>/worktree/worktree-<TASK_ID>",
+    )
     wtc.add_argument("target", help="full|base|role")
     wtc.add_argument("--base", default="HEAD", help="base ref/branch/commit (default: HEAD)")
     wtc.add_argument("--branch", default="", help="branch name to create for the worktree (default: <base>-<TASK_ID>-worktree)")
 
-    wtcs = sub.add_parser("worktree-create-self", help="create a shared task git worktree for the current tmux worker")
+    wtcs = sub.add_parser("worktree-create-self", help="task_admin: create a shared task git worktree for the current tmux worker")
     wtcs.add_argument("--base", default="HEAD", help="base ref/branch/commit (default: HEAD)")
     wtcs.add_argument("--branch", default="", help="branch name to create for the worktree (default: <base>-<TASK_ID>-worktree)")
 

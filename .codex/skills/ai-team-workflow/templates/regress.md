@@ -17,6 +17,10 @@ Worktree rule (shared worktree; read-only):
 - Your `task_admin` will send you the absolute `WORKTREE_DIR` (shared worktree) in an `action` message.
 - You MUST run regression from inside that directory (`cd <WORKTREE_DIR>`).
 - You MUST NOT modify files or commit anything in that worktree.
+- If you lost the path or want to verify you are in the right place:
+  - print expected path: `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-path-self`
+  - verify cwd: `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-check-self`
+  - if the dir does not exist, ask `task_admin` to create it (do NOT create it yourself).
 
 Messaging intents (mandatory):
 - `notice`: FYI only. On receive: `atwf inbox-open <id>` then `atwf inbox-ack <id>`. Do **NOT** `report-up` “received/ok”.

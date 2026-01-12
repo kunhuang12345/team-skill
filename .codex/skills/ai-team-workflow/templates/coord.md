@@ -22,7 +22,7 @@ Primary job:
   - Worktree naming convention (task_admin uses it; include it in the action):
     - `REPO_ROOT`: `git rev-parse --show-toplevel`
     - `WORKTREE_BRANCH`: `${BASE_BRANCH}-${TASK_ID}-worktree`
-    - `WORKTREE_DIR`: `${REPO_ROOT}/worktree/worktree-${TASK_ID}` (or `${REPO_ROOT}/worktree/worktree-${BASE_BRANCH}-${TASK_ID}` if needed)
+    - `WORKTREE_DIR`: `${REPO_ROOT}/worktree/worktree-${TASK_ID}` (if collision, change `TASK_ID` suffix)
   - Spawn the per-task admin using `TASK_ID` as the label:
     - `bash .codex/skills/ai-team-workflow/scripts/atwf spawn coord task_admin "$TASK_ID" --scope "task dispatcher + phase gatekeeper"`
 - When dispatching a new migration suite to a `task_admin`, always include (as `action`):

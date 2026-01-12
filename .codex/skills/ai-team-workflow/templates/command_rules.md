@@ -33,10 +33,13 @@ This branch is a **dedicated migration team** with a strict 4-node task chain.
 
 - For each task chain, `task_admin` creates **one shared Git worktree** and sends the absolute `WORKTREE_DIR` to `migrator/reviewer/regress` via `atwf action`.
 - `WORKTREE_DIR` is authoritative for the task chain. All work must happen inside it (`cd <WORKTREE_DIR>`).
+- If you lost the path (inside any tmux worker):
+  - print expected path: `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-path-self`
+  - verify cwd: `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-check-self`
 - Concurrency rule:
   - only `migrator` may modify/commit code inside `WORKTREE_DIR`
   - `reviewer` and `regress` are read-only (diff/test only; never edit files; never commit)
-- Child roles must NOT create their own worktree for the task (do not run `atwf worktree-create-self` unless explicitly instructed by `task_admin`).
+- Only `task_admin` may create the shared worktree (via `atwf worktree-create-self` / `worktree-create`). Child roles must NOT create worktrees.
 
 ## Queue-safe message protocol (mandatory)
 
