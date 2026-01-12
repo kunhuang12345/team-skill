@@ -23,29 +23,29 @@ Worktree rule (shared worktree; read-only):
   - if not in the worktree, `cd <WORKTREE_DIR>` then re-run `worktree-check-self`
   - if the dir does not exist, ask `task_admin` to create it (do NOT create it yourself).
 
-Review quality checklist (extract from `task/workflow.md`):
+Review quality checklist (mandatory):
 - Scope discipline:
   - If `task/<MODULE>/<SUITE_NAME>/context.md` defines `In Scope Paths`, changed files MUST stay within that allowlist; otherwise require the migrator to update `In Scope Paths` first (with reasons).
-- Shared-change regression gate (workflow “3.3 共享改动需回归”):
+- Shared-change regression gate:
   - If changes touch shared PageObject/components/base (e.g. `src/pages/**`, `src/pages/components/**`, base pages/tables), OR any symbol reused across files:
     - require `rg` callsite audit under `src/` (import/instantiation/method calls)
     - require at least 1 covering regression nodeid PASS + log path under `task/logs/`
-- Locator rules (workflow “3.1 + 3.1.1”):
+- Locator rules:
   - Prefer semantic locators (`get_by_role/label/placeholder/text`); avoid fragile CSS (`nth-child`, pure class selectors).
   - Static locators must be private attrs in `__init__`; do NOT add new hardcoded constant selectors in method bodies.
   - Dynamic locators are allowed only when parameterized / relative-to-existing-locator / runtime-contextual.
-- Wait strategy (workflow “四、等待策略转换指南” + “3.2.1 允许的短等待/受控重试”):
+- Wait strategy:
   - No fixed sleeps; use deterministic waits (`expect`, `wait_for_*`, `expect_response`, explicit DOM/state signals).
   - If short wait / controlled retry exists, it MUST:
     - be justified as a frontend race (with evidence / rationale),
     - have a hard upper bound (e.g. ≤500ms per wait; ≤3 retries or ≤3s total),
     - still fail hard (no silent pass), and
     - include an inline comment describing why no better signal exists.
-- Error handling & correctness (workflow “质量门禁（强化 3.2）”):
+- Error handling & correctness:
   - Forbid silent failures: `try/except: pass`, swallowing exceptions, returning default values to hide errors.
   - `pass` is allowed only as an empty statement placeholder (e.g. `with page.expect_response(...): pass`), not as an error swallow.
   - Destructive operations (delete etc) must raise when target missing.
-- Debug/coverage logs (workflow “断言覆盖日志 / Debug 日志规范”):
+- Debug/coverage logs:
   - Debug prints/logs must be removed after the issue is fixed; avoid leaving noisy output behind.
   - Assert-coverage logging is allowed, but should be intentional and searchable (e.g. stable prefix).
 
