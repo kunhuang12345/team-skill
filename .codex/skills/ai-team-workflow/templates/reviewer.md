@@ -26,21 +26,39 @@ Worktree rule (shared worktree; read-only):
 Review quality checklist (mandatory):
 - Scope discipline:
   - If `task/<MODULE>/<SUITE_NAME>/context.md` defines `In Scope Paths`, changed files MUST stay within that allowlist; otherwise require the migrator to update `In Scope Paths` first (with reasons).
+- Code change discipline:
+  - Minimal changes: do NOT modify unrelated existing code “while you are here”. If an existing module must be changed, justify why, and keep the delta minimal.
+  - If an existing-code change causes regressions or breaks behavior at the change site, prefer reverting that change and redesigning; do NOT “paper over” with fallbacks.
+  - Do not break original business semantics:
+    - Prefer additive changes (new helper/new method) over mutating an existing shared function’s meaning.
+    - If a shared function/class/method behavior is changed, require a `rg` callsite audit under `src/` and either ensure compatibility or require synchronized updates to all callsites.
+    - “Compatibility” means business semantics (params/return meaning), NOT adding `if/try` fallbacks to hide problems.
 - Shared-change regression gate:
   - If changes touch shared PageObject/components/base (e.g. `src/pages/**`, `src/pages/components/**`, base pages/tables), OR any symbol reused across files:
     - require `rg` callsite audit under `src/` (import/instantiation/method calls)
     - require at least 1 covering regression nodeid PASS + log path under `task/logs/`
+- Code structure & reuse:
+  - Prefer reusing existing base helpers/abstractions (toast/waits/select2/table helpers etc) instead of duplicating low-level interactions.
+  - Import discipline:
+    - Imports should be at the file top (grouped/ordered consistently).
+    - Function-local imports are forbidden EXCEPT as a last resort to break a circular dependency; if used, it MUST include an adjacent comment explaining the cycle and a refactor plan.
 - Locator rules:
   - Prefer semantic locators (`get_by_role/label/placeholder/text`); avoid fragile CSS (`nth-child`, pure class selectors).
   - Static locators must be private attrs in `__init__`; do NOT add new hardcoded constant selectors in method bodies.
   - Dynamic locators are allowed only when parameterized / relative-to-existing-locator / runtime-contextual.
 - Wait strategy:
   - No fixed sleeps; use deterministic waits (`expect`, `wait_for_*`, `expect_response`, explicit DOM/state signals).
-  - If short wait / controlled retry exists, it MUST:
-    - be justified as a frontend race (with evidence / rationale),
-    - have a hard upper bound (e.g. ≤500ms per wait; ≤3 retries or ≤3s total),
-    - still fail hard (no silent pass), and
-    - include an inline comment describing why no better signal exists.
+  - Avoid relying on `networkidle` as the only signal; prefer explicit UI/DOM/state/response signals.
+  - If short wait / controlled retry exists (exception-only), it MUST satisfy ALL:
+    - triage complete (Python + Java + frontend) and it is truly an async-rendering race with no stable signal yet,
+    - hard upper bound (recommended: `wait_for_timeout` ≤500ms; retries ≤3 or total ≤3s) with failure still raising,
+    - retry scope is limited to flaky reads/lookups (NOT masking “business step not executed”),
+    - it is NOT used to bypass permission/data-prep/click-not-effective root causes (fix the root cause instead),
+    - adjacent comment documents: symptom, why no better signal, chosen bound, and future replacement signal (if known),
+    - cleanup requirement: must be removed after the suite is accepted/stable (convert to deterministic wait where possible).
+- Browser context isolation (stability):
+  - Multi-role/multi-account flows should use fresh/clean browser contexts to avoid cookie/localStorage contamination.
+  - If context reuse is required (multi-tab/collaboration), require explicit rationale and guardrails.
 - Error handling & correctness:
   - Forbid silent failures: `try/except: pass`, swallowing exceptions, returning default values to hide errors.
   - `pass` is allowed only as an empty statement placeholder (e.g. `with page.expect_response(...): pass`), not as an error swallow.
