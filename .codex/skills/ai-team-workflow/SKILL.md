@@ -31,34 +31,34 @@ Overrides (highest → lowest):
 - default `<skill_root>/share`
 
 Print the resolved paths:
-- `bash .codex/skills/ai-team-workflow/scripts/atwf where`
+- `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" where`
 
 ## Quick start
 
 Initialize + start the team (no task required):
-- `bash .codex/skills/ai-team-workflow/scripts/atwf init`
+- `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" init`
   - starts root: `coord-main`
   - does NOT start any `task_admin` yet (one `task_admin` is created per migration task)
   - starts watcher sidecar: `atwf watch-idle` (tmux session `atwf-watch-idle-*`)
 
 Create a migration task chain (one `task_admin` per task):
-- `bash .codex/skills/ai-team-workflow/scripts/atwf spawn coord task_admin <label> --scope "task dispatcher + phase gatekeeper"`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf attach task_admin-<label>`
+- `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" spawn coord task_admin <label> --scope "task dispatcher + phase gatekeeper"`
+- `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" attach task_admin-<label>`
 - In the `task_admin-*` tmux: spawn the 3 fixed children (use the same `<label>`):
-  - `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self migrator <label> --scope "migration execution"`
-  - `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self reviewer <label> --scope "code quality gate (changed files only)"`
-  - `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self regress <label> --scope "regression test gate (batch)"`
+  - `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" spawn-self migrator <label> --scope "migration execution"`
+  - `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" spawn-self reviewer <label> --scope "code quality gate (changed files only)"`
+  - `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" spawn-self regress <label> --scope "regression test gate (batch)"`
 
 Enter a role:
-- `bash .codex/skills/ai-team-workflow/scripts/atwf attach coord|task_admin|migrator|reviewer|regress`
+- `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" attach coord|task_admin|migrator|reviewer|regress`
 
 Dispatch task details (from `coord` to the per-task `task_admin-*`):
-- `bash .codex/skills/ai-team-workflow/scripts/atwf action task_admin-<label> --as coord --message "FQN=...\\nBASE_REF=...\\n..."`
+- `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" action task_admin-<label> --as coord --message "FQN=...\\nBASE_REF=...\\n..."`
   - Note: `task_admin` owns worktree/branch creation and must NOT merge; the user reviews and performs the final merge.
 
 Disband the whole team:
-- `bash .codex/skills/ai-team-workflow/scripts/atwf remove <coord-full>`
-  - find `<coord-full>` via: `bash .codex/skills/ai-team-workflow/scripts/atwf list`
+- `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" remove <coord-full>`
+  - find `<coord-full>` via: `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" list`
 
 ## Per-role spec docs (config)
 
@@ -81,17 +81,17 @@ Paths can be absolute or relative to the project git root.
 ## Commands
 
 All commands are wrappers around `twf` plus registry/inbox management:
-- `bash .codex/skills/ai-team-workflow/scripts/atwf init ["task"] [--task-file PATH] [--registry-only]`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf up <role> [label] --scope "..."` (root_role only)
-- `bash .codex/skills/ai-team-workflow/scripts/atwf spawn <parent-full> <role> [label] --scope "..."` / `spawn-self ...`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf list` / `tree` / `where` / `policy`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf inbox` / `inbox-open <id>` / `inbox-ack <id>` / `receipts <msg-id>`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf notice ...` / `action ...`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf gather ...` / `respond ...` / `reply-needed`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-path[-self]` / `worktree-create[-self]` / `worktree-check-self`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf pause` / `unpause` / `stop` / `resume`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf watch-idle`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf remove <coord-full>`
+- `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" init ["task"] [--task-file PATH] [--registry-only]`
+- `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" up <role> [label] --scope "..."` (root_role only)
+- `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" spawn <parent-full> <role> [label] --scope "..."` / `spawn-self ...`
+- `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" list` / `tree` / `where` / `policy`
+- `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" inbox` / `inbox-open <id>` / `inbox-ack <id>` / `receipts <msg-id>`
+- `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" notice ...` / `action ...`
+- `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" gather ...` / `respond ...` / `reply-needed`
+- `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" worktree-path[-self]` / `worktree-create[-self]` / `worktree-check-self`
+- `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" pause` / `unpause` / `stop` / `resume`
+- `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" watch-idle`
+- `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" remove <coord-full>`
 
 ## Environment knobs
 

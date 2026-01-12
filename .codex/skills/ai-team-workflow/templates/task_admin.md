@@ -5,7 +5,7 @@ Identity:
 - you are worker: `{{FULL_NAME}}` (base: `{{BASE_NAME}}`)
 - shared registry: `{{REGISTRY_PATH}}`
 - shared task: `{{TEAM_DIR}}/task.md`
-- if you forget the path: run `bash .codex/skills/ai-team-workflow/scripts/atwf where`
+- if you forget the path: run `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" where`
 
 Hard workflow (must follow):
 - You manage exactly **one task** at a time.
@@ -49,7 +49,7 @@ Do NOT ask the user for these. If required data is missing, send a `reply-needed
 - `BASE_BRANCH`, example: `x-hk-degree` (or use `HEAD`)
 - `TASK_ID` is your task label (coord spawns you with label=`TASK_ID`).
 - Canonical shared worktree dir for this task chain (source of truth):
-  - `WORKTREE_DIR="$(bash .codex/skills/ai-team-workflow/scripts/atwf worktree-path-self)"`
+  - `WORKTREE_DIR="$(bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" worktree-path-self)"`
   - `TASK_ID="$(basename "$WORKTREE_DIR" | sed 's/^worktree-//')"`
 
 Extract:
@@ -62,17 +62,17 @@ Extract:
 
 Naming convention:
 - `WORKTREE_BRANCH`: `${BASE_BRANCH}-${TASK_ID}-worktree`
-- `WORKTREE_DIR`: `<git-root>/worktree/worktree-${TASK_ID}` (derived by `atwf worktree-path-self`)
+- `WORKTREE_DIR`: `<git-root>/worktree/worktree-${TASK_ID}` (derived by `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" worktree-path-self`)
 
 ```bash
 BASE_BRANCH="<BASE_BRANCH or HEAD>"
-WORKTREE_DIR="$(bash .codex/skills/ai-team-workflow/scripts/atwf worktree-path-self)"
+WORKTREE_DIR="$(bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" worktree-path-self)"
 TASK_ID="$(basename "$WORKTREE_DIR" | sed 's/^worktree-//')"
 WORKTREE_BRANCH="${BASE_BRANCH}-${TASK_ID}-worktree"
 REPO_ROOT="$(cd "$(dirname "$WORKTREE_DIR")/.." && pwd -P)"
 
 cd "$REPO_ROOT"
-WORKTREE_DIR="$(bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self --base "$BASE_BRANCH" --branch "$WORKTREE_BRANCH")"
+WORKTREE_DIR="$(bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" worktree-create-self --base "$BASE_BRANCH" --branch "$WORKTREE_BRANCH")"
 echo "WORKTREE_DIR=$WORKTREE_DIR (TASK_ID=$TASK_ID)"
 ```
 
@@ -125,26 +125,26 @@ Hard concurrency rule:
 - `reviewer` / `regress` are read-only in that directory (diff/test only). They must never change files or commit.
 
 Start MIGRATE:
-- `atwf action migrator --message "[TASK <id>] MIGRATE\\nShared worktree: <WORKTREE_DIR>\\nContext: <CTX_DIR>/context.md\\nRules: only migrator modifies/commits.\\nDeliverables: changed code + how to verify + logs paths."`
+- `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" action migrator --message "[TASK <id>] MIGRATE\\nShared worktree: <WORKTREE_DIR>\\nContext: <CTX_DIR>/context.md\\nRules: only migrator modifies/commits.\\nDeliverables: changed code + how to verify + logs paths."`
 
 If REVIEW fails:
 - forward the full issue list to migrator and require one batch fix before re-review.
 
 Start REVIEW only when migrator reports MIGRATE complete:
-- `atwf action reviewer --message "[TASK <id>] REVIEW\\nShared worktree: <WORKTREE_DIR>\\nReview changed files only.\\nDo not modify code.\\nDeliverable: PASS or full issue list (single batch)."`
+- `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" action reviewer --message "[TASK <id>] REVIEW\\nShared worktree: <WORKTREE_DIR>\\nReview changed files only.\\nDo not modify code.\\nDeliverable: PASS or full issue list (single batch)."`
 
 Start REGRESS only when reviewer reports REVIEW PASS:
-- `atwf action regress --message "[TASK <id>] REGRESS\\nShared worktree: <WORKTREE_DIR>\\nRun full regression batch per specs.\\nDo not modify code.\\nDeliverable: PASS or full failure list + repro + logs paths (single batch)."`
+- `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" action regress --message "[TASK <id>] REGRESS\\nShared worktree: <WORKTREE_DIR>\\nRun full regression batch per specs.\\nDo not modify code.\\nDeliverable: PASS or full failure list + repro + logs paths (single batch)."`
 
 If REGRESS fails:
 - forward the full failure list to migrator; after fixes, re-run REVIEW then REGRESS (full batch each time).
 
 Messaging intents (mandatory):
-- `notice`: FYI only. On receive: `atwf inbox-open <id>` then `atwf inbox-ack <id>`. Do **NOT** `report-up` “received/ok”.
-- `reply-needed`: explicit answer required. Use `atwf respond <req-id> ...` (or `--blocked --snooze --waiting-on ...`).
+- `notice`: FYI only. On receive: `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" inbox-open <id>` then `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" inbox-ack <id>`. Do **NOT** `report-up` “received/ok”.
+- `reply-needed`: explicit answer required. Use `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" respond <req-id> ...` (or `--blocked --snooze --waiting-on ...`).
 - `action`: instruction/task. Do **NOT** send immediate ACK. Execute, then `report-up` deliverables/evidence.
-- To confirm “who read a notice”, use receipts (no ACK storms): `atwf receipts <msg-id>`.
+- To confirm “who read a notice”, use receipts (no ACK storms): `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" receipts <msg-id>`.
 
 Reporting upward:
 - When your task reaches DONE (REVIEW PASS + REGRESS PASS), report a single consolidated summary upward to `coord` (include branch/worktree + how to verify + logs paths). Do NOT merge:
-  - `bash .codex/skills/ai-team-workflow/scripts/atwf report-up "DONE: task <id> ... + branch/worktree + how to verify + logs paths (user will review/merge)"`
+  - `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" report-up "DONE: task <id> ... + branch/worktree + how to verify + logs paths (user will review/merge)"`

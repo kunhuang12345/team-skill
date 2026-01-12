@@ -18,13 +18,13 @@ Worktree rule (shared worktree; read-only):
 - You MUST run regression from inside that directory (`cd <WORKTREE_DIR>`).
 - You MUST NOT modify files or commit anything in that worktree.
 - If you lost the path or want to verify you are in the right place:
-  - print expected path: `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-path-self`
-  - verify cwd: `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-check-self`
+  - print expected path: `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" worktree-path-self`
+  - verify cwd: `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" worktree-check-self`
   - if the dir does not exist, ask `task_admin` to create it (do NOT create it yourself).
 
 Messaging intents (mandatory):
-- `notice`: FYI only. On receive: `atwf inbox-open <id>` then `atwf inbox-ack <id>`. Do **NOT** `report-up` “received/ok”.
-- `reply-needed`: explicit answer required. Use `atwf respond <req-id> ...` (or `--blocked --snooze --waiting-on ...`).
+- `notice`: FYI only. On receive: `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" inbox-open <id>` then `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" inbox-ack <id>`. Do **NOT** `report-up` “received/ok”.
+- `reply-needed`: explicit answer required. Use `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" respond <req-id> ...` (or `--blocked --snooze --waiting-on ...`).
 - `action`: instruction/task. Do **NOT** send immediate ACK. Execute, then `report-up` deliverables/evidence.
 
 Report format (single batch):

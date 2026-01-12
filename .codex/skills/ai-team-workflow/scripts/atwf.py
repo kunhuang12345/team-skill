@@ -77,8 +77,9 @@ _DRIVE_BACKUP_ROLE_DEFAULT = "task_admin"
 _DRIVE_COOLDOWN_DEFAULT = 600.0
 _STATE_WORKING_STALE_THRESHOLD_DEFAULT = 180.0
 _STATE_WORKING_ALERT_COOLDOWN_DEFAULT = 600.0
-_STATE_WAKE_MESSAGE_DEFAULT = "INBOX wake: you have unread messages. Run: bash .codex/skills/ai-team-workflow/scripts/atwf inbox"
-_STATE_REPLY_WAKE_MESSAGE_DEFAULT = "REPLY wake: you have pending reply-needed. Run: bash .codex/skills/ai-team-workflow/scripts/atwf reply-needed"
+_ATWF_SH = 'bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf"'
+_STATE_WAKE_MESSAGE_DEFAULT = f"INBOX wake: you have unread messages. Run: {_ATWF_SH} inbox"
+_STATE_REPLY_WAKE_MESSAGE_DEFAULT = f"REPLY wake: you have pending reply-needed. Run: {_ATWF_SH} reply-needed"
 
 
 def _now() -> str:
@@ -1114,7 +1115,7 @@ def _ensure_watch_idle_team(*, twf: Path, team_dir: Path, registry: Path) -> Non
 
     cmd_parts = [
         "bash",
-        ".codex/skills/ai-team-workflow/scripts/atwf",
+        str((_skill_dir() / "scripts" / "atwf").resolve()),
         "watch-idle",
     ]
     cmd_line = " ".join(shlex.quote(p) for p in cmd_parts)
@@ -1383,19 +1384,20 @@ def cmd_reset(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run(cmd: list[str], *, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
+def _run(cmd: list[str], *, input_text: str | None = None, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         cmd,
         check=False,
         text=True,
         input=input_text,
+        cwd=str(cwd) if cwd else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
 
 
-def _run_twf(twf: Path, args: list[str], *, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
-    return _run(["bash", str(twf), *args], input_text=input_text)
+def _run_twf(twf: Path, args: list[str], *, input_text: str | None = None, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    return _run(["bash", str(twf), *args], input_text=input_text, cwd=cwd)
 
 
 def _require_role(role: str) -> str:
@@ -2947,7 +2949,7 @@ def _require_comm_allowed(
         f"   actor:  {actor_full}\n"
         f"   target: {target_full}\n"
         f"   reason: {reason}\n"
-        f"   hint: request a handoff via `{root}` (or run: atwf handoff --as {root} <from> <to> --reason \"...\")"
+        f"   hint: request a handoff via `{root}` (or run: {_ATWF_SH} handoff --as {root} <from> <to> --reason \"...\")"
     )
 
 
@@ -2994,7 +2996,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         _eprint(f"   {role}: {full}{tag}")
 
     tip_roles = "|".join(sorted(set([root_role, task_owner_role, *trio.keys()])))
-    _eprint(f"   tip: enter a role via: atwf attach {tip_roles}")
+    _eprint(f"   tip: enter a role via: {_ATWF_SH} attach {tip_roles}")
 
     # If account_pool is enabled in twf_config and team_cycle is selected,
     # start a background watcher that rotates the whole team when limits are hit.
@@ -3025,7 +3027,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             to_role=to_role,
             body=msg,
         )
-        notice = f"[INBOX] id={msg_id}\nopen: atwf inbox-open {msg_id}\nack: atwf inbox-ack {msg_id}\n"
+        notice = f"[INBOX] id={msg_id}\nopen: {_ATWF_SH} inbox-open {msg_id}\nack: {_ATWF_SH} inbox-ack {msg_id}\n"
         wrapped = _wrap_team_message(
             team_dir,
             kind="task",
@@ -3040,7 +3042,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         sys.stderr.write(res.stderr)
         return res.returncode
 
-    _eprint("   next: spawn a task chain via: atwf spawn coord task_admin <label> --scope \"...\"")
+    _eprint(f"   next: spawn a task chain via: {_ATWF_SH} spawn coord task_admin <label> --scope \"...\"")
     return 0
 
 
@@ -3166,8 +3168,8 @@ def _init_trio(
     return out
 
 
-def _start_worker(twf: Path, *, base: str, up_args: list[str]) -> tuple[str, Path]:
-    res = _run_twf(twf, ["up", base, *_twf_default_up_args(), *up_args])
+def _start_worker(twf: Path, *, base: str, up_args: list[str], cwd: Path | None = None) -> tuple[str, Path]:
+    res = _run_twf(twf, ["up", base, *_twf_default_up_args(), *up_args], cwd=cwd)
     if res.returncode != 0:
         raise SystemExit(res.stderr.strip() or f"❌ twf up failed (code {res.returncode})")
     session_file = res.stdout.strip()
@@ -3178,8 +3180,8 @@ def _start_worker(twf: Path, *, base: str, up_args: list[str]) -> tuple[str, Pat
     return full, session_path
 
 
-def _spawn_worker(twf: Path, *, parent_full: str, child_base: str, up_args: list[str]) -> tuple[str, Path]:
-    res = _run_twf(twf, ["spawn", parent_full, child_base, *_twf_default_up_args(), *up_args])
+def _spawn_worker(twf: Path, *, parent_full: str, child_base: str, up_args: list[str], cwd: Path | None = None) -> tuple[str, Path]:
+    res = _run_twf(twf, ["spawn", parent_full, child_base, *_twf_default_up_args(), *up_args], cwd=cwd)
     if res.returncode != 0:
         raise SystemExit(res.stderr.strip() or f"❌ twf spawn failed (code {res.returncode})")
     session_file = res.stdout.strip()
@@ -3243,8 +3245,8 @@ def _bootstrap_worker(
     )
     notice = (
         f"[BOOTSTRAP-INBOX] id={msg_id}\n"
-        f"open: bash .codex/skills/ai-team-workflow/scripts/atwf inbox-open {msg_id}\n"
-        f"ack:  bash .codex/skills/ai-team-workflow/scripts/atwf inbox-ack {msg_id}\n"
+        f"open: {_ATWF_SH} inbox-open {msg_id}\n"
+        f"ack:  {_ATWF_SH} inbox-ack {msg_id}\n"
     )
     wrapped = _wrap_team_message(
         team_dir,
@@ -3268,7 +3270,7 @@ def cmd_up(args: argparse.Namespace) -> int:
     role = _require_role(args.role)
     policy = _policy()
     if role != policy.root_role:
-        raise SystemExit(f"❌ up only allowed for root_role={policy.root_role}. Use `atwf spawn` / `atwf spawn-self`.")
+        raise SystemExit(f"❌ up only allowed for root_role={policy.root_role}. Use `{_ATWF_SH} spawn` / `{_ATWF_SH} spawn-self`.")
 
     data0 = _load_registry(registry)
     existing_roots = []
@@ -3351,7 +3353,23 @@ def cmd_spawn(args: argparse.Namespace) -> int:
             f"Allowed: {', '.join(sorted(allowed)) or '(none)'}"
         )
 
-    full, session_path = _spawn_worker(twf, parent_full=parent_full, child_base=base, up_args=[])
+    spawn_cwd: Path | None = None
+    if parent_role == "task_admin":
+        task_id = _task_id_from_member(parent_m)
+        if not task_id:
+            raise SystemExit(f"❌ cannot derive TASK_ID from parent={parent_full!r} (role/base mismatch)")
+        git_root = _git_root()
+        expected = _task_worktree_path(git_root, task_id=task_id).resolve()
+        if not expected.is_dir():
+            raise SystemExit(
+                "❌ task worktree is missing; create it before spawning child roles.\n"
+                f"   expected: {expected}\n"
+                f"   fix:      {_ATWF_SH} worktree-create-self\n"
+                f"             then: cd {expected}"
+            )
+        spawn_cwd = expected
+
+    full, session_path = _spawn_worker(twf, parent_full=parent_full, child_base=base, up_args=[], cwd=spawn_cwd)
 
     lock = team_dir / ".lock"
     with _locked(lock):
@@ -3507,7 +3525,7 @@ def cmd_report_up(args: argparse.Namespace) -> int:
     data = _load_registry(registry)
     sender = _resolve_member(data, self_name)
     if not sender:
-        raise SystemExit(f"❌ current worker not found in registry: {self_name} (run: atwf register-self ...)")
+        raise SystemExit(f"❌ current worker not found in registry: {self_name} (run: {_ATWF_SH} register-self ...)")
 
     parent = sender.get("parent")
     parent_full = str(parent).strip() if isinstance(parent, str) else ""
@@ -3539,7 +3557,7 @@ def cmd_report_up(args: argparse.Namespace) -> int:
         to_role=to_role,
         body=msg,
     )
-    notice = f"[INBOX] id={msg_id}\nopen: atwf inbox-open {msg_id}\nack: atwf inbox-ack {msg_id}\n"
+    notice = f"[INBOX] id={msg_id}\nopen: {_ATWF_SH} inbox-open {msg_id}\nack: {_ATWF_SH} inbox-ack {msg_id}\n"
     wrapped = _wrap_team_message(
         team_dir,
         kind="report-up",
@@ -3585,7 +3603,7 @@ def cmd_report_to(args: argparse.Namespace) -> int:
 
     sender = _resolve_member(data, self_name)
     if not sender:
-        raise SystemExit(f"❌ current worker not found in registry: {self_name} (run: atwf register-self ...)")
+        raise SystemExit(f"❌ current worker not found in registry: {self_name} (run: {_ATWF_SH} register-self ...)")
 
     policy = _policy()
     _require_comm_allowed(policy, data, actor_full=self_name, target_full=to_full)
@@ -3612,7 +3630,7 @@ def cmd_report_to(args: argparse.Namespace) -> int:
         to_role=to_role,
         body=msg,
     )
-    notice = f"[INBOX] id={msg_id}\nopen: atwf inbox-open {msg_id}\nack: atwf inbox-ack {msg_id}\n"
+    notice = f"[INBOX] id={msg_id}\nopen: {_ATWF_SH} inbox-open {msg_id}\nack: {_ATWF_SH} inbox-ack {msg_id}\n"
     wrapped = _wrap_team_message(
         team_dir,
         kind="report-to",
@@ -3685,7 +3703,7 @@ def cmd_register(args: argparse.Namespace) -> int:
                 if not final_parent and not force:
                     raise SystemExit(
                         f"❌ non-root roles must have a parent (root_role={policy.root_role}). "
-                        f"Use `atwf spawn`/`spawn-self` or pass --parent/--force."
+                        f"Use `{_ATWF_SH} spawn`/`{_ATWF_SH} spawn-self` or pass --parent/--force."
                     )
                 parent_m = _resolve_member(data, final_parent) if final_parent else None
                 parent_role = _member_role(parent_m)
@@ -3853,7 +3871,7 @@ def cmd_perms_self(_: argparse.Namespace) -> int:
 
     self_m = _resolve_member(data, self_full)
     if not self_m:
-        raise SystemExit(f"❌ current worker not found in registry: {self_full} (run: atwf register-self ...)")
+        raise SystemExit(f"❌ current worker not found in registry: {self_full} (run: {_ATWF_SH} register-self ...)")
 
     role = _member_role(self_m)
     base = _member_base(self_m)
@@ -3983,7 +4001,7 @@ def cmd_handoff(args: argparse.Namespace) -> int:
     )
 
     handoff_id = _next_msg_id(team_dir)
-    notice = f"[INBOX] id={handoff_id}\nopen: atwf inbox-open {handoff_id}\nack: atwf inbox-ack {handoff_id}\n"
+    notice = f"[INBOX] id={handoff_id}\nopen: {_ATWF_SH} inbox-open {handoff_id}\nack: {_ATWF_SH} inbox-ack {handoff_id}\n"
 
     _write_inbox_message(
         team_dir,
@@ -4445,7 +4463,7 @@ def cmd_worktree_check_self(_: argparse.Namespace) -> int:
     _eprint(f"   expected: {expected}")
     _eprint(f"   cwd:      {cwd}")
     if role == "task_admin":
-        _eprint(f"   fix:      bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self && cd {expected}")
+        _eprint(f"   fix:      {_ATWF_SH} worktree-create-self && cd {expected}")
     else:
         _eprint(f"   fix:      cd {expected}")
         _eprint("             (if missing: ask task_admin to create it; do NOT run worktree-create-self)")
@@ -4768,7 +4786,7 @@ def cmd_broadcast(args: argparse.Namespace) -> int:
             uniq.append(t)
 
     bc_id = _next_msg_id(team_dir)
-    notice = f"[INBOX] id={bc_id}\nopen: atwf inbox-open {bc_id}\nack: atwf inbox-ack {bc_id}\n"
+    notice = f"[INBOX] id={bc_id}\nopen: {_ATWF_SH} inbox-open {bc_id}\nack: {_ATWF_SH} inbox-ack {bc_id}\n"
 
     lock = team_dir / ".lock"
     with _locked(lock):
@@ -4960,7 +4978,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
     actor_full = _resolve_actor_full(data, as_target=getattr(args, "as_target", None))
     actor_m = _resolve_member(data, actor_full)
     if not actor_m:
-        raise SystemExit(f"❌ actor not found in registry: {actor_full} (run: atwf register-self ...)")
+        raise SystemExit(f"❌ actor not found in registry: {actor_full} (run: {_ATWF_SH} register-self ...)")
     actor_role = _member_role(actor_m)
     actor_base = _member_base(actor_m) or actor_full
 
@@ -4996,7 +5014,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
         to_role=to_role,
         body=msg,
     )
-    notice = f"[INBOX] id={msg_id}\nopen: atwf inbox-open {msg_id}\nack: atwf inbox-ack {msg_id}\n"
+    notice = f"[INBOX] id={msg_id}\nopen: {_ATWF_SH} inbox-open {msg_id}\nack: {_ATWF_SH} inbox-ack {msg_id}\n"
     wrapped = _wrap_team_message(
         team_dir,
         kind="ask",
@@ -5040,7 +5058,7 @@ def cmd_send(args: argparse.Namespace) -> int:
     actor_full = _resolve_actor_full(data, as_target=getattr(args, "as_target", None))
     actor_m = _resolve_member(data, actor_full)
     if not actor_m:
-        raise SystemExit(f"❌ actor not found in registry: {actor_full} (run: atwf register-self ...)")
+        raise SystemExit(f"❌ actor not found in registry: {actor_full} (run: {_ATWF_SH} register-self ...)")
     actor_role = _member_role(actor_m)
     actor_base = _member_base(actor_m) or actor_full
 
@@ -5079,7 +5097,7 @@ def cmd_send(args: argparse.Namespace) -> int:
         to_role=to_role,
         body=msg,
     )
-    notice = f"[INBOX] id={msg_id}\nopen: atwf inbox-open {msg_id}\nack: atwf inbox-ack {msg_id}\n"
+    notice = f"[INBOX] id={msg_id}\nopen: {_ATWF_SH} inbox-open {msg_id}\nack: {_ATWF_SH} inbox-ack {msg_id}\n"
     wrapped = _wrap_team_message(
         team_dir,
         kind="send",
@@ -5178,7 +5196,7 @@ def _cmd_intent_message(args: argparse.Namespace, *, kind: str) -> int:
     actor_full = _resolve_actor_full(data, as_target=getattr(args, "as_target", None))
     actor_m = _resolve_member(data, actor_full)
     if not actor_m:
-        raise SystemExit(f"❌ actor not found in registry: {actor_full} (run: atwf register-self ...)")
+        raise SystemExit(f"❌ actor not found in registry: {actor_full} (run: {_ATWF_SH} register-self ...)")
     actor_role = _member_role(actor_m)
     actor_base = _member_base(actor_m) or actor_full
 
@@ -5215,7 +5233,7 @@ def _cmd_intent_message(args: argparse.Namespace, *, kind: str) -> int:
         _require_comm_allowed(policy, data, actor_full=actor_full, target_full=targets[0])
 
     msg_id = _next_msg_id(team_dir)
-    inbox_notice = f"[INBOX] id={msg_id}\nopen: atwf inbox-open {msg_id}\nack: atwf inbox-ack {msg_id}\n"
+    inbox_notice = f"[INBOX] id={msg_id}\nopen: {_ATWF_SH} inbox-open {msg_id}\nack: {_ATWF_SH} inbox-ack {msg_id}\n"
 
     lock = team_dir / ".lock"
     with _locked(lock):
@@ -5376,7 +5394,7 @@ def cmd_gather(args: argparse.Namespace) -> int:
     actor_full = _resolve_actor_full(data, as_target=getattr(args, "as_target", None))
     actor_m = _resolve_member(data, actor_full)
     if not actor_m:
-        raise SystemExit(f"❌ actor not found in registry: {actor_full} (run: atwf register-self ...)")
+        raise SystemExit(f"❌ actor not found in registry: {actor_full} (run: {_ATWF_SH} register-self ...)")
     actor_role = _member_role(actor_m)
     actor_base = _member_base(actor_m) or actor_full
 
@@ -5488,13 +5506,13 @@ def cmd_gather(args: argparse.Namespace) -> int:
                 f"- deadline_at: {deadline_at}\n"
                 "\n"
                 "Respond (required):\n"
-                f"- bash .codex/skills/ai-team-workflow/scripts/atwf respond {request_id} \"<your reply>\"\n"
+                f"- {_ATWF_SH} respond {request_id} \"<your reply>\"\n"
                 "\n"
                 "If blocked, snooze reminders (default 15m):\n"
-                f"- bash .codex/skills/ai-team-workflow/scripts/atwf respond {request_id} --blocked --snooze 15m --waiting-on <base> \"why blocked\"\n"
+                f"- {_ATWF_SH} respond {request_id} --blocked --snooze 15m --waiting-on <base> \"why blocked\"\n"
                 "\n"
                 "View pending reply-needed:\n"
-                "- bash .codex/skills/ai-team-workflow/scripts/atwf reply-needed\n"
+                f"- {_ATWF_SH} reply-needed\n"
                 "\n"
                 "Message:\n"
                 f"{msg.rstrip()}\n"
@@ -5536,7 +5554,7 @@ def cmd_respond(args: argparse.Namespace) -> int:
     actor_full = _resolve_actor_full(data, as_target=getattr(args, "as_target", None))
     actor_m = _resolve_member(data, actor_full)
     if not actor_m:
-        raise SystemExit(f"❌ actor not found in registry: {actor_full} (run: atwf register-self ...)")
+        raise SystemExit(f"❌ actor not found in registry: {actor_full} (run: {_ATWF_SH} register-self ...)")
     actor_role = _member_role(actor_m)
     actor_base = _member_base(actor_m) or actor_full
 
@@ -5921,7 +5939,7 @@ def cmd_state_set_self(args: argparse.Namespace) -> int:
                 hint = f" ids: {preview}" if preview else ""
                 raise SystemExit(
                     f"❌ inbox not empty (unread={unread} overflow={overflow}){hint} "
-                    f"(run: bash .codex/skills/ai-team-workflow/scripts/atwf inbox)"
+                    f"(run: {_ATWF_SH} inbox)"
                 )
             state["idle_since"] = now
             state["idle_inbox_empty_at"] = now
@@ -6277,7 +6295,7 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
                                 f"- oldest_id: {min_id} age_s={int(age_s)}\n"
                                 f"- last_inbox_check_at: {str(st.get('last_inbox_check_at','') or '(never)')}\n"
                                 "Suggested action:\n"
-                                f"- Ask the worker to run: bash .codex/skills/ai-team-workflow/scripts/atwf inbox\n"
+                                f"- Ask the worker to run: {_ATWF_SH} inbox\n"
                                 "- If they are stuck, re-scope or pause/unpause that worker.\n"
                             )
                             _write_inbox_message(
@@ -6299,7 +6317,7 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
                                     "[ALERT] stale inbox while working\n"
                                     f"worker={base} role={role or '?'} pending={unread}+{overflow} "
                                     f"oldest={min_id} age_s={int(age_s)}\n"
-                                    f"inbox id={msg_id} (run: atwf inbox-open {msg_id})\n"
+                                    f"inbox id={msg_id} (run: {_ATWF_SH} inbox-open {msg_id})\n"
                                 )
                                 wrapped = _wrap_team_message(
                                     team_dir,
@@ -6604,7 +6622,7 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
                         short = (
                             "[DRIVE] task stalled: ALL IDLE + INBOX EMPTY\n"
                             f"task_admin={admin_base}\n"
-                            f"inbox id={msg_id} (open: atwf inbox-open {msg_id})\n"
+                            f"inbox id={msg_id} (open: {_ATWF_SH} inbox-open {msg_id})\n"
                             "Action: diagnose root cause, then re-drive the task back to work.\n"
                         )
                         wrapped = _wrap_team_message(

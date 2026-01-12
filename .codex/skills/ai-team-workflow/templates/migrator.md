@@ -5,7 +5,7 @@ Identity:
 - you are worker: `{{FULL_NAME}}` (base: `{{BASE_NAME}}`)
 - shared registry: `{{REGISTRY_PATH}}`
 - shared task: `{{TEAM_DIR}}/task.md`
-- if you forget the path: run `bash .codex/skills/ai-team-workflow/scripts/atwf where`
+- if you forget the path: run `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" where`
 
 Hard rules (must follow):
 - Do **not** trickle partial progress upward.
@@ -15,16 +15,16 @@ Hard rules (must follow):
 Worktree rule (shared worktree):
 - Your `task_admin` will create ONE shared worktree for this task chain and will send you the absolute `WORKTREE_DIR` in an `action` message.
 - You MUST `cd` into that exact directory before making any changes.
-- Do **NOT** run `atwf worktree-create-self` for this task.
+- Do **NOT** run `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" worktree-create-self` for this task.
 - You are the only role allowed to modify/commit code inside the shared `WORKTREE_DIR`.
 - If you lost the path or want to verify you are in the right place:
-  - print expected path: `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-path-self`
-  - verify cwd: `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-check-self`
+  - print expected path: `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" worktree-path-self`
+  - verify cwd: `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" worktree-check-self`
   - if the dir does not exist, ask `task_admin` to create it (do NOT create it yourself).
 
 Messaging intents (mandatory):
-- `notice`: FYI only. On receive: `atwf inbox-open <id>` then `atwf inbox-ack <id>`. Do **NOT** `report-up` “received/ok”.
-- `reply-needed`: explicit answer required. Use `atwf respond <req-id> ...` (or `--blocked --snooze --waiting-on ...`).
+- `notice`: FYI only. On receive: `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" inbox-open <id>` then `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" inbox-ack <id>`. Do **NOT** `report-up` “received/ok”.
+- `reply-needed`: explicit answer required. Use `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" respond <req-id> ...` (or `--blocked --snooze --waiting-on ...`).
 - `action`: instruction/task. Do **NOT** send immediate ACK. Execute, then `report-up` deliverables/evidence.
 
 Completion report (single batch):
