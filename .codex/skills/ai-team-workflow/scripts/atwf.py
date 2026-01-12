@@ -4299,8 +4299,27 @@ def _worktrees_dir(git_root: Path) -> Path:
     return git_root / "worktree"
 
 
-def _worktree_path(git_root: Path, full: str) -> Path:
-    return _worktrees_dir(git_root) / full.strip()
+def _task_id_from_member(m: dict[str, Any]) -> str:
+    role = _member_role(m).strip()
+    base = str(m.get("base", "") or "").strip()
+    full = str(m.get("full", "") or "").strip()
+
+    raw = base or full
+    if not (role and raw):
+        return ""
+
+    if FULL_NAME_RE.match(raw):
+        raw = re.sub(r"-[0-9]{8}-[0-9]{6}-[0-9]+$", "", raw)
+
+    prefix = f"{role}-"
+    if not raw.startswith(prefix):
+        return ""
+    task_id = raw[len(prefix) :].strip()
+    return task_id
+
+
+def _task_worktree_path(git_root: Path, *, task_id: str) -> Path:
+    return _worktrees_dir(git_root) / f"worktree-{task_id.strip()}"
 
 
 def cmd_worktree_path(args: argparse.Namespace) -> int:
@@ -4317,7 +4336,30 @@ def cmd_worktree_path(args: argparse.Namespace) -> int:
         raise SystemExit(f"❌ target not found in registry: {target}")
 
     git_root = _git_root()
-    print(str(_worktree_path(git_root, full)))
+    m = _resolve_member(data, full) or {}
+    task_id = _task_id_from_member(m)
+    if not task_id:
+        raise SystemExit(f"❌ cannot derive TASK_ID from target={target!r} (role/base mismatch)")
+    print(str(_task_worktree_path(git_root, task_id=task_id)))
+    return 0
+
+
+def cmd_worktree_path_self(_: argparse.Namespace) -> int:
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+
+    full = _tmux_self_full()
+    if not full:
+        raise SystemExit("❌ worktree-path-self must run inside tmux")
+
+    m = _resolve_member(data, full) or {}
+    task_id = _task_id_from_member(m)
+    if not task_id:
+        raise SystemExit(f"❌ cannot derive TASK_ID from current worker: {full}")
+
+    git_root = _git_root()
+    print(str(_task_worktree_path(git_root, task_id=task_id)))
     return 0
 
 
@@ -4338,9 +4380,14 @@ def cmd_worktree_create(args: argparse.Namespace) -> int:
     wt_dir = _worktrees_dir(git_root)
     wt_dir.mkdir(parents=True, exist_ok=True)
 
-    path = _worktree_path(git_root, full)
+    m = _resolve_member(data, full) or {}
+    task_id = _task_id_from_member(m)
+    if not task_id:
+        raise SystemExit(f"❌ cannot derive TASK_ID from target={target!r} (role/base mismatch)")
+
+    path = _task_worktree_path(git_root, task_id=task_id)
     base = (args.base or "HEAD").strip() or "HEAD"
-    branch = (args.branch or full).strip() or full
+    branch = (args.branch or "").strip() or f"{base}-{task_id}-worktree"
 
     if path.exists():
         print(str(path))
@@ -4374,15 +4421,23 @@ def cmd_worktree_check_self(_: argparse.Namespace) -> int:
     if not full:
         raise SystemExit("❌ failed to detect current tmux session name")
 
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+    m = _resolve_member(data, full) or {}
+    task_id = _task_id_from_member(m)
+    if not task_id:
+        raise SystemExit(f"❌ cannot derive TASK_ID from current worker: {full}")
+
     git_root = _git_root()
-    expected = _worktree_path(git_root, full).resolve()
+    expected = _task_worktree_path(git_root, task_id=task_id).resolve()
     cwd = Path.cwd().resolve()
 
     if expected == cwd or expected in cwd.parents:
         print("OK")
         return 0
 
-    _eprint("❌ not in your dedicated worktree")
+    _eprint("❌ not in the task worktree")
     _eprint(f"   expected: {expected}")
     _eprint(f"   cwd:      {cwd}")
     _eprint(f"   fix:      bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self && cd {expected}")
@@ -6980,17 +7035,19 @@ def build_parser() -> argparse.ArgumentParser:
     dself = sub.add_parser("design-init-self", help="create a design doc stub for the current tmux worker")
     dself.add_argument("--force", action="store_true", help="overwrite if exists")
 
-    wtp = sub.add_parser("worktree-path", help="print the dedicated git worktree path for a worker")
+    wtp = sub.add_parser("worktree-path", help="print the shared task worktree path for a worker")
     wtp.add_argument("target", help="full|base|role")
 
-    wtc = sub.add_parser("worktree-create", help="create a dedicated git worktree under <git-root>/worktree/<full>")
+    sub.add_parser("worktree-path-self", help="print the shared task worktree path for the current tmux worker")
+
+    wtc = sub.add_parser("worktree-create", help="create a shared task git worktree under <git-root>/worktree/worktree-<TASK_ID>")
     wtc.add_argument("target", help="full|base|role")
     wtc.add_argument("--base", default="HEAD", help="base ref/branch/commit (default: HEAD)")
-    wtc.add_argument("--branch", default="", help="branch name to create for the worktree (default: <full>)")
+    wtc.add_argument("--branch", default="", help="branch name to create for the worktree (default: <base>-<TASK_ID>-worktree)")
 
-    wtcs = sub.add_parser("worktree-create-self", help="create a dedicated git worktree for the current tmux worker")
+    wtcs = sub.add_parser("worktree-create-self", help="create a shared task git worktree for the current tmux worker")
     wtcs.add_argument("--base", default="HEAD", help="base ref/branch/commit (default: HEAD)")
-    wtcs.add_argument("--branch", default="", help="branch name to create for the worktree (default: <full>)")
+    wtcs.add_argument("--branch", default="", help="branch name to create for the worktree (default: <base>-<TASK_ID>-worktree)")
 
     sub.add_parser("worktree-check-self", help="ensure you are working inside your dedicated worktree (inside tmux)")
 
@@ -7217,6 +7274,8 @@ def main(argv: list[str]) -> int:
         return cmd_design_init_self(args)
     if args.cmd == "worktree-path":
         return cmd_worktree_path(args)
+    if args.cmd == "worktree-path-self":
+        return cmd_worktree_path_self(args)
     if args.cmd == "worktree-create":
         return cmd_worktree_create(args)
     if args.cmd == "worktree-create-self":
