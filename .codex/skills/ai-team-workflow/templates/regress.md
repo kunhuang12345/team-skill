@@ -15,11 +15,12 @@ Hard rules (must follow):
 
 Worktree rule (shared worktree; read-only):
 - Your `task_admin` will send you the absolute `WORKTREE_DIR` (shared worktree) in an `action` message.
-- You MUST run regression from inside that directory (`cd <WORKTREE_DIR>`).
+- You are started inside that directory by default (spawn `cwd=WORKTREE_DIR`), but you MUST verify you are in the right place before running tests.
 - You MUST NOT modify files or commit anything in that worktree.
 - If you lost the path or want to verify you are in the right place:
   - print expected path: `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" worktree-path-self`
   - verify cwd: `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" worktree-check-self`
+  - if not in the worktree, `cd <WORKTREE_DIR>` then re-run `worktree-check-self`
   - if the dir does not exist, ask `task_admin` to create it (do NOT create it yourself).
 
 Messaging intents (mandatory):

@@ -32,7 +32,9 @@ This branch is a **dedicated migration team** with a strict 4-node task chain.
 ## Shared worktree (hard constraint)
 
 - For each task chain, `task_admin` creates **one shared Git worktree** and sends the absolute `WORKTREE_DIR` to `migrator/reviewer/regress` via `atwf action`.
-- `WORKTREE_DIR` is authoritative for the task chain. All work must happen inside it (`cd <WORKTREE_DIR>`).
+- `WORKTREE_DIR` is authoritative for the task chain.
+  - `task_admin` spawns `migrator/reviewer/regress` with `cwd=WORKTREE_DIR`, so you should already be inside it by default.
+  - Always verify with `worktree-check-self`; only `cd <WORKTREE_DIR>` if needed.
 - If you lost the path (inside any tmux worker):
   - print expected path: `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" worktree-path-self`
   - verify cwd: `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" worktree-check-self`

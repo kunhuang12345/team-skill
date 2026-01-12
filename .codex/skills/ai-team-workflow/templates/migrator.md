@@ -14,12 +14,13 @@ Hard rules (must follow):
 
 Worktree rule (shared worktree):
 - Your `task_admin` will create ONE shared worktree for this task chain and will send you the absolute `WORKTREE_DIR` in an `action` message.
-- You MUST `cd` into that exact directory before making any changes.
+- You are started inside that directory by default (spawn `cwd=WORKTREE_DIR`), but you MUST verify you are in the right place before making any changes.
 - Do **NOT** run `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" worktree-create-self` for this task.
 - You are the only role allowed to modify/commit code inside the shared `WORKTREE_DIR`.
 - If you lost the path or want to verify you are in the right place:
   - print expected path: `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" worktree-path-self`
   - verify cwd: `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" worktree-check-self`
+  - if not in the worktree, `cd <WORKTREE_DIR>` then re-run `worktree-check-self`
   - if the dir does not exist, ask `task_admin` to create it (do NOT create it yourself).
 
 Messaging intents (mandatory):
