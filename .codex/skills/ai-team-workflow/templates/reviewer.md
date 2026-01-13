@@ -26,6 +26,10 @@ Worktree rule (shared worktree; read-only):
 Review quality checklist (mandatory):
 - Scope discipline:
   - If `task/<MODULE>/<SUITE_NAME>/context.md` defines `In Scope Paths`, changed files MUST stay within that allowlist; otherwise require the migrator to update `In Scope Paths` first (with reasons).
+- Suite structure (mandatory):
+  - Verify the suite/page/table/enum/data layout and naming follow `task/Test_Suite_Structure_Guide.md`.
+  - If the migrator deviates from the guide (e.g. not splitting `*_enums.py`, not extracting a Table component, not splitting suite `_step_` methods), require a pre-declared exception in `task/<MODULE>/<SUITE_NAME>/context.md`:
+    - `Structure-Guide-Exception: <clause> | <deviation> | <reason> | <alternative> | <impact>`
 - Code change discipline:
   - Minimal changes: do NOT modify unrelated existing code “while you are here”. If an existing module must be changed, justify why, and keep the delta minimal.
   - If an existing-code change causes regressions or breaks behavior at the change site, prefer reverting that change and redesigning; do NOT “paper over” with fallbacks.
