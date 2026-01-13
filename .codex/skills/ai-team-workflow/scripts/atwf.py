@@ -1780,6 +1780,7 @@ def _read_task_content(args: argparse.Namespace) -> tuple[str | None, str | None
 def _ensure_share_layout(team_dir: Path) -> None:
     team_dir.mkdir(parents=True, exist_ok=True)
     _design_dir(team_dir).mkdir(parents=True, exist_ok=True)
+    (team_dir / "notes").mkdir(parents=True, exist_ok=True)
     _inbox_root(team_dir).mkdir(parents=True, exist_ok=True)
     _requests_root(team_dir).mkdir(parents=True, exist_ok=True)
     _state_root(team_dir).mkdir(parents=True, exist_ok=True)
