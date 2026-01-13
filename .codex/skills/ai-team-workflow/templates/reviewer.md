@@ -32,8 +32,9 @@ Review quality checklist (mandatory):
 - Scope discipline:
   - If `task/<MODULE>/<SUITE_NAME>/context.md` defines `In Scope Paths`, changed files MUST stay within that allowlist; otherwise require the migrator to update `In Scope Paths` first (with reasons).
 - Suite structure (mandatory):
-  - Verify the migrated suite complies with **all mandatory requirements** in `task/Test_Suite_Structure_Guide.md` (not only directory layout and naming).
-  - If the migrator deviates from any requirement in the guide (e.g. not splitting `*_enums.py`, not extracting a Table component, not splitting suite `_step_` methods), require a pre-declared exception in `task/<MODULE>/<SUITE_NAME>/context.md`:
+  - Verify the migrated suite fully follows `task/Test_Suite_Structure_Guide.md`.
+    - The guide is mandatory by default; anything not explicitly marked optional/recommended should be treated as MUST.
+  - If the migrator deviates from the guide, require a pre-declared exception in `task/<MODULE>/<SUITE_NAME>/context.md`:
     - `Structure-Guide-Exception: <clause> | <deviation> | <reason> | <alternative> | <impact>`
 - Code change discipline:
   - Minimal changes: do NOT modify unrelated existing code “while you are here”. If an existing module must be changed, justify why, and keep the delta minimal.
