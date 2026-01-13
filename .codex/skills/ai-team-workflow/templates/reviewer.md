@@ -22,6 +22,11 @@ Worktree rule (shared worktree; read-only):
   - verify cwd: `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" worktree-check-self`
   - if not in the worktree, `cd <WORKTREE_DIR>` then re-run `worktree-check-self`
   - if the dir does not exist, ask `task_admin` to create it (do NOT create it yourself).
+- Working notes location:
+  - Do NOT write to `task/<MODULE>/<SUITE_NAME>/context.md` (it is migrator-owned inside the worktree).
+  - If you need a scratchpad while reviewing, write to share instead:
+    - `{{TEAM_DIR}}/notes/{{BASE_NAME}}.md`
+  - In your final `report-up`, include the notes file path if it exists.
 
 Review quality checklist (mandatory):
 - Scope discipline:
