@@ -23,6 +23,13 @@ Worktree rule (shared worktree; read-only):
   - if not in the worktree, `cd <WORKTREE_DIR>` then re-run `worktree-check-self`
   - if the dir does not exist, ask `task_admin` to create it (do NOT create it yourself).
 
+Regression scope checklist (mandatory):
+- Shared-change regression gate:
+  - If changes touch shared PageObject/components/base (e.g. `src/pages/**`, `src/pages/components/**`, base pages/tables), OR any symbol reused across files:
+    - run `rg` callsite audit under `src/` (import/instantiation/method calls)
+    - pick at least 1 covering regression nodeid (based on the impacted callsites) and run it to PASS
+    - keep the pytest log under `task/logs/` and include the log path in your final report
+
 Messaging intents (mandatory):
 - `notice`: FYI only. On receive: `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" inbox-open <id>` then `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" inbox-ack <id>`. Do **NOT** `report-up` “received/ok”.
 - `reply-needed`: explicit answer required. Use `bash "$(git rev-parse --git-common-dir)/../.codex/skills/ai-team-workflow/scripts/atwf" respond <req-id> ...` (or `--blocked --snooze --waiting-on ...`).
