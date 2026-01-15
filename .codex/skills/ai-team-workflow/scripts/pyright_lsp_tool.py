@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from queue import Queue
 from typing import Any
-from urllib.parse import quote_from_bytes, urlparse, urlunparse
+from urllib.parse import quote_from_bytes, unquote, urlparse, urlunparse
 
 
 def _eprint(msg: str) -> None:
@@ -33,9 +33,7 @@ def _path_from_uri(uri: str) -> Path:
     parsed = urlparse(uri)
     if parsed.scheme != "file":
         raise ValueError(f"unsupported uri scheme: {uri!r}")
-    # urlparse keeps path percent-encoded; let Path handle the decoded bytes via unquote.
-    # Simpler: use urllib.request.url2pathname? Avoid platform deps; repo is Linux.
-    return Path(os.path.normpath(parsed.path))
+    return Path(os.path.normpath(unquote(parsed.path)))
 
 
 def _git_toplevel(cwd: Path) -> Path | None:
@@ -411,8 +409,11 @@ def cmd_refs(args: argparse.Namespace) -> int:
         client.close()
 
     uniq = sorted({loc.to_display() for loc in locs})
-    for line in uniq:
-        print(line)
+    try:
+        for line in uniq:
+            print(line)
+    except BrokenPipeError:
+        return 0
     return 0
 
 
@@ -489,4 +490,3 @@ def main(argv: list[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
-
