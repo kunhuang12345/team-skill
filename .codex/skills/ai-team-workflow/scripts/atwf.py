@@ -517,6 +517,24 @@ def _skill_dir() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def _atwf_wrapper_path() -> Path:
+    return Path(__file__).resolve().with_name("atwf")
+
+
+def _atwf_cmd() -> str:
+    wrapper = _atwf_wrapper_path()
+    if wrapper.is_file():
+        return f"bash {shlex.quote(str(wrapper))}"
+    return f"python3 {shlex.quote(str(Path(__file__).resolve()))}"
+
+
+def _substitute_atwf_paths(text: str) -> str:
+    s = text or ""
+    s = s.replace("bash .codex/skills/ai-team-workflow/scripts/atwf", _atwf_cmd())
+    s = s.replace(".codex/skills/ai-team-workflow/scripts/atwf_config.yaml", str(_config_file()))
+    return s
+
+
 def _apply_deps_env_defaults() -> None:
     """
     Make ai-team-workflow self-contained by defaulting dependency configs to this
@@ -897,8 +915,8 @@ def _render_drive_template(template: str, *, iso_ts: str, msg_id: str) -> str:
     s = (template or "").replace("\r\n", "\n").replace("\r", "\n")
     s = s.replace("{{iso_ts}}", iso_ts)
     s = s.replace("{{msg_id}}", msg_id)
-    s = s.replace("{{open_cmd}}", f"bash .codex/skills/ai-team-workflow/scripts/atwf inbox-open {msg_id}")
-    return s
+    s = s.replace("{{open_cmd}}", f"{_atwf_cmd()} inbox-open {msg_id}")
+    return _substitute_atwf_paths(s)
 
 
 def _drive_message_body(*, iso_ts: str, msg_id: str) -> str:
@@ -938,14 +956,16 @@ def _drive_message_summary(*, iso_ts: str, msg_id: str) -> str:
 def _state_wake_message() -> str:
     cfg = _read_yaml_or_json(_config_file())
     msg = _cfg_get_str(cfg, ("team", "state", "wake_message"), default=_STATE_WAKE_MESSAGE_DEFAULT)
-    return msg.strip() or _STATE_WAKE_MESSAGE_DEFAULT
+    resolved = msg.strip() or _STATE_WAKE_MESSAGE_DEFAULT
+    return _substitute_atwf_paths(resolved).strip()
 
 
 @lru_cache(maxsize=1)
 def _state_reply_wake_message() -> str:
     cfg = _read_yaml_or_json(_config_file())
     msg = _cfg_get_str(cfg, ("team", "state", "reply_wake_message"), default=_STATE_REPLY_WAKE_MESSAGE_DEFAULT)
-    return msg.strip() or _STATE_REPLY_WAKE_MESSAGE_DEFAULT
+    resolved = msg.strip() or _STATE_REPLY_WAKE_MESSAGE_DEFAULT
+    return _substitute_atwf_paths(resolved).strip()
 
 
 @lru_cache(maxsize=1)
@@ -1079,7 +1099,7 @@ def _ensure_watch_idle_team(*, twf: Path, team_dir: Path, registry: Path) -> Non
 
     cmd_parts = [
         "bash",
-        ".codex/skills/ai-team-workflow/scripts/atwf",
+        str(_atwf_wrapper_path()),
         "watch-idle",
     ]
     cmd_line = " ".join(shlex.quote(p) for p in cmd_parts)
@@ -1574,13 +1594,14 @@ def _template_for_role(role: str) -> Path:
 
 
 def _render_template(raw: str, *, role: str, full: str, base: str, registry: Path, team_dir: Path) -> str:
-    return (
+    rendered = (
         raw.replace("{{ROLE}}", role)
         .replace("{{FULL_NAME}}", full)
         .replace("{{BASE_NAME}}", base)
         .replace("{{REGISTRY_PATH}}", str(registry))
         .replace("{{TEAM_DIR}}", str(team_dir))
     )
+    return _substitute_atwf_paths(rendered)
 
 
 def _ensure_registry_file(registry: Path, team_dir: Path) -> None:
@@ -3229,10 +3250,11 @@ def _bootstrap_worker(
         to_role=role,
         body=msg,
     )
+    atwf_cmd = _atwf_cmd()
     notice = (
         f"[BOOTSTRAP-INBOX] id={msg_id}\n"
-        f"open: bash .codex/skills/ai-team-workflow/scripts/atwf inbox-open {msg_id}\n"
-        f"ack:  bash .codex/skills/ai-team-workflow/scripts/atwf inbox-ack {msg_id}\n"
+        f"open: {atwf_cmd} inbox-open {msg_id}\n"
+        f"ack:  {atwf_cmd} inbox-ack {msg_id}\n"
     )
     wrapped = _wrap_team_message(
         team_dir,
@@ -3274,7 +3296,12 @@ def cmd_up(args: argparse.Namespace) -> int:
 
     base = _base_name(role, args.label)
 
-    full, session_path = _start_worker(twf, base=base, up_args=[])
+    up_args: list[str] = []
+    work_dir = str(getattr(args, "work_dir", "") or "").strip()
+    if work_dir:
+        up_args += ["--work-dir", work_dir]
+
+    full, session_path = _start_worker(twf, base=base, up_args=up_args)
 
     lock = team_dir / ".lock"
     with _locked(lock):
@@ -3339,7 +3366,12 @@ def cmd_spawn(args: argparse.Namespace) -> int:
             f"Allowed: {', '.join(sorted(allowed)) or '(none)'}"
         )
 
-    full, session_path = _spawn_worker(twf, parent_full=parent_full, child_base=base, up_args=[])
+    up_args: list[str] = []
+    work_dir = str(getattr(args, "work_dir", "") or "").strip()
+    if work_dir:
+        up_args += ["--work-dir", work_dir]
+
+    full, session_path = _spawn_worker(twf, parent_full=parent_full, child_base=base, up_args=up_args)
 
     lock = team_dir / ".lock"
     with _locked(lock):
@@ -3388,6 +3420,7 @@ def cmd_spawn_self(args: argparse.Namespace) -> int:
         label=args.label,
         scope=args.scope,
         no_bootstrap=args.no_bootstrap,
+        work_dir=getattr(args, "work_dir", ""),
     )
     return cmd_spawn(ns)
 
@@ -4358,8 +4391,22 @@ def cmd_worktree_check_self(_: argparse.Namespace) -> int:
     if not full:
         raise SystemExit("❌ failed to detect current tmux session name")
 
-    git_root = _git_root()
-    expected = _worktree_path(git_root, full).resolve()
+    expected: Path | None = None
+    try:
+        twf = _resolve_twf()
+        state_dir = _resolve_twf_state_dir(twf)
+        state_path = (state_dir / f"{full}.json").resolve()
+        if state_path.is_file():
+            state = _read_json(state_path)
+            raw = state.get("work_dir_norm") or state.get("work_dir")
+            if isinstance(raw, str) and raw.strip():
+                expected = Path(os.path.expanduser(raw.strip())).resolve()
+    except Exception:
+        expected = None
+
+    if expected is None:
+        git_root = _git_root()
+        expected = _worktree_path(git_root, full).resolve()
     cwd = Path.cwd().resolve()
 
     if expected == cwd or expected in cwd.parents:
@@ -4369,7 +4416,7 @@ def cmd_worktree_check_self(_: argparse.Namespace) -> int:
     _eprint("❌ not in your dedicated worktree")
     _eprint(f"   expected: {expected}")
     _eprint(f"   cwd:      {cwd}")
-    _eprint(f"   fix:      bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self && cd {expected}")
+    _eprint(f"   fix:      {_atwf_cmd()} worktree-create-self && cd {expected}")
     return 1
 
 
@@ -5400,6 +5447,7 @@ def cmd_gather(args: argparse.Namespace) -> int:
 
         _write_json_atomic(_request_meta_path(team_dir, request_id=request_id), meta)
 
+        atwf_cmd = _atwf_cmd()
         for (full, base, role), notify_id in zip(resolved_targets, notify_ids, strict=True):
             body = (
                 f"[REPLY-NEEDED] request_id={request_id}\n"
@@ -5409,13 +5457,13 @@ def cmd_gather(args: argparse.Namespace) -> int:
                 f"- deadline_at: {deadline_at}\n"
                 "\n"
                 "Respond (required):\n"
-                f"- bash .codex/skills/ai-team-workflow/scripts/atwf respond {request_id} \"<your reply>\"\n"
+                f"- {atwf_cmd} respond {request_id} \"<your reply>\"\n"
                 "\n"
                 "If blocked, snooze reminders (default 15m):\n"
-                f"- bash .codex/skills/ai-team-workflow/scripts/atwf respond {request_id} --blocked --snooze 15m --waiting-on <base> \"why blocked\"\n"
+                f"- {atwf_cmd} respond {request_id} --blocked --snooze 15m --waiting-on <base> \"why blocked\"\n"
                 "\n"
                 "View pending reply-needed:\n"
-                "- bash .codex/skills/ai-team-workflow/scripts/atwf reply-needed\n"
+                f"- {atwf_cmd} reply-needed\n"
                 "\n"
                 "Message:\n"
                 f"{msg.rstrip()}\n"
@@ -5842,7 +5890,7 @@ def cmd_state_set_self(args: argparse.Namespace) -> int:
                 hint = f" ids: {preview}" if preview else ""
                 raise SystemExit(
                     f"❌ inbox not empty (unread={unread} overflow={overflow}){hint} "
-                    f"(run: bash .codex/skills/ai-team-workflow/scripts/atwf inbox)"
+                    f"(run: {_atwf_cmd()} inbox)"
                 )
             state["idle_since"] = now
             state["idle_inbox_empty_at"] = now
@@ -6148,7 +6196,7 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
                                 f"- oldest_id: {min_id} age_s={int(age_s)}\n"
                                 f"- last_inbox_check_at: {str(st.get('last_inbox_check_at','') or '(never)')}\n"
                                 "Suggested action:\n"
-                                f"- Ask the worker to run: bash .codex/skills/ai-team-workflow/scripts/atwf inbox\n"
+                                f"- Ask the worker to run: {_atwf_cmd()} inbox\n"
                                 "- If they are stuck, re-scope or pause/unpause that worker.\n"
                             )
                             _write_inbox_message(
@@ -6764,6 +6812,7 @@ def build_parser() -> argparse.ArgumentParser:
     up.add_argument("role")
     up.add_argument("label", nargs="?")
     up.add_argument("--scope", default="")
+    up.add_argument("--work-dir", default="", help="start worker in this directory (passed to twf/codex_up_tmux.sh)")
     up.add_argument("--no-bootstrap", action="store_true")
 
     sp = sub.add_parser("spawn", help="spawn a child worker (twf spawn) + register + bootstrap")
@@ -6771,12 +6820,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("role")
     sp.add_argument("label", nargs="?")
     sp.add_argument("--scope", default="")
+    sp.add_argument("--work-dir", default="", help="start worker in this directory (passed to twf/codex_up_tmux.sh)")
     sp.add_argument("--no-bootstrap", action="store_true")
 
     sps = sub.add_parser("spawn-self", help="spawn a child worker from the current tmux session")
     sps.add_argument("role")
     sps.add_argument("label", nargs="?")
     sps.add_argument("--scope", default="")
+    sps.add_argument("--work-dir", default="", help="start worker in this directory (passed to twf/codex_up_tmux.sh)")
     sps.add_argument("--no-bootstrap", action="store_true")
 
     parent = sub.add_parser("parent", help="print a member's parent (lookup by full or base)")

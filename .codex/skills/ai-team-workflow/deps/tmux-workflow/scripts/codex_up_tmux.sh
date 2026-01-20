@@ -6,12 +6,13 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 usage() {
   cat <<'USAGE' >&2
 Usage:
-  codex_up_tmux.sh [--session NAME] [--session-file PATH] [--cmd "codex ..."] [--attach]
+  codex_up_tmux.sh [--session NAME] [--session-file PATH] [--cmd "codex ..."] [--work-dir DIR] [--attach]
 
 Defaults:
   - session-file: ./.codex-tmux-session.json
   - session name: codex-<sha1(realpath(cwd))[:10]>
   - cmd:         codex -c disable_paste_burst=true --sandbox danger-full-access -m <model> --config model_reasoning_effort="<effort>"
+  - work-dir:    current directory
 
 Environment:
   TWF_SESSION_FILE      Override session file path
@@ -19,6 +20,7 @@ Environment:
   TWF_CODEX_CMD         Override codex command
   TWF_CODEX_PROFILE     Optional codex profile (adds `-p <profile>`)
   TWF_CODEX_CMD_CONFIG  Override YAML config path (default: scripts/twf_config.yaml)
+  TWF_WORK_DIR          Override starting work directory for the tmux session
   TWF_WORKERS_DIR       Per-worker CODEX_HOME base dir (default: ~/.codex-workers)
   TWF_CODEX_HOME_SRC    Source CODEX_HOME to copy from (default: ~/.codex)
   TWF_AUTH_SRC          Optional auth file to copy into worker as `auth.json` (overrides synced auth.json)
@@ -144,6 +146,7 @@ PY
 session_file="${TWF_SESSION_FILE:-.codex-tmux-session.json}"
 tmux_session="${TWF_TMUX_SESSION:-}"
 codex_cmd="${TWF_CODEX_CMD:-}"
+work_dir="${TWF_WORK_DIR:-$PWD}"
 attach=0
 
 while [[ $# -gt 0 ]]; do
@@ -154,6 +157,8 @@ while [[ $# -gt 0 ]]; do
       session_file="${2:-}"; shift 2 ;;
     --cmd)
       codex_cmd="${2:-}"; shift 2 ;;
+    --work-dir|-C)
+      work_dir="${2:-}"; shift 2 ;;
     --attach)
       attach=1; shift ;;
     -h|--help)
@@ -198,7 +203,26 @@ PY
 )"
 fi
 
-work_dir="$PWD"
+if [[ -z "$work_dir" ]]; then
+  echo "❌ --work-dir is empty" >&2
+  exit 1
+fi
+work_dir="$(python3 - "$work_dir" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+raw = sys.argv[1]
+p = Path(os.path.expanduser(raw))
+if not p.is_absolute():
+    p = (Path.cwd() / p).resolve()
+print(str(p))
+PY
+)"
+if [[ ! -d "$work_dir" ]]; then
+  echo "❌ --work-dir is not a directory: $work_dir" >&2
+  exit 1
+fi
 work_dir_norm="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$work_dir")"
 
 if [[ -z "$tmux_session" ]]; then
