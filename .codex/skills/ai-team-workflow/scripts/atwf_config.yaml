@@ -1,7 +1,79 @@
-# ai-team-workflow config
+# ai-team-workflow config (unified)
 #
 # This file is YAML (or JSON) and is parsed via `yaml.safe_load` when available.
 #
+# In this repo, `ai-team-workflow` is self-contained:
+# - it bundles `tmux-workflow` (twf) and `codex-account-pool` (cap) under `deps/`
+# - this single file configures atwf + twf + cap (so you don't edit multiple config files)
+#
+# Notes:
+# - atwf reads: `share.*`, `team.*`
+# - tmux-workflow (twf) reads: `codex.*`, `twf.*` (via `TWF_CODEX_CMD_CONFIG`)
+# - codex-account-pool (cap) reads: `cap.*` (via env defaults injected by atwf)
+#
+# tmux-workflow (twf): Codex model defaults
+codex:
+  model: gpt-5.2
+  model_reasoning_effort: high
+
+  # Optional profile (equivalent to `codex -p <profile>`).
+  # Leave empty for portability; prefer auth files over profiles when using account_pool.
+  profile: ""
+
+# tmux-workflow (twf): worker lifecycle + auth/account-pool integration
+twf:
+  # Worker state directory (where twf writes its worker state JSON files)
+  state_dir:
+    mode: auto
+    dir: ""
+
+  # If false, twf will ignore TWF_AUTH_SRC/TWF_CODEX_HOME_SRC/TWF_CODEX_PROFILE
+  # so tmux server/global env can't silently override project config.
+  env:
+    allow_overrides: false
+
+  # Optional dependency: multi-account account pool
+  account_pool:
+    enabled: false
+    cmd: ""  # optional override path to `cap`
+
+    auth_team:
+      # Directory containing multiple auth files (contents are Codex auth JSON).
+      # Required when `account_pool.enabled=true`.
+      dir: ""
+      glob: "auth.json*"
+
+      # - balanced: least-used (per-worker pick)
+      # - team_cycle: one auth for the whole team; rotate only when advanced
+      strategy: team_cycle
+
+    # Team-wide auto-rotation (only meaningful when auth_team.strategy=team_cycle).
+    # Consumed by ai-team-workflow (starts a background `cap watch-team` tmux session).
+    watch_team:
+      enabled: false
+      interval: 180
+      grace: 300
+      max_retries: 10
+      needle: "You've hit your usage limit."
+      message: "Task continues. If you are waiting for a reply, please ignore this message."
+
+  # Default auth when account pool is disabled.
+  # When set (non-empty), twf copies this file into each worker as `auth.json`.
+  auth:
+    src: ""
+
+# codex-account-pool (cap): shared CODEX_HOME source selection + auth pick state
+cap:
+  # Comma-separated list of CODEX_HOME template directories (optional; default fallback is `~/.codex`)
+  sources: ""
+
+  # - round_robin (default): picks sources sequentially (persists counter in state_file)
+  # - hash: stable selection based on worker name (no state)
+  strategy: round_robin
+
+  # Where to persist cap's counters/pointers (relative to ai-team-workflow root unless absolute).
+  state_file: "share/state/cap_state.json"
+
 # Share dir (where registry/task/design/ops live):
 # - If set (non-empty), it overrides the default shared state directory.
 # - Recommended: absolute path

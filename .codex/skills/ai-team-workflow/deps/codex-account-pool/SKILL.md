@@ -26,30 +26,30 @@ Edit `scripts/cap_config.yaml`:
 ## Commands
 
 - Pick a source directory (used by `twf`):
-  - `bash .codex/skills/codex-account-pool/scripts/cap pick --worker <full> --base <base>`
+  - `bash .codex/skills/ai-team-workflow/deps/codex-account-pool/scripts/cap pick --worker <full> --base <base>`
 - Pick an auth file (used by `twf`):
-  - `bash .codex/skills/codex-account-pool/scripts/cap pick-auth --worker <full> --base <base>`
+  - `bash .codex/skills/ai-team-workflow/deps/codex-account-pool/scripts/cap pick-auth --worker <full> --base <base>`
 - Print/advance current team auth (team_cycle):
-  - `bash .codex/skills/codex-account-pool/scripts/cap auth-current --team-dir /abs/path/to/AUTH_TEAM`
-  - `bash .codex/skills/codex-account-pool/scripts/cap auth-advance --team-dir /abs/path/to/AUTH_TEAM`
+  - `bash .codex/skills/ai-team-workflow/deps/codex-account-pool/scripts/cap auth-current --team-dir /abs/path/to/AUTH_TEAM`
+  - `bash .codex/skills/ai-team-workflow/deps/codex-account-pool/scripts/cap auth-advance --team-dir /abs/path/to/AUTH_TEAM`
 - Reset the pool state (auth/home counters):
-  - `bash .codex/skills/codex-account-pool/scripts/cap reset-state`
+  - `bash .codex/skills/ai-team-workflow/deps/codex-account-pool/scripts/cap reset-state`
 - Inspect a whole team’s usage by driving Codex `/status` in tmux (requires `tmux` + `codex`):
-  - `bash .codex/skills/codex-account-pool/scripts/cap status /abs/path/to/AUTH_TEAM`
+  - `bash .codex/skills/ai-team-workflow/deps/codex-account-pool/scripts/cap status /abs/path/to/AUTH_TEAM`
 - Watch usage + rotate team auth (team_cycle + ai-team registry):
-  - `bash .codex/skills/codex-account-pool/scripts/cap watch-team /abs/path/to/AUTH_TEAM --registry /abs/path/to/registry.json`
+  - `bash .codex/skills/ai-team-workflow/deps/codex-account-pool/scripts/cap watch-team /abs/path/to/AUTH_TEAM --registry /abs/path/to/registry.json`
 - List configured sources:
-  - `bash .codex/skills/codex-account-pool/scripts/cap list`
+  - `bash .codex/skills/ai-team-workflow/deps/codex-account-pool/scripts/cap list`
 - Inspect resolved config:
-  - `bash .codex/skills/codex-account-pool/scripts/cap where`
+  - `bash .codex/skills/ai-team-workflow/deps/codex-account-pool/scripts/cap where`
 
 ## tmux-workflow integration
 
-Enable in `tmux-workflow/scripts/twf_config.yaml`:
+Enable in `.codex/skills/ai-team-workflow/scripts/atwf_config.yaml`:
 - `twf.account_pool.enabled: true`
 
 Optional:
-- `twf.account_pool.cmd: "/abs/path/to/.codex/skills/codex-account-pool/scripts/cap"`
+- `twf.account_pool.cmd: "/abs/path/to/.codex/skills/ai-team-workflow/deps/codex-account-pool/scripts/cap"`
 - or `TWF_ACCOUNT_POOL_CMD=/abs/path/to/cap`
 
 When enabled, `twf` will:

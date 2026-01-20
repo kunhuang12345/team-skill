@@ -68,7 +68,7 @@ Designed for Claude Code: run with `run_in_background=true` so Claude can contin
 
 Execution:
 - Run:
-  - `Bash(python3 "$(git rev-parse --show-toplevel)/.codex/skills/tmux-workflow/scripts/codex_ask.py" "<content>", run_in_background=true)`
+  - `Bash(python3 "$(git rev-parse --show-toplevel)/.codex/skills/ai-team-workflow/deps/tmux-workflow/scripts/codex_ask.py" "<content>", run_in_background=true)`
 
 Parameters:
 - `<content>` required
@@ -85,7 +85,7 @@ cat >"$cmd_dir/cpend.md" <<'MD'
 View latest Codex reply from official Codex JSONL logs.
 
 Execution:
-- Run `Bash(python3 "$(git rev-parse --show-toplevel)/.codex/skills/tmux-workflow/scripts/codex_pend.py" [N])`
+- Run `Bash(python3 "$(git rev-parse --show-toplevel)/.codex/skills/ai-team-workflow/deps/tmux-workflow/scripts/codex_pend.py" [N])`
 
 Parameters:
 - `N` optional: number of Q/A rounds (default 1). When N=1, prints reply only.
@@ -96,7 +96,7 @@ cat >"$cmd_dir/cping.md" <<'MD'
 Check if tmux Codex worker is alive and whether session file is bound to a log file.
 
 Execution:
-- Run `Bash(python3 "$(git rev-parse --show-toplevel)/.codex/skills/tmux-workflow/scripts/codex_ping.py")`
+- Run `Bash(python3 "$(git rev-parse --show-toplevel)/.codex/skills/ai-team-workflow/deps/tmux-workflow/scripts/codex_ping.py")`
 
 Notes:
 - Default session file: `./.codex-tmux-session.json` (override via `TWF_SESSION_FILE`)

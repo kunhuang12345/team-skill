@@ -517,6 +517,50 @@ def _skill_dir() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def _apply_deps_env_defaults() -> None:
+    """
+    Make ai-team-workflow self-contained by defaulting dependency configs to this
+    skill's `scripts/atwf_config.yaml`.
+
+    Users may still override via env vars (highest priority).
+    """
+    cfg = _read_yaml_or_json(_config_file())
+
+    # tmux-workflow (twf) reads its config path from TWF_CODEX_CMD_CONFIG.
+    if not os.environ.get("TWF_CODEX_CMD_CONFIG", "").strip():
+        os.environ["TWF_CODEX_CMD_CONFIG"] = str(_config_file())
+
+    # codex-account-pool (cap) reads config values from env overrides.
+    if not os.environ.get("CAP_SOURCES", "").strip():
+        sources = _cfg_get_str(cfg, ("cap", "sources"), default="")
+        if sources:
+            os.environ["CAP_SOURCES"] = sources
+
+    if not os.environ.get("CAP_STRATEGY", "").strip():
+        strategy = _cfg_get_str(cfg, ("cap", "strategy"), default="")
+        if strategy:
+            os.environ["CAP_STRATEGY"] = strategy
+
+    if not os.environ.get("CAP_STATE_FILE", "").strip():
+        state_file = _cfg_get_str(cfg, ("cap", "state_file"), default="")
+        if state_file:
+            os.environ["CAP_STATE_FILE"] = str(_expand_path_from(_skill_dir(), state_file))
+
+
+def _cap_state_file_path() -> Path:
+    raw = os.environ.get("CAP_STATE_FILE", "").strip()
+    if raw:
+        return _expand_path(raw)
+
+    cfg = _read_yaml_or_json(_config_file())
+    state_file = _cfg_get_str(cfg, ("cap", "state_file"), default="")
+    if state_file:
+        return _expand_path_from(_skill_dir(), state_file)
+
+    # Fallback to the bundled dependency default.
+    return (_skill_dir() / "deps" / "codex-account-pool" / "share" / "state.json").resolve()
+
+
 def _templates_dir() -> Path:
     return _skill_dir() / "templates"
 
@@ -529,6 +573,10 @@ def _resolve_twf() -> Path:
             return p
         raise SystemExit(f"❌ AITWF_TWF points to missing file: {p}")
 
+    bundled = _skill_dir() / "deps" / "tmux-workflow" / "scripts" / "twf"
+    if bundled.is_file():
+        return bundled
+
     skills_dir = _skill_dir().parent
     sibling = skills_dir / "tmux-workflow" / "scripts" / "twf"
     if sibling.is_file():
@@ -540,7 +588,7 @@ def _resolve_twf() -> Path:
 
     raise SystemExit(
         "❌ tmux-workflow not found.\n"
-        "   Expected `tmux-workflow/scripts/twf` next to this skill, or set AITWF_TWF=/path/to/twf."
+        "   Expected bundled `deps/tmux-workflow/scripts/twf` under ai-team-workflow, or set AITWF_TWF=/path/to/twf."
     )
 
 
@@ -1025,6 +1073,9 @@ def _ensure_watch_idle_team(*, twf: Path, team_dir: Path, registry: Path) -> Non
     exports: list[str] = []
     exports.append(f"export AITWF_DIR={shlex.quote(str(team_dir))};")
     exports.append(f"export AITWF_TWF={shlex.quote(str(twf))};")
+    twf_cfg = os.environ.get("TWF_CODEX_CMD_CONFIG", "").strip()
+    if twf_cfg:
+        exports.append(f"export TWF_CODEX_CMD_CONFIG={shlex.quote(twf_cfg)};")
 
     cmd_parts = [
         "bash",
@@ -1131,6 +1182,9 @@ def _ensure_cap_watch_team(*, twf: Path, team_dir: Path, registry: Path) -> None
         v = os.environ.get(k, "").strip()
         if v:
             exports.append(f"export {k}={shlex.quote(v)};")
+    twf_cfg = os.environ.get("TWF_CODEX_CMD_CONFIG", "").strip()
+    if twf_cfg:
+        exports.append(f"export TWF_CODEX_CMD_CONFIG={shlex.quote(twf_cfg)};")
 
     cmd_parts = [
         "bash",
@@ -1229,7 +1283,7 @@ def cmd_reset(args: argparse.Namespace) -> int:
                 print(f"  codex_home: {codex_home}")
         team_dir = _default_team_dir()
         print(f"ai_team_share_dir: {team_dir}")
-        pool_state = (_skill_dir().parent / "codex-account-pool" / "share" / "state.json").resolve()
+        pool_state = _cap_state_file_path()
         print(f"cap_watch_session: {_cap_watch_session_name(expected_root)}")
         if getattr(args, "wipe_account_pool", False):
             print(f"cap_state: {pool_state}")
@@ -1275,21 +1329,14 @@ def cmd_reset(args: argparse.Namespace) -> int:
 
     # 3) Optionally wipe local codex-account-pool state (per-project).
     if getattr(args, "wipe_account_pool", False):
-        cap_share = _skill_dir().parent / "codex-account-pool" / "share"
-        cap_state = cap_share / "state.json"
-        cap_lock = cap_share / "state.json.lock"
+        cap_state = _cap_state_file_path()
+        cap_lock = cap_state.with_suffix(cap_state.suffix + ".lock")
         try:
             cap_state.unlink()
         except Exception:
             pass
         try:
             cap_lock.unlink()
-        except Exception:
-            pass
-        # If share becomes empty, remove it.
-        try:
-            if cap_share.is_dir() and not any(cap_share.iterdir()):
-                cap_share.rmdir()
         except Exception:
             pass
 
@@ -6980,6 +7027,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str]) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    _apply_deps_env_defaults()
 
     if args.cmd == "init":
         return cmd_init(args)

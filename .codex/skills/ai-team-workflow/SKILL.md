@@ -5,7 +5,7 @@ description: Role-based multi-agent workflow built on tmux-workflow/twf. Use whe
 
 # ai-team-workflow
 
-This skill layers a simple “AI team” coordination model on top of the `tmux-workflow` skill (`twf` workers + ask/pend/ping + parent/child spawn).
+This skill layers a simple “AI team” coordination model on top of a tmux-based worker driver (`twf` workers + ask/pend/ping + parent/child spawn).
 
 Core ideas:
 - **One role = one Codex worker (tmux session)**.
@@ -15,9 +15,12 @@ Core ideas:
 
 ## Dependency
 
-Requires `tmux-workflow` to exist alongside this skill (or set `AITWF_TWF=/path/to/twf`):
-- Project install: `./.codex/skills/tmux-workflow/scripts/twf`
-- Global install: `~/.codex/skills/tmux-workflow/scripts/twf`
+Self-contained by default:
+- Bundles `tmux-workflow` (twf) under `deps/tmux-workflow/`
+- Bundles `codex-account-pool` (cap) under `deps/codex-account-pool/` (optional; only used when enabled in config)
+
+Optional overrides:
+- `AITWF_TWF=/path/to/twf` to use an external `twf`
 
 ## Shared registry (“task allocation table”)
 
@@ -195,7 +198,7 @@ All commands are wrappers around `twf` plus registry management:
 
 ## Environment knobs
 
-- `AITWF_TWF`: path to `twf` (if not installed next to this skill)
+- `AITWF_TWF`: path to external `twf` (override bundled `deps/tmux-workflow`)
 - `AITWF_DIR`: override shared state dir
 - `AITWF_REGISTRY`: override registry file path
-- Config file: `.codex/skills/ai-team-workflow/scripts/atwf_config.yaml` (`share.dir`, legacy: `share_dir`; team policy under `team.policy`)
+- Config file: `.codex/skills/ai-team-workflow/scripts/atwf_config.yaml` (unified: `codex.*`, `twf.*`, `cap.*`, `share.*`, `team.*`)

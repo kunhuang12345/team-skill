@@ -9,6 +9,7 @@ __pycache__/
 .claude/
 .codex/skills/ai-team-workflow/share/
 .codex/skills/codex-account-pool/share/
+.codex/skills/ai-team-workflow/deps/codex-account-pool/share/
 *.mp4
 tmp/
 compare_with_mcp/

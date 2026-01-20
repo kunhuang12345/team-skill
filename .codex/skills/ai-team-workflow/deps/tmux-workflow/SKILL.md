@@ -10,10 +10,10 @@ This skill is a self-contained toolkit under `scripts/` (copy this whole folder 
 ## Quick start (Claude → Codex)
 
 1. (Optional) Check deps:
-   - `bash .codex/skills/tmux-workflow/scripts/check_deps.sh`
+   - `bash .codex/skills/ai-team-workflow/deps/tmux-workflow/scripts/check_deps.sh`
 2. Start a worker and ask with short names (state directory is configurable; default is `<skill_root>/.twf/`):
-   - `bash .codex/skills/tmux-workflow/scripts/twf codex-a`
-   - `bash .codex/skills/tmux-workflow/scripts/twf codex-a "你好"`
+   - `bash .codex/skills/ai-team-workflow/deps/tmux-workflow/scripts/twf codex-a`
+   - `bash .codex/skills/ai-team-workflow/deps/tmux-workflow/scripts/twf codex-a "你好"`
 
 ## Scripts
 
@@ -37,7 +37,7 @@ This skill is a self-contained toolkit under `scripts/` (copy this whole folder 
 
 State directory:
 - default: configured via `scripts/twf_config.yaml` (`twf.state_dir.mode`, default `auto`; legacy: `twf_state_dir_mode`)
-  - `auto`: `<skill_root>/.twf/` (project install default: `./.codex/skills/tmux-workflow/.twf/`)
+  - `auto`: `<skill_root>/.twf/` (project install default: `./.codex/skills/ai-team-workflow/deps/tmux-workflow/.twf/`)
   - `global`: `~/.twf/`
   - `manual`: `twf.state_dir.dir` (must be set in config; relative paths resolve from current directory; legacy: `twf_state_dir`)
 - override: `TWF_STATE_DIR=/some/path` (highest priority; ignores `twf.state_dir.mode` / `twf_state_dir_mode`)
@@ -45,15 +45,15 @@ State directory:
 ### Core commands
 
 - Start a worker (returns the state json path on stdout):
-  - `bash .codex/skills/tmux-workflow/scripts/twf codex-a`
-  - `bash .codex/skills/tmux-workflow/scripts/twf up codex-a`
-  - with profile: `bash .codex/skills/tmux-workflow/scripts/twf up codex-a -p aihuohua`
+  - `bash .codex/skills/ai-team-workflow/deps/tmux-workflow/scripts/twf codex-a`
+  - `bash .codex/skills/ai-team-workflow/deps/tmux-workflow/scripts/twf up codex-a`
+  - with profile: `bash .codex/skills/ai-team-workflow/deps/tmux-workflow/scripts/twf up codex-a -p aihuohua`
 - Ask a worker and print Codex reply to stdout:
-  - `bash .codex/skills/tmux-workflow/scripts/twf codex-a "your prompt"`
-  - `bash .codex/skills/tmux-workflow/scripts/twf ask codex-a "your prompt"`
+  - `bash .codex/skills/ai-team-workflow/deps/tmux-workflow/scripts/twf codex-a "your prompt"`
+  - `bash .codex/skills/ai-team-workflow/deps/tmux-workflow/scripts/twf ask codex-a "your prompt"`
 - Inspect:
-  - `bash .codex/skills/tmux-workflow/scripts/twf pend codex-a [N]`
-  - `bash .codex/skills/tmux-workflow/scripts/twf ping codex-a`
+  - `bash .codex/skills/ai-team-workflow/deps/tmux-workflow/scripts/twf pend codex-a [N]`
+  - `bash .codex/skills/ai-team-workflow/deps/tmux-workflow/scripts/twf ping codex-a`
 
 ### Stop / Resume (resume keeps logs)
 
