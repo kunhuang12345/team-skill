@@ -146,6 +146,39 @@ team:
       # Who can create handoffs/permits.
       handoff_creators: [coord, pm, arch]
 
+  # Init behavior (`atwf init`)
+  #
+  # - Starts the single root (team.policy.root_role) with base `<root_role>-<root_label>`.
+  # - Optionally spawns configured children under the root (team.init.children).
+  #
+  # Back-compat default when `team.init.children` is unset:
+  # - spawn pm-main + liaison-main (only if those roles are enabled/hireable)
+  #
+  # To remove pm/liaison completely:
+  # - remove them from team.policy.enabled_roles (and update can_hire/direct_allow/handoff_creators accordingly)
+  # - set:
+  #     team.init.children: []
+  #     team.init.task_to_role: ""
+  init:
+    root_label: "main"
+
+    # Children to spawn under root during `atwf init`.
+    # Each item can be:
+    # - a role string: "pm"
+    # - a dict: {role, label, scope} (or `base` to override the computed base name)
+    children:
+      - role: pm
+        label: main
+        scope: "overall delivery / milestone planning"
+      - role: liaison
+        label: main
+        scope: "user communication + clarifications"
+
+    # Who receives the initial [TASK] inbox notice after init.
+    # - default: "pm"
+    # - set "" to disable auto-notify
+    task_to_role: pm
+
   # Drive loop (anti-stall)
   #
   # When `mode=running`, the watcher will treat "all members idle + all inbox empty"

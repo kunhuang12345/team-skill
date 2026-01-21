@@ -948,17 +948,21 @@ def _drive_mode_config_hot() -> str:
 @lru_cache(maxsize=1)
 def _drive_driver_role() -> str:
     cfg = _read_yaml_or_json(_config_file())
-    role = _cfg_get_str(cfg, ("team", "drive", "driver_role"), default=_DRIVE_DRIVER_ROLE_DEFAULT)
-    role = role.strip() or _policy().root_role
-    return _require_role(role)
+    raw = _cfg_get_str(cfg, ("team", "drive", "driver_role"), default=_DRIVE_DRIVER_ROLE_DEFAULT)
+    role = _norm_role(raw) or _policy().root_role
+    if role not in _policy().enabled_roles:
+        role = _policy().root_role
+    return role
 
 
 @lru_cache(maxsize=1)
 def _drive_backup_role() -> str:
     cfg = _read_yaml_or_json(_config_file())
-    role = _cfg_get_str(cfg, ("team", "drive", "backup_role"), default=_DRIVE_BACKUP_ROLE_DEFAULT)
-    role = role.strip() or _DRIVE_BACKUP_ROLE_DEFAULT
-    return _require_role(role)
+    raw = _cfg_get_str(cfg, ("team", "drive", "backup_role"), default=_DRIVE_BACKUP_ROLE_DEFAULT)
+    role = _norm_role(raw) or _norm_role(_DRIVE_BACKUP_ROLE_DEFAULT)
+    if role not in _policy().enabled_roles:
+        role = _policy().root_role
+    return role
 
 
 @lru_cache(maxsize=1)
@@ -3084,6 +3088,125 @@ def _require_comm_allowed(
     )
 
 
+@dataclass(frozen=True)
+class _InitMember:
+    role: str
+    base: str
+    full: str
+
+
+@dataclass(frozen=True)
+class _InitChildSpec:
+    role: str
+    base: str
+    scope: str
+
+
+def _init_root_base(cfg: dict[str, Any], *, root_role: str) -> str:
+    raw = _cfg_get(cfg, ("team", "init", "root_label"))
+    label = raw.strip() if isinstance(raw, str) else "main"
+    # Allow empty label: base becomes exactly `<root_role>`.
+    return _base_name(root_role, label)
+
+
+def _init_children_specs(
+    cfg: dict[str, Any],
+    *,
+    policy: TeamPolicy,
+    root_base: str,
+    root_only: bool,
+) -> list[_InitChildSpec]:
+    """
+    Resolve which children should be spawned under the root during `atwf init`.
+
+    Config:
+      team.init.children:
+        - role: pm
+          label: main
+          scope: "..."
+        - liaison
+
+    Back-compat default (when unset): pm-main + liaison-main (only if enabled/hireable).
+    """
+    if root_only:
+        return []
+
+    raw_children = _cfg_get(cfg, ("team", "init", "children"))
+    explicit = raw_children is not None
+
+    specs: list[_InitChildSpec] = []
+
+    def add_child(*, role: str, base: str, scope: str) -> None:
+        role_norm = _norm_role(role)
+        if not role_norm or role_norm == policy.root_role:
+            return
+        if role_norm not in policy.enabled_roles:
+            if explicit:
+                raise SystemExit(f"❌ team.init.children includes unsupported role: {role_norm}")
+            return
+        base_s = base.strip()
+        if not base_s:
+            raise SystemExit(f"❌ team.init.children has empty base for role={role_norm}")
+        if base_s == root_base.strip():
+            raise SystemExit(f"❌ team.init.children base collides with root base: {base_s}")
+        allowed = policy.can_hire.get(policy.root_role, frozenset())
+        if role_norm not in allowed:
+            raise SystemExit(
+                f"❌ policy.can_hire: {policy.root_role} cannot hire {role_norm} (init needs it). "
+                f"Allowed: {', '.join(sorted(allowed)) or '(none)'}"
+            )
+        scope_s = scope.strip() or DEFAULT_ROLE_SCOPES.get(role_norm, "")
+        specs.append(_InitChildSpec(role=role_norm, base=base_s, scope=scope_s))
+
+    if not isinstance(raw_children, list):
+        # Legacy default: spawn pm-main + liaison-main when enabled/hireable.
+        add_child(role="pm", base=_base_name("pm", "main"), scope=DEFAULT_ROLE_SCOPES.get("pm", ""))
+        add_child(role="liaison", base=_base_name("liaison", "main"), scope=DEFAULT_ROLE_SCOPES.get("liaison", ""))
+        return specs
+
+    for item in raw_children:
+        if isinstance(item, str):
+            role = item
+            base = _base_name(_norm_role(role), "main")
+            add_child(role=role, base=base, scope="")
+            continue
+
+        if not isinstance(item, dict):
+            continue
+
+        role_raw = item.get("role")
+        role = role_raw if isinstance(role_raw, str) else str(role_raw or "")
+
+        base = ""
+        if "base" in item:
+            base_raw = item.get("base")
+            base = base_raw if isinstance(base_raw, str) else str(base_raw or "")
+
+        if not base.strip():
+            if "label" in item:
+                label_raw = item.get("label")
+                label = label_raw if isinstance(label_raw, str) else str(label_raw or "")
+                label = label.strip()
+            else:
+                label = "main"
+            base = _base_name(_norm_role(role), label)
+
+        scope_raw = item.get("scope")
+        scope = scope_raw if isinstance(scope_raw, str) else str(scope_raw or "")
+
+        add_child(role=role, base=base, scope=scope)
+
+    return specs
+
+
+def _init_task_to_role(cfg: dict[str, Any]) -> str:
+    raw = _cfg_get(cfg, ("team", "init", "task_to_role"))
+    if isinstance(raw, str):
+        # Allow empty string to mean "do not auto-notify anyone".
+        return raw.strip()
+    return "pm"
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     if not bool(getattr(args, "registry_only", False)) and not bool(getattr(args, "no_bootstrap", False)):
         _validate_templates_or_die()
@@ -3102,29 +3225,29 @@ def cmd_init(args: argparse.Namespace) -> int:
         return 0
 
     twf = _resolve_twf()
-    trio = _init_trio(
+    members = _init_team(
         twf=twf,
         registry=registry,
         team_dir=team_dir,
         force_new=bool(args.force_new),
         no_bootstrap=bool(args.no_bootstrap),
+        root_only=bool(getattr(args, "root_only", False)),
     )
 
-    root_role = _policy().root_role
-    pm_full = trio.get("pm", "")
-    if not pm_full:
-        raise SystemExit("❌ failed to resolve PM worker")
-
-    root_full = trio.get(root_role, "")
-    liaison_full = trio.get("liaison", "")
+    policy = _policy()
+    root_role = policy.root_role
+    root_full = ""
+    for m in members:
+        if m.role == root_role:
+            root_full = m.full
+            break
     _eprint("✅ initial team ready:")
-    if pm_full:
-        _eprint(f"   pm:      {pm_full}")
+    for m in members:
+        _eprint(f"   {m.role}: {m.full}")
     if root_full:
-        _eprint(f"   {root_role}:   {root_full}")
-    if liaison_full:
-        _eprint(f"   liaison: {liaison_full}")
-    _eprint(f"   tip: enter a role via: atwf attach pm|{root_role}|liaison")
+        _eprint(f"   tip: enter root via: atwf attach {root_role}  (or: atwf attach {root_full})")
+    else:
+        _eprint("   tip: inspect via: atwf list / atwf tree")
 
     # If account_pool is enabled in twf_config and team_cycle is selected,
     # start a background watcher that rotates the whole team when limits are hit.
@@ -3132,86 +3255,99 @@ def cmd_init(args: argparse.Namespace) -> int:
     _ensure_watch_idle_team(twf=twf, team_dir=team_dir, registry=registry)
 
     if task_path:
-        msg = "[TASK]\n" f"Shared task file: {task_path}\n" "Please read it and proceed.\n"
-        sender_full = root_full.strip() or "atwf-init"
-        sender_m = _resolve_member(_load_registry(registry), sender_full) or {}
-        from_role = _member_role(sender_m) or root_role
-        from_base = _member_base(sender_m) or sender_full
+        cfg = _read_yaml_or_json(_config_file())
+        desired_role = str(getattr(args, "task_to", "") or "").strip()
+        if not desired_role:
+            desired_role = _init_task_to_role(cfg)
+        if bool(getattr(args, "no_task_notify", False)):
+            desired_role = ""
 
-        pm_m = _resolve_member(_load_registry(registry), pm_full) or {}
-        to_role = _member_role(pm_m) or "pm"
-        to_base = _member_base(pm_m) or pm_full
+        target_full = ""
+        target_role = ""
+        if desired_role:
+            desired_norm = _norm_role(desired_role)
+            for m in members:
+                if m.role == desired_norm:
+                    target_full = m.full
+                    target_role = m.role
+                    break
+        if not target_full and desired_role:
+            target_full = root_full.strip()
+            target_role = root_role if target_full else ""
 
-        msg_id = _next_msg_id(team_dir)
-        _write_inbox_message(
-            team_dir,
-            msg_id=msg_id,
-            kind="task",
-            from_full=sender_full,
-            from_base=from_base,
-            from_role=from_role,
-            to_full=pm_full,
-            to_base=to_base,
-            to_role=to_role,
-            body=msg,
-        )
-        notice = _inbox_notice(msg_id)
-        wrapped = _wrap_team_message(
-            team_dir,
-            kind="task",
-            sender_full=sender_full,
-            sender_role=from_role or None,
-            to_full=pm_full,
-            body=notice,
-            msg_id=msg_id,
-        )
-        res = _run_twf(twf, ["ask", pm_full, wrapped])
-        sys.stdout.write(res.stdout)
-        sys.stderr.write(res.stderr)
-        return res.returncode
+        if target_full and target_role:
+            msg = "[TASK]\n" f"Shared task file: {task_path}\n" "Please read it and proceed.\n"
+            sender_full = root_full.strip() or "atwf-init"
+            sender_m = _resolve_member(_load_registry(registry), sender_full) or {}
+            from_role = _member_role(sender_m) or root_role
+            from_base = _member_base(sender_m) or sender_full
+
+            target_m = _resolve_member(_load_registry(registry), target_full) or {}
+            to_role = _member_role(target_m) or target_role
+            to_base = _member_base(target_m) or target_full
+
+            msg_id = _next_msg_id(team_dir)
+            _write_inbox_message(
+                team_dir,
+                msg_id=msg_id,
+                kind="task",
+                from_full=sender_full,
+                from_base=from_base,
+                from_role=from_role,
+                to_full=target_full,
+                to_base=to_base,
+                to_role=to_role,
+                body=msg,
+            )
+            notice = _inbox_notice(msg_id)
+            wrapped = _wrap_team_message(
+                team_dir,
+                kind="task",
+                sender_full=sender_full,
+                sender_role=from_role or None,
+                to_full=target_full,
+                body=notice,
+                msg_id=msg_id,
+            )
+
+            # Back-compat: when PM exists, keep waiting for the initial PM reply.
+            twf_cmd = "ask" if target_role == "pm" else "send"
+            res = _run_twf(twf, [twf_cmd, target_full, wrapped])
+            sys.stdout.write(res.stdout)
+            sys.stderr.write(res.stderr)
+            return res.returncode
+
+        _eprint(f"✅ shared task saved: {task_path}")
+        return 0
 
     _eprint("   next: atwf init \"任务描述：...\" (or: atwf init --task-file /abs/path).")
     return 0
 
 
-def _init_trio(
+def _init_team(
     *,
     twf: Path,
     registry: Path,
     team_dir: Path,
     force_new: bool,
     no_bootstrap: bool,
-) -> dict[str, str]:
+    root_only: bool,
+) -> list[_InitMember]:
     state_dir = _resolve_twf_state_dir(twf)
+    cfg = _read_yaml_or_json(_config_file())
 
     policy = _policy()
     root_role = policy.root_role
 
-    want_pm = "pm"
-    want_liaison = "liaison"
-    required = {root_role, want_pm, want_liaison}
-    missing = sorted(r for r in required if r not in policy.enabled_roles)
-    if missing:
-        raise SystemExit(f"❌ init requires enabled_roles to include: {', '.join(missing)}")
+    base_root = _init_root_base(cfg, root_role=root_role)
+    init_children = _init_children_specs(
+        cfg,
+        policy=policy,
+        root_base=base_root,
+        root_only=bool(root_only),
+    )
 
-    base_root = _base_name(root_role, "main")
-
-    child_roles = [r for r in [want_pm, want_liaison] if r != root_role]
-    for child_role in child_roles:
-        if child_role not in policy.can_hire.get(root_role, frozenset()):
-            raise SystemExit(f"❌ policy.can_hire: {root_role} cannot hire {child_role} (init needs it)")
-
-    init_children: list[tuple[str, str, str]] = []
-    for child_role in child_roles:
-        init_children.append(
-            (
-                child_role,
-                _base_name(child_role, "main"),
-                DEFAULT_ROLE_SCOPES.get(child_role, ""),
-            )
-        )
-
-    out: dict[str, str] = {}
+    out: list[_InitMember] = []
 
     def reuse_full(*, role: str, base: str) -> str | None:
         data0 = _load_registry(registry)
@@ -3289,13 +3425,16 @@ def _init_trio(
             data_root = _load_registry(registry)
             _ensure_member(data_root, full=root_full, base=base_root, role=root_role, scope=DEFAULT_ROLE_SCOPES.get(root_role, ""), parent=None)
             _write_json_atomic(registry, data_root)
-        out[root_role] = root_full
+        out.append(_InitMember(role=root_role, base=base_root, full=root_full))
     else:
         root_full, _ = up_root(role=root_role, base=base_root, scope=DEFAULT_ROLE_SCOPES.get(root_role, ""))
-        out[root_role] = root_full
+        out.append(_InitMember(role=root_role, base=base_root, full=root_full))
 
-    # 2) Children under root (PM + Liaison).
-    for role, base, scope in init_children:
+    # 2) Children under root (config-driven).
+    for child in init_children:
+        role = child.role
+        base = child.base
+        scope = child.scope
         child_full: str | None = None
         if not force_new:
             child_full = reuse_full(role=role, base=base)
@@ -3307,11 +3446,11 @@ def _init_trio(
                 _ensure_member(data_child, full=child_full, base=base, role=role, scope=scope, parent=root_full)
                 _add_child(data_child, parent_full=root_full, child_full=child_full)
                 _write_json_atomic(registry, data_child)
-            out[role] = child_full
+            out.append(_InitMember(role=role, base=base, full=child_full))
             continue
 
         child_full, _ = spawn_child(parent_full=root_full, role=role, base=base, scope=scope)
-        out[role] = child_full
+        out.append(_InitMember(role=role, base=base, full=child_full))
 
     return out
 
@@ -3662,7 +3801,7 @@ def cmd_report_up(args: argparse.Namespace) -> int:
     parent = sender.get("parent")
     parent_full = str(parent).strip() if isinstance(parent, str) else ""
     if not parent_full:
-        raise SystemExit("❌ no parent recorded for this worker (root). Use report-to <coord|liaison|name> instead.")
+        raise SystemExit("❌ no parent recorded for this worker (root). Use report-to <role|name> instead.")
 
     parent_m = _resolve_member(data, parent_full) or {}
     to_role = _member_role(parent_m)
@@ -7049,11 +7188,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="atwf", add_help=True)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    init = sub.add_parser("init", help="init registry and start initial team (root_role + pm + liaison)")
+    init = sub.add_parser("init", help="init registry and start initial team (root_role + configured children)")
     init.add_argument("task", nargs="?", help="task description (saved to share/task.md); or pipe via stdin")
     init.add_argument("--task-file", help="task file path to copy into share/task.md")
     init.add_argument("--registry-only", action="store_true", help="only create registry, do not start workers")
-    init.add_argument("--force-new", action="store_true", help="always start a fresh trio (even if one exists)")
+    init.add_argument("--force-new", action="store_true", help="always start a fresh initial team (even if one exists)")
+    init.add_argument("--root-only", action="store_true", help="start only root_role (skip init children)")
+    init.add_argument("--task-to", default="", help="role to notify with initial task (overrides config team.init.task_to_role)")
+    init.add_argument("--no-task-notify", action="store_true", help="do not notify anyone with the initial task")
     init.add_argument("--no-bootstrap", action="store_true", help="skip sending role templates on creation")
 
     reset = sub.add_parser("reset", help="reset local environment (delete worker state + share; preserve account pool by default)")

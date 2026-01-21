@@ -67,16 +67,17 @@ Within the same share dir as `registry.json`, this skill also standardizes:
 
 ## Quick start
 
-Initialize + start the initial trio + send task to PM:
+Initialize + start the initial team (root + configured children):
 - `bash .codex/skills/ai-team-workflow/scripts/atwf init "任务描述：/path/to/task.md"`
-  - starts root: `coord-main`
-  - spawns under root: `pm-main`, `liaison-main`
-  - copies the task into `share/task.md`, sends PM the shared path, and prints PM's first reply
+  - starts root: `<root_role>-<root_label>` (default: `coord-main`)
+  - spawns children under root from `scripts/atwf_config.yaml` → `team.init.children` (default: `pm-main`, `liaison-main`)
+  - copies the task into `share/task.md`
+  - sends a `[TASK]` inbox notice to `team.init.task_to_role` (default: `pm`; use `--no-task-notify` or set `task_to_role: ""` to disable)
   - starts a background sidecar: `atwf watch-idle` (tmux session `atwf-watch-idle-*`) to wake `idle` workers when inbox has unread; `atwf pause` disables watcher actions via `share/.paused`
   - note: `atwf pause` stops the watcher session; `atwf unpause` restarts it (so code/config updates take effect)
 
 Enter a role (avoid `tmux a` attaching the wrong session):
-- `bash .codex/skills/ai-team-workflow/scripts/atwf attach pm`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf attach coord` (or your configured `root_role`)
 
 View org/dependency tree:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf tree`
@@ -86,7 +87,10 @@ If you only want to create the registry (no workers):
 
 If you copied this skill from another repo and `init` reuses stale workers:
 - Delete runtime state under this skill’s `share/` (especially `share/registry.json`) and rerun `init`, or
-- Run `bash .codex/skills/ai-team-workflow/scripts/atwf init --force-new` to start a fresh trio.
+- Run `bash .codex/skills/ai-team-workflow/scripts/atwf init --force-new` to start a fresh initial team.
+
+If you do NOT use `pm`/`liaison`:
+- Remove them from `scripts/atwf_config.yaml` → `team.policy.enabled_roles`, and set `team.init.children: []` (or run `atwf init --root-only`).
 
 Create an architect under PM:
 - preferred: PM runs inside its tmux: `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self arch user --scope "user module design + task breakdown"`
@@ -102,13 +106,13 @@ Create execution roles under an architect:
 
 Inspect and route:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf list`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf tree pm`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf tree coord`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf route "login" --role dev`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf resolve pm`  # print PM full name
+- `bash .codex/skills/ai-team-workflow/scripts/atwf resolve coord`  # print root full name
 
-Disband the whole team (requires PM full name):
-- `bash .codex/skills/ai-team-workflow/scripts/atwf remove <pm-full>`
-  - find `<pm-full>` via: `bash .codex/skills/ai-team-workflow/scripts/atwf list`
+Reset/disband (destructive; removes team share dir + worker state):
+- `bash .codex/skills/ai-team-workflow/scripts/atwf reset --dry-run`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf reset`
 
 ## Reporting (mandatory)
 
@@ -214,7 +218,6 @@ All commands are wrappers around `twf` plus registry management:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf state-self`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf state-set-self <working|draining|idle>` (debug only; watcher overwrites)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf watch-idle [--interval S] [--delay S] [--once]`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf remove <pm-full>` (disband team; clears registry)
 
 ## Environment knobs
 
