@@ -131,8 +131,12 @@ User “bounce” rule (assistant is a relay):
    - interns → dev → arch → pm
 4. After PM finishes the consolidated design (`share/design.md`) and confirms “no conflicts”, PM announces **START DEV**.
 5. Each `dev-*` (including interns) creates a dedicated git worktree (no work on current branch):
-   - inside tmux: `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self`
-   - then: `cd <git-root>/worktree/<your-full-name>`
+   - Single-repo (run inside that repo):
+     - inside tmux: `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self`
+     - then: `cd <git-root>/worktree/<your-full-name>`
+   - Multi-module (repo roots are different subdirs; worker started in a non-git dev-workdir):
+     - inside tmux: `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self --repo /path/to/module-repo`
+     - default location: `<your-work-dir>/<repo-basename>` (override with `--dest-root` + `--name`)
 6. Implement + commit + report upward with verification steps. Parent integrates subtree first; PM integrates last.
 
 ## Conflict resolution protocol (ordered loop)
@@ -165,8 +169,8 @@ All commands are wrappers around `twf` plus registry management:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf design-init <full|base|role> [--force]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf design-init-self [--force]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-path <full|base|role>`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create <full|base|role> [--base REF] [--branch BR]`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self [--base REF] [--branch BR]`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create <full|base|role> [--base REF] [--branch BR] [--repo PATH] [--dest-root DIR] [--name NAME]`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self [--base REF] [--branch BR] [--repo PATH] [--dest-root DIR] [--name NAME]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-check-self`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf stop [--role ROLE|--subtree ROOT|targets...]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf resume [--role ROLE|--subtree ROOT|targets...]`

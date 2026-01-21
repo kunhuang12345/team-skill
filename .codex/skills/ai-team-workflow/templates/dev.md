@@ -53,7 +53,9 @@ Conflict resolution (ordered loop, for design/merge conflicts):
 
 Development rules (after PM says START DEV):
 - Do **not** develop on the current branch/worktree.
-- Create your dedicated worktree: `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self`
+- Create your dedicated worktree:
+  - Single-repo: `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self`
+  - Multi-module: `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self --repo /path/to/module-repo` (default: `<your-work-dir>/<repo-basename>`)
 - Ensure you are inside it: `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-check-self`
 - Work + commit in your branch, then report upward. If you hired interns, merge their work into yours first (resolve conflicts via the ordered loop), then report up.
 

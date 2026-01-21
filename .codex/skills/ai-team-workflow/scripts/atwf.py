@@ -4312,6 +4312,44 @@ def _git_root() -> Path:
     return Path(root).resolve()
 
 
+def _git_root_from(cwd: Path) -> Path:
+    cwd = cwd.resolve()
+    res = _run(["git", "-C", str(cwd), "rev-parse", "--git-common-dir"])
+    if res.returncode == 0:
+        raw = res.stdout.strip()
+        if raw:
+            common_dir = Path(raw)
+            if not common_dir.is_absolute():
+                common_dir = (cwd / common_dir).resolve()
+            else:
+                common_dir = common_dir.resolve()
+            root = common_dir.parent.resolve()
+            if root.is_dir():
+                return root
+
+    res = _run(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"])
+    if res.returncode != 0:
+        raise SystemExit(f"❌ not a git repository: {cwd}")
+    root = res.stdout.strip()
+    if not root:
+        raise SystemExit(f"❌ failed to detect git root: {cwd}")
+    return Path(root).resolve()
+
+
+def _member_work_dir(m: dict[str, Any]) -> Path | None:
+    state_file = _member_state_file(m)
+    if not (state_file and state_file.is_file()):
+        return None
+    state = _read_json(state_file)
+    raw = state.get("work_dir_norm") or state.get("work_dir")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        return Path(os.path.expanduser(raw.strip())).resolve()
+    except Exception:
+        return None
+
+
 def _worktrees_dir(git_root: Path) -> Path:
     return git_root / "worktree"
 
@@ -4333,6 +4371,31 @@ def cmd_worktree_path(args: argparse.Namespace) -> int:
     if not full:
         raise SystemExit(f"❌ target not found in registry: {target}")
 
+    repo_raw = str(getattr(args, "repo", "") or "").strip()
+    dest_root_raw = str(getattr(args, "dest_root", "") or "").strip()
+    name_raw = str(getattr(args, "name", "") or "").strip()
+
+    if repo_raw:
+        repo_dir = _expand_path(repo_raw)
+        if repo_dir.is_file():
+            repo_dir = repo_dir.parent
+        if not repo_dir.is_dir():
+            raise SystemExit(f"❌ --repo is not a directory: {repo_dir}")
+        repo_root = _git_root_from(repo_dir)
+
+        m = _resolve_member(data, full) or {}
+        dest_root = _expand_path(dest_root_raw) if dest_root_raw else _member_work_dir(m)
+        if dest_root:
+            name = name_raw or repo_root.name
+            if not name.strip():
+                raise SystemExit("❌ --name resolved to empty (pass --name explicitly)")
+            print(str(dest_root / name.strip()))
+            return 0
+
+        # Fallback: per-repo dedicated path (legacy style).
+        print(str(_worktree_path(repo_root, full)))
+        return 0
+
     git_root = _git_root()
     print(str(_worktree_path(git_root, full)))
     return 0
@@ -4351,14 +4414,58 @@ def cmd_worktree_create(args: argparse.Namespace) -> int:
     if not full:
         raise SystemExit(f"❌ target not found in registry: {target}")
 
+    base = (args.base or "HEAD").strip() or "HEAD"
+    branch = (args.branch or full).strip() or full
+
+    repo_raw = str(getattr(args, "repo", "") or "").strip()
+    dest_root_raw = str(getattr(args, "dest_root", "") or "").strip()
+    name_raw = str(getattr(args, "name", "") or "").strip()
+
+    if repo_raw:
+        repo_dir = _expand_path(repo_raw)
+        if repo_dir.is_file():
+            repo_dir = repo_dir.parent
+        if not repo_dir.is_dir():
+            raise SystemExit(f"❌ --repo is not a directory: {repo_dir}")
+        repo_root = _git_root_from(repo_dir)
+
+        dest_root: Path | None = None
+        if dest_root_raw:
+            dest_root = _expand_path(dest_root_raw)
+        else:
+            m = _resolve_member(data, full) or {}
+            dest_root = _member_work_dir(m)
+
+        if dest_root:
+            dest_root.mkdir(parents=True, exist_ok=True)
+            name = name_raw or repo_root.name
+            name = name.strip()
+            if not name:
+                raise SystemExit("❌ --name resolved to empty (pass --name explicitly)")
+            path = dest_root / name
+        else:
+            wt_dir = _worktrees_dir(repo_root)
+            wt_dir.mkdir(parents=True, exist_ok=True)
+            path = _worktree_path(repo_root, full)
+
+        if path.exists():
+            print(str(path))
+            return 0
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        res = _run(["git", "-C", str(repo_dir), "worktree", "add", "-b", branch, str(path), base])
+        if res.returncode != 0:
+            err = (res.stderr or "").strip()
+            raise SystemExit(err or f"❌ git worktree add failed (code {res.returncode})")
+
+        print(str(path))
+        return 0
+
     git_root = _git_root()
     wt_dir = _worktrees_dir(git_root)
     wt_dir.mkdir(parents=True, exist_ok=True)
 
     path = _worktree_path(git_root, full)
-    base = (args.base or "HEAD").strip() or "HEAD"
-    branch = (args.branch or full).strip() or full
-
     if path.exists():
         print(str(path))
         return 0
@@ -4379,7 +4486,14 @@ def cmd_worktree_create_self(args: argparse.Namespace) -> int:
     full = res.stdout.strip()
     if not full:
         raise SystemExit("❌ failed to detect current tmux session name")
-    ns = argparse.Namespace(target=full, base=args.base, branch=args.branch)
+    ns = argparse.Namespace(
+        target=full,
+        base=args.base,
+        branch=args.branch,
+        repo=getattr(args, "repo", ""),
+        dest_root=getattr(args, "dest_root", ""),
+        name=getattr(args, "name", ""),
+    )
     return cmd_worktree_create(ns)
 
 
@@ -6898,15 +7012,27 @@ def build_parser() -> argparse.ArgumentParser:
 
     wtp = sub.add_parser("worktree-path", help="print the dedicated git worktree path for a worker")
     wtp.add_argument("target", help="full|base|role")
+    wtp.add_argument("--repo", default="", help="git repo/worktree path (optional; enables multi-repo mode)")
+    wtp.add_argument("--dest-root", default="", help="destination root directory (optional; multi-repo mode)")
+    wtp.add_argument("--name", default="", help="destination subdir name under dest-root (default: repo basename)")
 
-    wtc = sub.add_parser("worktree-create", help="create a dedicated git worktree under <git-root>/worktree/<full>")
+    wtc = sub.add_parser(
+        "worktree-create",
+        help="create a dedicated git worktree (default: <git-root>/worktree/<full>; multi-repo mode: <dest-root>/<name>)",
+    )
     wtc.add_argument("target", help="full|base|role")
     wtc.add_argument("--base", default="HEAD", help="base ref/branch/commit (default: HEAD)")
     wtc.add_argument("--branch", default="", help="branch name to create for the worktree (default: <full>)")
+    wtc.add_argument("--repo", default="", help="git repo/worktree path (optional; enables multi-repo mode)")
+    wtc.add_argument("--dest-root", default="", help="destination root directory (optional; multi-repo mode)")
+    wtc.add_argument("--name", default="", help="destination subdir name under dest-root (default: repo basename)")
 
     wtcs = sub.add_parser("worktree-create-self", help="create a dedicated git worktree for the current tmux worker")
     wtcs.add_argument("--base", default="HEAD", help="base ref/branch/commit (default: HEAD)")
     wtcs.add_argument("--branch", default="", help="branch name to create for the worktree (default: <full>)")
+    wtcs.add_argument("--repo", default="", help="git repo/worktree path (optional; enables multi-repo mode)")
+    wtcs.add_argument("--dest-root", default="", help="destination root directory (optional; multi-repo mode)")
+    wtcs.add_argument("--name", default="", help="destination subdir name under dest-root (default: repo basename)")
 
     sub.add_parser("worktree-check-self", help="ensure you are working inside your dedicated worktree (inside tmux)")
 

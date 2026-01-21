@@ -44,7 +44,7 @@ Reporting (mandatory):
 START DEV gate (required):
 - Only after you finalize `{{TEAM_DIR}}/design.md` and confirm “no conflicts”, announce START DEV to all devs/interns:
   - Broadcast is typically restricted to Coordinator. Ask Coordinator to broadcast:
-    - `bash .codex/skills/ai-team-workflow/scripts/atwf action coord --message "[REQUEST-BROADCAST] --role dev\\n[START DEV] Use {{TEAM_DIR}}/design.md. Create your dedicated worktree via: atwf worktree-create-self"`
+    - `bash .codex/skills/ai-team-workflow/scripts/atwf action coord --message "[REQUEST-BROADCAST] --role dev\\n[START DEV] Use {{TEAM_DIR}}/design.md. Create your dedicated worktree via: atwf worktree-create-self (multi-module: add --repo <module-repo>)"`
 - Developers must not work on the current branch; they must use `<git-root>/worktree/<full>`.
 
 Merge/integration rules (bottom-up):
