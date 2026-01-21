@@ -90,7 +90,7 @@ share:
 #
 # Notes:
 # - 权限/可雇佣关系写在 policy（硬约束）里，不写在角色模板里。
-# - 组织树（谁雇佣谁、开几个 dev/qa）由 PM 在运行时决定，但必须满足下面的规则。
+# - 组织树（谁雇佣谁、开几个 dev/test）由父角色在运行时决定，但必须满足下面的规则。
 team:
   policy:
     # Root role (single root). Non-root roles must be created via spawn (must have a parent).
@@ -99,31 +99,24 @@ team:
     # Project-enabled roles (must have a matching templates/<role>.md).
     enabled_roles:
       - coord
-      - pm
-      - liaison
-      - arch
+      - admin
+      - product
       - dev
-      - qa
-      - prod
-      - ops
+      - reviewer
+      - test
 
-    # Hiring policy (who can spawn which roles). PM decides actual org by spawning,
+    # Hiring policy (who can spawn which roles). The parent decides the actual org by spawning,
     # but the role types must be allowed here.
     can_hire:
-      coord: [pm, liaison]
-      pm: [arch, dev, qa, prod, ops]
-      arch: [dev, qa, prod]
+      coord: [admin]
+      admin: [product, dev, reviewer, test]
       # Optional self-scaling (interns/assistants) by role label (e.g. dev-intern):
       dev: [dev]
-      qa: [qa]
-      prod: [prod]
-      ops: [ops]
 
     # Broadcast governance
     broadcast:
       allowed_roles: [coord]
-      # Default internal broadcast audience should exclude liaison unless explicitly targeted.
-      exclude_roles: [liaison]
+      exclude_roles: []
 
     # Direct communication governance (who can DM/ask whom without handoff)
     comm:
@@ -131,20 +124,20 @@ team:
       allow_parent_child: true
 
       # Role-to-role direct communication matrix (bidirectional).
-      # Example: dev (including dev interns) can talk to prod/qa directly.
+      # Example: dev (including dev interns) can talk to product/test/reviewer directly.
       direct_allow:
         # Anyone can ask coord for routing/authorization.
-        coord: [pm, arch, dev, qa, prod, ops, liaison]
-        pm: [liaison]
-        dev: [prod, qa]
-        qa: [prod, dev]
-        prod: [dev, qa]
+        coord: [admin, product, dev, reviewer, test]
+        admin: [product, dev, reviewer, test]
+        product: [dev, reviewer, test]
+        dev: [reviewer, test]
+        reviewer: [test]
 
       # Otherwise, cross-branch conversations require a handoff/permit (to avoid relaying).
       require_handoff: true
 
       # Who can create handoffs/permits.
-      handoff_creators: [coord, pm, arch]
+      handoff_creators: [coord, admin]
 
   # Init behavior (`atwf init`)
   #
@@ -166,18 +159,12 @@ team:
     # Each item can be:
     # - a role string: "pm"
     # - a dict: {role, label, scope} (or `base` to override the computed base name)
-    children:
-      - role: pm
-        label: main
-        scope: "overall delivery / milestone planning"
-      - role: liaison
-        label: main
-        scope: "user communication + clarifications"
+    children: []
 
     # Who receives the initial [TASK] inbox notice after init.
     # - default: "pm"
     # - set "" to disable auto-notify
-    task_to_role: pm
+    task_to_role: coord
 
   # Drive loop (anti-stall)
   #
@@ -187,7 +174,7 @@ team:
   drive:
     mode: running # running | standby
     driver_role: coord     # who is woken to drive the team
-    backup_role: pm        # escalation target if driver is missing
+    backup_role: coord     # escalation target if driver is missing
     cooldown: 600          # seconds between repeated drive nudges
     message:
       # Summary is what gets injected into the driver’s Codex prompt (short).
@@ -201,7 +188,7 @@ team:
         [DRIVE] team stalled: ALL IDLE + INBOX EMPTY
         inbox id={{msg_id}} (open: {{open_cmd}})
         Rule: DO NOT change team.drive.mode or edit atwf_config.yaml (operator-only).
-        Now: diagnose ({{ATWF_CMD}} state/list/inbox), then re-drive by assigning next actions (owner+ETA). If the current iteration is done, kick off the next one (PM→Prod).
+        Now: diagnose ({{ATWF_CMD}} state/list/inbox), then re-drive by assigning next actions (owner+ETA). If the current request is done, create/assign the next admin-* chain.
       body: |
         [DRIVE] team stalled: ALL IDLE + INBOX EMPTY
         - detected_at: {{iso_ts}}
