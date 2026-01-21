@@ -1,0 +1,13 @@
+# Example only. Copy to `auth_headers.txt` and fill real Cookie/Token values.
+# Do NOT commit `auth_headers.txt` (it is gitignored).
+#
+# Format (one per line):
+# HeaderName: value
+# or
+# HeaderName=value
+#
+# Typical cookie keys (examples):
+# JSESSIONID: <value>
+# atlassian.xsrf.token: <value>
+# seraph.confluence: <value>
+# seraph.rememberme.cookie: <value>

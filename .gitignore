@@ -14,3 +14,10 @@ __pycache__/
 tmp/
 compare_with_mcp/
 worktree/
+
+# clipper (local auth + outputs)
+.codex/skills/clipper/.env
+.codex/skills/clipper/auth_headers.txt
+.codex/skills/clipper/urls.txt
+.codex/skills/clipper/output/
+.codex/skills/clipper/default/

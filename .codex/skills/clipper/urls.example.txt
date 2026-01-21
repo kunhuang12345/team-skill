@@ -1,0 +1,13 @@
+# Example only. Copy to `urls.txt` or pass `--urls-file`.
+# Do NOT commit `urls.txt` (it is gitignored).
+#
+# Supported:
+# - QC key: SPK-12345 / QSC-82081 (or a browse URL)
+# - Wiki URL: https://...
+# - Grouping syntax:
+#   qc=SPK-12345
+#   <url1>
+#   <url2>
+
+qc=SPK-12345
+https://confluence.example.com/pages/viewpage.action?pageId=123456
