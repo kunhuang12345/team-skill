@@ -147,6 +147,12 @@ def _wrap_team_message(
     return f"{header}\n[ATWF-END id={resolved_id}]\n"
 
 
+def _inbox_notice(msg_id: str) -> str:
+    msg_id = str(msg_id or "").strip()
+    atwf_cmd = _atwf_cmd()
+    return f"[INBOX] id={msg_id}\nopen: {atwf_cmd} inbox-open {msg_id}\nack: {atwf_cmd} inbox-ack {msg_id}\n"
+
+
 def _slugify(raw: str) -> str:
     s = re.sub(r"[^a-zA-Z0-9_-]+", "-", (raw or "").strip())
     s = "-".join(seg for seg in s.split("-") if seg)
@@ -530,6 +536,8 @@ def _atwf_cmd() -> str:
 
 def _substitute_atwf_paths(text: str) -> str:
     s = text or ""
+    s = s.replace("{{ATWF_CMD}}", _atwf_cmd())
+    s = s.replace("{{ATWF_CONFIG}}", str(_config_file()))
     s = s.replace("bash .codex/skills/ai-team-workflow/scripts/atwf", _atwf_cmd())
     s = s.replace(".codex/skills/ai-team-workflow/scripts/atwf_config.yaml", str(_config_file()))
     return s
@@ -581,6 +589,59 @@ def _cap_state_file_path() -> Path:
 
 def _templates_dir() -> Path:
     return _skill_dir() / "templates"
+
+
+def _templates_check_files() -> list[Path]:
+    templates = _templates_dir()
+    files = sorted([p for p in templates.glob("*.md") if p.is_file()])
+    cfg = _config_file()
+    if cfg.is_file():
+        files.append(cfg)
+    return files
+
+
+def _template_lint_issues() -> list[str]:
+    issues: list[str] = []
+
+    def line_of(text: str, pos: int) -> int:
+        if pos < 0:
+            pos = 0
+        return text[:pos].count("\n") + 1
+
+    for path in _templates_check_files():
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError as e:
+            issues.append(f"{path}: failed to read ({e})")
+            continue
+
+        legacy_atwf = ".codex/skills/ai-team-workflow/scripts/atwf"
+        if legacy_atwf in raw:
+            ln = line_of(raw, raw.find(legacy_atwf))
+            issues.append(f"{path}:{ln}: hardcoded .codex path detected; use {{ATWF_CMD}} instead")
+
+        legacy_cfg = ".codex/skills/ai-team-workflow/scripts/atwf_config.yaml"
+        if legacy_cfg in raw:
+            ln = line_of(raw, raw.find(legacy_cfg))
+            issues.append(f"{path}:{ln}: hardcoded config path detected; use {{ATWF_CONFIG}} instead")
+
+        m = re.search(r"`atwf\\s+", raw)
+        if m:
+            issues.append(f"{path}:{line_of(raw, m.start())}: bare `atwf <subcmd>` detected; use `{{ATWF_CMD}} <subcmd>`")
+
+    return issues
+
+
+def _validate_templates_or_die() -> None:
+    issues = _template_lint_issues()
+    if not issues:
+        return
+    joined = "\n".join(f"- {s}" for s in issues)
+    raise SystemExit(
+        "❌ templates validation failed (portability rule).\n"
+        "Fix the templates/config to use `{{ATWF_CMD}}` / `{{ATWF_CONFIG}}` placeholders.\n"
+        f"{joined}"
+    )
 
 
 def _resolve_twf() -> Path:
@@ -1267,25 +1328,65 @@ def cmd_reset(args: argparse.Namespace) -> int:
     """
     expected_root = _expected_project_root()
     twf = _resolve_twf()
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    reg = _load_registry(registry)
     # Stop the account-pool watcher early to avoid races during reset.
     watch_session = _cap_watch_session_name(expected_root)
     _tmux_kill_session(watch_session)
     _tmux_kill_session(f"{watch_session}-status")
-    _tmux_kill_session(_watch_idle_session_name(expected_root, team_dir=_default_team_dir()))
+    _tmux_kill_session(_watch_idle_session_name(expected_root, team_dir=team_dir))
 
     # 1) Stop/remove tmux-workflow workers for this project.
     state_dir = _resolve_twf_state_dir(twf)
-    worker_candidates: list[tuple[Path, dict[str, Any]]] = []
+    member_state_paths: list[Path] = []
+    members = reg.get("members")
+    if isinstance(members, list):
+        for m in members:
+            if not isinstance(m, dict):
+                continue
+            full = str(m.get("full", "") or "").strip()
+            state_file = _member_state_file(m)
+            if not state_file and full:
+                state_file = state_dir / f"{full}.json"
+            if not state_file:
+                continue
+            try:
+                member_state_paths.append(state_file.resolve())
+            except Exception:
+                member_state_paths.append(state_file)
+
+    # Best-effort fallback: also remove any state files that match the legacy
+    # "project root" heuristic, for users who have state not recorded in registry.
     if state_dir.is_dir():
         for p in sorted(state_dir.glob("*.json")):
             try:
-                data = _read_json(p)
+                p_res = p.resolve()
+            except Exception:
+                p_res = p
+            if p_res in member_state_paths:
+                continue
+            try:
+                if _state_file_matches_project(p, expected_root):
+                    member_state_paths.append(p_res)
             except SystemExit:
                 continue
-            if not data:
-                continue
-            if _state_file_matches_project(p, expected_root):
-                worker_candidates.append((p, data))
+
+    seen_state: set[Path] = set()
+    worker_candidates: list[tuple[Path, dict[str, Any]]] = []
+    for p in member_state_paths:
+        if p in seen_state:
+            continue
+        seen_state.add(p)
+        if not p.is_file():
+            continue
+        try:
+            data = _read_json(p)
+        except SystemExit:
+            continue
+        if not data:
+            continue
+        worker_candidates.append((p, data))
 
     codex_workers_root = Path(os.environ.get("TWF_WORKERS_DIR", "") or (Path.home() / ".codex-workers")).expanduser().resolve()
 
@@ -1301,7 +1402,6 @@ def cmd_reset(args: argparse.Namespace) -> int:
                 print(f"  tmux_session: {tmux_session}")
             if codex_home:
                 print(f"  codex_home: {codex_home}")
-        team_dir = _default_team_dir()
         print(f"ai_team_share_dir: {team_dir}")
         pool_state = _cap_state_file_path()
         print(f"cap_watch_session: {_cap_watch_session_name(expected_root)}")
@@ -1344,7 +1444,6 @@ def cmd_reset(args: argparse.Namespace) -> int:
         pass
 
     # 2) Remove ai-team-workflow share dir (registry/task/design).
-    team_dir = _default_team_dir()
     _rm_tree(team_dir)
 
     # 3) Optionally wipe local codex-account-pool state (per-project).
@@ -1651,6 +1750,25 @@ def _member_state_file(m: dict[str, Any]) -> Path | None:
 
 
 def _expected_project_root() -> Path:
+    override = os.environ.get("AITWF_PROJECT_ROOT", "").strip()
+    if override:
+        return _expand_path(override)
+
+    # Prefer a stable "project root" derived from the install location:
+    #   <project>/.codex/skills/ai-team-workflow
+    # This makes watcher/session naming stable even when you run atwf from
+    # different cwd/worktrees.
+    skill_dir = _skill_dir().resolve()
+    home_codex = (Path.home() / ".codex").resolve()
+    for p in [skill_dir, *skill_dir.parents]:
+        if p.name != ".codex":
+            continue
+        # Ignore global install (~/.codex); fallback to cwd/git-root so global
+        # skills can be reused across many repos.
+        if p.resolve() == home_codex:
+            break
+        return p.parent.resolve()
+
     try:
         return _git_root()
     except SystemExit:
@@ -2967,6 +3085,9 @@ def _require_comm_allowed(
 
 
 def cmd_init(args: argparse.Namespace) -> int:
+    if not bool(getattr(args, "registry_only", False)) and not bool(getattr(args, "no_bootstrap", False)):
+        _validate_templates_or_die()
+
     team_dir = _default_team_dir()
     registry = _registry_path(team_dir)
 
@@ -3034,7 +3155,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             to_role=to_role,
             body=msg,
         )
-        notice = f"[INBOX] id={msg_id}\nopen: atwf inbox-open {msg_id}\nack: atwf inbox-ack {msg_id}\n"
+        notice = _inbox_notice(msg_id)
         wrapped = _wrap_team_message(
             team_dir,
             kind="task",
@@ -3061,7 +3182,7 @@ def _init_trio(
     force_new: bool,
     no_bootstrap: bool,
 ) -> dict[str, str]:
-    expected_root = _expected_project_root()
+    state_dir = _resolve_twf_state_dir(twf)
 
     policy = _policy()
     root_role = policy.root_role
@@ -3098,8 +3219,12 @@ def _init_trio(
         if not m0:
             return None
         candidate = str(m0.get("full", "")).strip() or None
+        if not candidate:
+            return None
         state_file = _member_state_file(m0)
-        if not (candidate and state_file and state_file.is_file() and _state_file_matches_project(state_file, expected_root)):
+        if not (state_file and state_file.is_file()):
+            state_file = (state_dir / f"{candidate}.json").resolve()
+        if not state_file.is_file():
             return None
         if not _tmux_running(candidate):
             _run_twf(twf, ["resume", candidate, "--no-tree"])
@@ -3276,6 +3401,8 @@ def cmd_up(args: argparse.Namespace) -> int:
     team_dir = _default_team_dir()
     registry = _registry_path(team_dir)
     role = _require_role(args.role)
+    if not bool(getattr(args, "no_bootstrap", False)):
+        _validate_templates_or_die()
     policy = _policy()
     if role != policy.root_role:
         raise SystemExit(f"❌ up only allowed for root_role={policy.root_role}. Use `atwf spawn` / `atwf spawn-self`.")
@@ -3339,6 +3466,8 @@ def cmd_spawn(args: argparse.Namespace) -> int:
     twf = _resolve_twf()
     team_dir = _default_team_dir()
     registry = _registry_path(team_dir)
+    if not bool(getattr(args, "no_bootstrap", False)):
+        _validate_templates_or_die()
 
     parent_raw = args.parent_full.strip()
     if not parent_raw:
@@ -3557,7 +3686,7 @@ def cmd_report_up(args: argparse.Namespace) -> int:
         to_role=to_role,
         body=msg,
     )
-    notice = f"[INBOX] id={msg_id}\nopen: atwf inbox-open {msg_id}\nack: atwf inbox-ack {msg_id}\n"
+    notice = _inbox_notice(msg_id)
     wrapped = _wrap_team_message(
         team_dir,
         kind="report-up",
@@ -3630,7 +3759,7 @@ def cmd_report_to(args: argparse.Namespace) -> int:
         to_role=to_role,
         body=msg,
     )
-    notice = f"[INBOX] id={msg_id}\nopen: atwf inbox-open {msg_id}\nack: atwf inbox-ack {msg_id}\n"
+    notice = _inbox_notice(msg_id)
     wrapped = _wrap_team_message(
         team_dir,
         kind="report-to",
@@ -3831,6 +3960,16 @@ def cmd_where(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_templates_check(_: argparse.Namespace) -> int:
+    issues = _template_lint_issues()
+    if issues:
+        for s in issues:
+            _eprint(s)
+        return 1
+    print("OK")
+    return 0
+
+
 def cmd_policy(_: argparse.Namespace) -> int:
     policy = _policy()
     print(f"config: {_config_file()}")
@@ -4000,7 +4139,7 @@ def cmd_handoff(args: argparse.Namespace) -> int:
     )
 
     handoff_id = _next_msg_id(team_dir)
-    notice = f"[INBOX] id={handoff_id}\nopen: atwf inbox-open {handoff_id}\nack: atwf inbox-ack {handoff_id}\n"
+    notice = _inbox_notice(handoff_id)
 
     _write_inbox_message(
         team_dir,
@@ -4850,7 +4989,7 @@ def cmd_broadcast(args: argparse.Namespace) -> int:
             uniq.append(t)
 
     bc_id = _next_msg_id(team_dir)
-    notice = f"[INBOX] id={bc_id}\nopen: atwf inbox-open {bc_id}\nack: atwf inbox-ack {bc_id}\n"
+    notice = _inbox_notice(bc_id)
 
     lock = team_dir / ".lock"
     with _locked(lock):
@@ -5078,7 +5217,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
         to_role=to_role,
         body=msg,
     )
-    notice = f"[INBOX] id={msg_id}\nopen: atwf inbox-open {msg_id}\nack: atwf inbox-ack {msg_id}\n"
+    notice = _inbox_notice(msg_id)
     wrapped = _wrap_team_message(
         team_dir,
         kind="ask",
@@ -5161,7 +5300,7 @@ def cmd_send(args: argparse.Namespace) -> int:
         to_role=to_role,
         body=msg,
     )
-    notice = f"[INBOX] id={msg_id}\nopen: atwf inbox-open {msg_id}\nack: atwf inbox-ack {msg_id}\n"
+    notice = _inbox_notice(msg_id)
     wrapped = _wrap_team_message(
         team_dir,
         kind="send",
@@ -5297,7 +5436,7 @@ def _cmd_intent_message(args: argparse.Namespace, *, kind: str) -> int:
         _require_comm_allowed(policy, data, actor_full=actor_full, target_full=targets[0])
 
     msg_id = _next_msg_id(team_dir)
-    inbox_notice = f"[INBOX] id={msg_id}\nopen: atwf inbox-open {msg_id}\nack: atwf inbox-ack {msg_id}\n"
+    inbox_notice = _inbox_notice(msg_id)
 
     lock = team_dir / ".lock"
     with _locked(lock):
@@ -6993,6 +7132,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("where", help="print resolved shared dirs (team_dir + registry)")
 
+    sub.add_parser("templates-check", help="validate templates/config portability ({{ATWF_CMD}}/{{ATWF_CONFIG}})")
+
     sub.add_parser("policy", help="print resolved team policy (hard constraints)")
 
     sub.add_parser("perms-self", help="print current worker permissions (inside tmux)")
@@ -7242,6 +7383,8 @@ def main(argv: list[str]) -> int:
         return cmd_list(args)
     if args.cmd == "where":
         return cmd_where(args)
+    if args.cmd == "templates-check":
+        return cmd_templates_check(args)
     if args.cmd == "policy":
         return cmd_policy(args)
     if args.cmd == "perms-self":

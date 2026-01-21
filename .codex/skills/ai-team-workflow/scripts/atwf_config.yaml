@@ -168,7 +168,7 @@ team:
         [DRIVE] team stalled: ALL IDLE + INBOX EMPTY
         inbox id={{msg_id}} (open: {{open_cmd}})
         Rule: DO NOT change team.drive.mode or edit atwf_config.yaml (operator-only).
-        Now: diagnose (atwf state/list/inbox), then re-drive by assigning next actions (owner+ETA). If the current iteration is done, kick off the next one (PM→Prod).
+        Now: diagnose ({{ATWF_CMD}} state/list/inbox), then re-drive by assigning next actions (owner+ETA). If the current iteration is done, kick off the next one (PM→Prod).
       body: |
         [DRIVE] team stalled: ALL IDLE + INBOX EMPTY
         - detected_at: {{iso_ts}}
@@ -176,21 +176,21 @@ team:
 
         Hard rule (operator-only):
         - DO NOT change team.drive.mode.
-        - DO NOT edit .codex/skills/ai-team-workflow/scripts/atwf_config.yaml.
+        - DO NOT edit {{ATWF_CONFIG}}.
 
         1) Diagnose now:
-        - atwf state
-        - atwf list
-        - atwf inbox (your own inbox)
+        - {{ATWF_CMD}} state
+        - {{ATWF_CMD}} list
+        - {{ATWF_CMD}} inbox (your own inbox)
 
         2) Re-drive now:
-        - assign next actions (owner + next step + ETA) via atwf action
+        - assign next actions (owner + next step + ETA) via {{ATWF_CMD}} action
         - if the current iteration/batch is complete, immediately kick off the next iteration: remind PM to have Prod draft the next iteration batch (features + AC/Verify), then start assignments (do not "go idle")
 
   # Reply-needed requests (fan-in replies without CLI injection)
   #
-  # - Initiator uses: `atwf gather ...`
-  # - Targets reply via: `atwf respond ...` (or `--blocked` to snooze reminders)
+  # - Initiator uses: `{{ATWF_CMD}} gather ...`
+  # - Targets reply via: `{{ATWF_CMD}} respond ...` (or `--blocked` to snooze reminders)
   # - Watcher will reply-drive (wake debtors) when team is stalled but replies are pending.
   reply:
     deadline: 3600        # seconds until auto-timeout / consolidation
@@ -238,8 +238,8 @@ team:
         - "3. No, and tell Codex what to do differently (esc)"
 
     # Minimal wake message injected into Codex TUI (no full body here).
-    wake_message: "INBOX wake: you have unread messages. Run: bash .codex/skills/ai-team-workflow/scripts/atwf inbox"
-    reply_wake_message: "REPLY wake: you have pending reply-needed. Run: bash .codex/skills/ai-team-workflow/scripts/atwf reply-needed"
+    wake_message: "INBOX wake: you have unread messages. Run: {{ATWF_CMD}} inbox"
+    reply_wake_message: "REPLY wake: you have pending reply-needed. Run: {{ATWF_CMD}} reply-needed"
 
     # Governance: if a worker is `working` but has pending inbox items older than N seconds,
     # the watcher writes an inbox-only alert to coord (no CLI injection).

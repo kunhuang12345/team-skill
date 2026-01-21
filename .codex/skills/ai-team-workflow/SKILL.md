@@ -22,6 +22,22 @@ Self-contained by default:
 Optional overrides:
 - `AITWF_TWF=/path/to/twf` to use an external `twf`
 
+## Template portability (important)
+
+This skill supports starting workers in arbitrary working directories (e.g. git worktrees) without requiring `.codex` to exist in those directories.
+
+Rules for humans editing templates/config:
+- In `templates/*.md` and `scripts/atwf_config.yaml`, always write runnable commands/paths using placeholders:
+  - atwf command: `{{ATWF_CMD}} <subcmd> ...`
+  - config path: `{{ATWF_CONFIG}}`
+- Do **NOT** hardcode `.codex/...` paths or write bare `atwf ...` commands in templates.
+
+Validate (also enforced by `init`/`up`/`spawn` unless `--no-bootstrap`):
+- `bash .codex/skills/ai-team-workflow/scripts/atwf templates-check`
+
+Operator note:
+- If your current directory does not contain `.codex/`, run `atwf` via its **absolute path** (workers will receive absolute `{{ATWF_CMD}}` commands automatically).
+
 ## Shared registry (“task allocation table”)
 
 Default path: `<skill_root>/share/registry.json` (project install example: `./.codex/skills/ai-team-workflow/share/registry.json`).
@@ -151,9 +167,9 @@ For design conflicts or merge conflicts within a subtree:
 
 All commands are wrappers around `twf` plus registry management:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf init ["task"] [--task-file PATH] [--registry-only]`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf up <role> [label] --scope "..."` (root_role only; start + register + bootstrap)
-- `bash .codex/skills/ai-team-workflow/scripts/atwf spawn <parent-full> <role> [label] --scope "..."` (spawn child + register + bootstrap)
-- `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self <role> [label] --scope "..."` (inside tmux; uses current worker as parent)
+- `bash .codex/skills/ai-team-workflow/scripts/atwf up <role> [label] --scope "..." [--work-dir DIR]` (root_role only; start + register + bootstrap)
+- `bash .codex/skills/ai-team-workflow/scripts/atwf spawn <parent-full> <role> [label] --scope "..." [--work-dir DIR]` (spawn child + register + bootstrap)
+- `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self <role> [label] --scope "..." [--work-dir DIR]` (inside tmux; uses current worker as parent)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf parent <name|full>`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf parent-self`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf children <name|full>`
@@ -205,4 +221,5 @@ All commands are wrappers around `twf` plus registry management:
 - `AITWF_TWF`: path to external `twf` (override bundled `deps/tmux-workflow`)
 - `AITWF_DIR`: override shared state dir
 - `AITWF_REGISTRY`: override registry file path
+- `AITWF_PROJECT_ROOT`: stable project root for watcher/session naming (optional; otherwise derived from install location, falling back to cwd/git root)
 - Config file: `.codex/skills/ai-team-workflow/scripts/atwf_config.yaml` (unified: `codex.*`, `twf.*`, `cap.*`, `share.*`, `team.*`)
