@@ -20,7 +20,7 @@ Template authoring rule (for humans editing templates):
 - Check hard permissions any time:
   - `{{ATWF_CMD}} policy`
   - `{{ATWF_CMD}} perms-self`
-- Any progress/completion/design conclusion **must** be reported via `{{ATWF_CMD}} report-up` (or `{{ATWF_CMD}} report-to coord|liaison`) to count as “reported”; otherwise the parent may treat it as “not received”.
+- Any progress/completion/design conclusion **must** be reported via `{{ATWF_CMD}} report-up` (or `{{ATWF_CMD}} report-to coord`) to count as “reported”; otherwise the parent may treat it as “not received”.
 
 ## Queue-safe message protocol (mandatory)
 

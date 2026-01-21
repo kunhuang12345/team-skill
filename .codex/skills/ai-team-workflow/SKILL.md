@@ -1,6 +1,6 @@
 ---
 name: ai-team-workflow
-description: Role-based multi-agent workflow built on tmux-workflow/twf. Use when you want to run a PM/Architect/Product/Dev/QA/Ops/Coordinator/Liaison “AI team” as multiple Codex tmux workers, keep a shared responsibilities registry, route internal questions via Coordinator, and escalate user-facing questions via Liaison.
+description: Role-based multi-agent workflow built on tmux-workflow/twf. Use when you want to run a configurable AI team (default: Coord/Admin/Product/Dev/Reviewer/Test) as multiple Codex tmux workers, keep a shared responsibilities registry, and route work via Coordinator.
 ---
 
 # ai-team-workflow
@@ -11,7 +11,7 @@ Core ideas:
 - **One role = one Codex worker (tmux session)**.
 - **Any role can scale** by spawning a child worker (e.g. `dev` hires `dev-intern`).
 - A shared **responsibilities registry** is the source of truth for “who owns what”.
-- **Coordinator** routes internal questions; **Liaison** is the only role that asks the user.
+- **Coordinator** routes internal questions and is the only role that asks the user/operator when truly needed.
 
 ## Dependency
 
@@ -60,7 +60,7 @@ It records, per worker:
 Within the same share dir as `registry.json`, this skill also standardizes:
 - Shared task: `share/task.md` (written by `atwf init ...`)
 - Per-member designs: `share/design/<full>.md` (create via `atwf design-init[-self]`)
-- Consolidated design: `share/design.md` (PM owns the final merged version)
+- Consolidated design: `share/design.md` (subtree owner maintains)
 - Ops environment docs:
   - `share/ops/env.md`
   - `share/ops/host-deps.md` (records any host-level installs like `apt`/`curl` downloads)
@@ -70,9 +70,9 @@ Within the same share dir as `registry.json`, this skill also standardizes:
 Initialize + start the initial team (root + configured children):
 - `bash .codex/skills/ai-team-workflow/scripts/atwf init "任务描述：/path/to/task.md"`
   - starts root: `<root_role>-<root_label>` (default: `coord-main`)
-  - spawns children under root from `scripts/atwf_config.yaml` → `team.init.children` (default: `pm-main`, `liaison-main`)
+  - spawns children under root from `scripts/atwf_config.yaml` → `team.init.children` (default in this branch: `[]`, i.e. root-only)
   - copies the task into `share/task.md`
-  - sends a `[TASK]` inbox notice to `team.init.task_to_role` (default: `pm`; use `--no-task-notify` or set `task_to_role: ""` to disable)
+  - sends a `[TASK]` inbox notice to `team.init.task_to_role` (default: `coord`; use `--no-task-notify` or set `task_to_role: ""` to disable)
   - starts a background sidecar: `atwf watch-idle` (tmux session `atwf-watch-idle-*`) to wake `idle` workers when inbox has unread; `atwf pause` disables watcher actions via `share/.paused`
   - note: `atwf pause` stops the watcher session; `atwf unpause` restarts it (so code/config updates take effect)
 
@@ -89,20 +89,16 @@ If you copied this skill from another repo and `init` reuses stale workers:
 - Delete runtime state under this skill’s `share/` (especially `share/registry.json`) and rerun `init`, or
 - Run `bash .codex/skills/ai-team-workflow/scripts/atwf init --force-new` to start a fresh initial team.
 
-If you do NOT use `pm`/`liaison`:
-- Remove them from `scripts/atwf_config.yaml` → `team.policy.enabled_roles`, and set `team.init.children: []` (or run `atwf init --root-only`).
+Default org model in this branch:
+- `coord -> admin-REQ-* -> (product/dev/reviewer/test)`
 
-Create an architect under PM:
-- preferred: PM runs inside its tmux: `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self arch user --scope "user module design + task breakdown"`
-
-Create an ops under PM (environment owner):
-- preferred: PM runs inside its tmux: `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self ops env --scope "local Docker + docker-compose environment management"`
-
-Create execution roles under an architect:
-- preferred: the architect runs inside its tmux:
-  - `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self dev backend --scope "backend implementation for user module"`
-  - `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self qa user --scope "testing for user module"`
-  - `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self prod user --scope "requirements for user module"`
+Create a request subtree (recommended to run inside `coord` tmux):
+- `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self admin REQ-001 --scope "delivery owner for REQ-001"`
+- Then inside that `admin-REQ-001` tmux, spawn:
+  - `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self product REQ-001 --scope "requirements + AC"`
+  - `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self dev REQ-001 --scope "implementation"`
+  - `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self reviewer REQ-001 --scope "code review"`
+  - `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self test REQ-001 --scope "verification"`
 
 Inspect and route:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf list`
@@ -118,14 +114,12 @@ Reset/disband (destructive; removes team share dir + worker state):
 
 Completion/progress must flow upward:
 - If you hire subordinates, you are responsible for collecting their reports and then reporting *up* only when the whole subtree is done.
-- Default chains: `dev/prod/qa -> arch -> pm -> (coord + liaison) -> user`; `ops -> pm -> (coord + liaison) -> user`.
+- Default chain (this branch): `product/dev/reviewer/test -> admin -> coord -> user/operator`.
 
 Helpers (run inside tmux worker):
 - `bash .codex/skills/ai-team-workflow/scripts/atwf parent-self`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf report-up "done summary..."`
-- PM reports upward to Coordinator via `report-up`; user-facing updates are sent to Liaison:
-  - internal (to parent): `bash .codex/skills/ai-team-workflow/scripts/atwf report-up "status update..."`
-  - user-facing (to liaison): `bash .codex/skills/ai-team-workflow/scripts/atwf report-to liaison "status update for user..."`
+- Subtree owners (`admin-*`) report upward to Coordinator via `report-up`.
 
 ## Operating rules (role protocol)
 
@@ -134,12 +128,10 @@ Helpers (run inside tmux worker):
   1. Ask **Coordinator**: “Who should I talk to?” / “Is this internal or user-facing?”
   2. Coordinator routes to the best owner using `registry.json` (`atwf route ...`).
   3. If cross-branch communication is needed, Coordinator creates a **handoff** so the two members talk directly (avoid relaying): `atwf handoff ...`
-  4. Only if a real **user decision** is required, Coordinator escalates a crisp question to **Liaison**.
-  5. Liaison asks the user, then reports back to Coordinator (who distributes).
+  4. Only if a real **user/operator decision** is required, Coordinator asks the user/operator, then distributes the decision.
 
 User “bounce” rule (assistant is a relay):
-- If the user responds with “I don’t understand / shouldn’t this be answerable from docs?”, Liaison does **not** validate internally.
-- Liaison sends a `[USER-BOUNCE]` back; Coordinator routes it back down to the originator to self-confirm using existing docs (task/design/MasterGo assets).
+- If the user responds with “I don’t understand / shouldn’t this be answerable from docs?”, Coordinator routes it back down to the originator to self-confirm using existing docs (task/design/assets).
 - Only re-escalate to the user when a real **user decision** is required.
 
 ## Design → Development workflow (required)
@@ -148,8 +140,8 @@ User “bounce” rule (assistant is a relay):
 2. Everyone writes a per-scope design doc under `share/design/`:
    - inside tmux: `bash .codex/skills/ai-team-workflow/scripts/atwf design-init-self`
 3. Bottom-up consolidation:
-   - interns → dev → arch → pm
-4. After PM finishes the consolidated design (`share/design.md`) and confirms “no conflicts”, PM announces **START DEV**.
+   - contributors → admin
+4. After `admin-*` confirms the request plan is coherent and “no conflicts”, `admin-*` announces **START DEV**.
 5. Each `dev-*` (including interns) creates a dedicated git worktree (no work on current branch):
    - Single-repo (run inside that repo):
      - inside tmux: `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self`
@@ -157,7 +149,7 @@ User “bounce” rule (assistant is a relay):
    - Multi-module (repo roots are different subdirs; worker started in a non-git dev-workdir):
      - inside tmux: `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self --repo /path/to/module-repo`
      - default location: `<your-work-dir>/<repo-basename>` (override with `--dest-root` + `--name`)
-6. Implement + commit + report upward with verification steps. Parent integrates subtree first; PM integrates last.
+6. Implement + commit + report upward with verification steps. Parent integrates subtree first; Coordinator integrates last.
 
 ## Conflict resolution protocol (ordered loop)
 
