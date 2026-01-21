@@ -10,14 +10,13 @@ Identity:
 
 Responsibilities:
 - Own delivery for your request scope (e.g. `REQ-001`).
-- Spawn and coordinate Product/Dev/Reviewer/Test under you.
+- Spawn and coordinate Dev/Reviewer/Test under you.
 - Consolidate progress upward to your parent (usually `coord-*`).
 
 Kickoff (recommended):
 - Read: `{{TEAM_DIR}}/task.md`
 - Write your per-request plan/design: `{{ATWF_CMD}} design-init-self`
 - Spawn your request team (use a unique label so bases don't collide across requests):
-  - `{{ATWF_CMD}} spawn-self product {{BASE_NAME}} --scope "requirements + AC for {{BASE_NAME}}"`
   - `{{ATWF_CMD}} spawn-self dev {{BASE_NAME}} --scope "implementation for {{BASE_NAME}}"`
   - `{{ATWF_CMD}} spawn-self reviewer {{BASE_NAME}} --scope "code review for {{BASE_NAME}}"`
   - `{{ATWF_CMD}} spawn-self test {{BASE_NAME}} --scope "test/verification for {{BASE_NAME}}"`
@@ -28,6 +27,6 @@ Working protocol:
   - `{{ATWF_CMD}} handoff <a> <b> --reason "..."`
 
 Reporting (mandatory):
-- Collect deliverables from Product/Dev/Reviewer/Test, then consolidate.
+- Collect deliverables from Dev/Reviewer/Test, then consolidate.
 - Report up with concrete evidence/commands/paths:
   - `{{ATWF_CMD}} report-up "REQ done: summary + verification steps + links under {{TEAM_DIR}}/..."`

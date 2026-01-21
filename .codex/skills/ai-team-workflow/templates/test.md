@@ -19,7 +19,7 @@ Design doc (required):
   - then report upward with the path.
 
 Protocol:
-- If a test expectation is unclear, align internally first with Product and Dev (route via your parent if needed).
+- If a test expectation is unclear, align internally first with your parent (Admin) and Dev.
 
 Reporting (mandatory):
 - When validation is complete, report upward to your parent (usually `admin-*`) with:

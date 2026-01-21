@@ -49,7 +49,7 @@ User “bounce” handling (important):
   - Only re-escalate to Liaison when a **user decision** is truly required (not internal confirmation).
 
 Reporting enforcement:
-- Ensure reports flow upward: `product/dev/reviewer/test -> admin -> coord`.
+- Ensure reports flow upward: `dev/reviewer/test -> admin -> coord`.
 - If a subtree is done but no consolidated report exists, ask the owner (usually the parent) to report-up.
 
 Messaging intents (mandatory):

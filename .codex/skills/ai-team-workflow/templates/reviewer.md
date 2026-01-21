@@ -14,7 +14,7 @@ Responsibilities:
 - Surface risks early (API changes, hidden coupling, missing tests).
 
 Review protocol:
-- Align with Product on acceptance criteria (use the IDs from their doc).
+- Align with your parent (Admin) on acceptance criteria.
 - Align with Test on coverage gaps.
 - If you need policy exceptions / cross-subtree help, ask your parent (Admin) to route via Coordinator.
 

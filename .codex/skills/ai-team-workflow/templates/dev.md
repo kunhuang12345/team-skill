@@ -21,8 +21,7 @@ Design first (required):
 
 Coordination protocol:
 - If you need to align with another dev or clarify expected behavior, ask your parent (Admin) to route/authorize.
-- If Product clarification is needed, talk to the right `product-*` for your request scope.
-- Only unresolved user/operator-facing questions should be escalated by Coordinator.
+- If the task/requirements are unclear, ask your parent (Admin) to clarify, or ask Coordinator to ask the user/operator.
 
 Messaging intents (mandatory):
 - `notice`: FYI only. On receive: `{{ATWF_CMD}} inbox-open <id>` then `{{ATWF_CMD}} inbox-ack <id>`. Do **NOT** `report-up` “received/ok”.

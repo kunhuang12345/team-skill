@@ -1,6 +1,6 @@
 ---
 name: ai-team-workflow
-description: Role-based multi-agent workflow built on tmux-workflow/twf. Use when you want to run a configurable AI team (default: Coord/Admin/Product/Dev/Reviewer/Test) as multiple Codex tmux workers, keep a shared responsibilities registry, and route work via Coordinator.
+description: Role-based multi-agent workflow built on tmux-workflow/twf. Use when you want to run a configurable AI team (default: Coord/Admin/Dev/Reviewer/Test) as multiple Codex tmux workers, keep a shared responsibilities registry, and route work via Coordinator.
 ---
 
 # ai-team-workflow
@@ -90,12 +90,11 @@ If you copied this skill from another repo and `init` reuses stale workers:
 - Run `bash .codex/skills/ai-team-workflow/scripts/atwf init --force-new` to start a fresh initial team.
 
 Default org model in this branch:
-- `coord -> admin-REQ-* -> (product/dev/reviewer/test)`
+- `coord -> admin-REQ-* -> (dev/reviewer/test)`
 
 Create a request subtree (recommended to run inside `coord` tmux):
 - `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self admin REQ-001 --scope "delivery owner for REQ-001"`
 - Then inside that `admin-REQ-001` tmux, spawn:
-  - `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self product REQ-001 --scope "requirements + AC"`
   - `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self dev REQ-001 --scope "implementation"`
   - `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self reviewer REQ-001 --scope "code review"`
   - `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self test REQ-001 --scope "verification"`
@@ -114,7 +113,7 @@ Reset/disband (destructive; removes team share dir + worker state):
 
 Completion/progress must flow upward:
 - If you hire subordinates, you are responsible for collecting their reports and then reporting *up* only when the whole subtree is done.
-- Default chain (this branch): `product/dev/reviewer/test -> admin -> coord -> user/operator`.
+- Default chain (this branch): `dev/reviewer/test -> admin -> coord -> user/operator`.
 
 Helpers (run inside tmux worker):
 - `bash .codex/skills/ai-team-workflow/scripts/atwf parent-self`

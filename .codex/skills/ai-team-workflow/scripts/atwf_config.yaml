@@ -100,7 +100,6 @@ team:
     enabled_roles:
       - coord
       - admin
-      - product
       - dev
       - reviewer
       - test
@@ -109,7 +108,7 @@ team:
     # but the role types must be allowed here.
     can_hire:
       coord: [admin]
-      admin: [product, dev, reviewer, test]
+      admin: [dev, reviewer, test]
       # Optional self-scaling (interns/assistants) by role label (e.g. dev-intern):
       dev: [dev]
 
@@ -124,12 +123,11 @@ team:
       allow_parent_child: true
 
       # Role-to-role direct communication matrix (bidirectional).
-      # Example: dev (including dev interns) can talk to product/test/reviewer directly.
+      # Example: dev (including dev interns) can talk to test/reviewer directly.
       direct_allow:
         # Anyone can ask coord for routing/authorization.
-        coord: [admin, product, dev, reviewer, test]
-        admin: [product, dev, reviewer, test]
-        product: [dev, reviewer, test]
+        coord: [admin, dev, reviewer, test]
+        admin: [dev, reviewer, test]
         dev: [reviewer, test]
         reviewer: [test]
 
