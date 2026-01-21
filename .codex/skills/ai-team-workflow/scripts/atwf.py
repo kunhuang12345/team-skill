@@ -73,6 +73,11 @@ _DRIVE_MODE_DEFAULT = _DRIVE_MODE_RUNNING
 _DRIVE_DRIVER_ROLE_DEFAULT = "coord"
 _DRIVE_BACKUP_ROLE_DEFAULT = "pm"
 _DRIVE_COOLDOWN_DEFAULT = 600.0
+_DRIVE_UNIT_ROLE_DEFAULT = "admin"
+_DRIVE_SUBTREE_STATE_FILE = "drive_subtrees.json"
+_DRIVE_SUBTREE_STATUS_ACTIVE = "active"
+_DRIVE_SUBTREE_STATUS_STOPPED = "stopped"
+_DRIVE_SUBTREE_STATUSES = {_DRIVE_SUBTREE_STATUS_ACTIVE, _DRIVE_SUBTREE_STATUS_STOPPED}
 _STATE_WORKING_STALE_THRESHOLD_DEFAULT = 180.0
 _STATE_WORKING_ALERT_COOLDOWN_DEFAULT = 600.0
 _STATE_WAKE_MESSAGE_DEFAULT = "INBOX wake: you have unread messages. Run: bash .codex/skills/ai-team-workflow/scripts/atwf inbox"
@@ -966,6 +971,24 @@ def _drive_backup_role() -> str:
 
 
 @lru_cache(maxsize=1)
+def _drive_unit_role() -> str:
+    """
+    Drive "unit" selector.
+
+    When set to a role name (default: "admin"), the watcher treats each worker
+    subtree rooted at that role as an independent drive unit.
+
+    When empty or not enabled, drive falls back to whole-team mode.
+    """
+    cfg = _read_yaml_or_json(_config_file())
+    raw = _cfg_get_str(cfg, ("team", "drive", "unit_role"), default=_DRIVE_UNIT_ROLE_DEFAULT)
+    role = _norm_role(raw)
+    if not role:
+        return ""
+    return role if role in _policy().enabled_roles else ""
+
+
+@lru_cache(maxsize=1)
 def _drive_cooldown_s() -> float:
     cfg = _read_yaml_or_json(_config_file())
     n = _cfg_get_floatish(cfg, ("team", "drive", "cooldown"), default=_DRIVE_COOLDOWN_DEFAULT)
@@ -976,19 +999,25 @@ def _drive_cooldown_s() -> float:
     return float(n)
 
 
-def _render_drive_template(template: str, *, iso_ts: str, msg_id: str) -> str:
+def _render_drive_template(template: str, *, iso_ts: str, msg_id: str, extra: dict[str, str] | None = None) -> str:
     s = (template or "").replace("\r\n", "\n").replace("\r", "\n")
     s = s.replace("{{iso_ts}}", iso_ts)
     s = s.replace("{{msg_id}}", msg_id)
     s = s.replace("{{open_cmd}}", f"{_atwf_cmd()} inbox-open {msg_id}")
+    if extra:
+        for k, v in extra.items():
+            key = str(k or "").strip()
+            if not key:
+                continue
+            s = s.replace(f"{{{{{key}}}}}", str(v))
     return _substitute_atwf_paths(s)
 
 
-def _drive_message_body(*, iso_ts: str, msg_id: str) -> str:
+def _drive_message_body(*, iso_ts: str, msg_id: str, extra: dict[str, str] | None = None) -> str:
     cfg = _read_yaml_or_json(_config_file())
     raw = _cfg_get_str(cfg, ("team", "drive", "message", "body"), default="")
     if raw.strip():
-        return _render_drive_template(raw, iso_ts=iso_ts, msg_id=msg_id).rstrip() + "\n"
+        return _render_drive_template(raw, iso_ts=iso_ts, msg_id=msg_id, extra=extra).rstrip() + "\n"
     default = (
         "[DRIVE] team stalled: ALL IDLE + INBOX EMPTY\n"
         "- detected_at: {{iso_ts}}\n"
@@ -1001,20 +1030,20 @@ def _drive_message_body(*, iso_ts: str, msg_id: str) -> str:
         "\n"
         'Summarize why the team reached "all idle + inbox empty", find the root cause, then re-drive the team back to work.\n'
     )
-    return _render_drive_template(default, iso_ts=iso_ts, msg_id=msg_id)
+    return _render_drive_template(default, iso_ts=iso_ts, msg_id=msg_id, extra=extra)
 
 
-def _drive_message_summary(*, iso_ts: str, msg_id: str) -> str:
+def _drive_message_summary(*, iso_ts: str, msg_id: str, extra: dict[str, str] | None = None) -> str:
     cfg = _read_yaml_or_json(_config_file())
     raw = _cfg_get_str(cfg, ("team", "drive", "message", "summary"), default="")
     if raw.strip():
-        return _render_drive_template(raw, iso_ts=iso_ts, msg_id=msg_id).rstrip() + "\n"
+        return _render_drive_template(raw, iso_ts=iso_ts, msg_id=msg_id, extra=extra).rstrip() + "\n"
     default = (
         "[DRIVE] team stalled: ALL IDLE + INBOX EMPTY\n"
         "inbox id={{msg_id}} (open: {{open_cmd}})\n"
         "Action: diagnose root cause, then re-drive the team back to work.\n"
     )
-    return _render_drive_template(default, iso_ts=iso_ts, msg_id=msg_id)
+    return _render_drive_template(default, iso_ts=iso_ts, msg_id=msg_id, extra=extra)
 
 
 @lru_cache(maxsize=1)
@@ -1962,6 +1991,139 @@ def _write_drive_state(team_dir: Path, *, update: dict[str, Any]) -> dict[str, A
         data["updated_at"] = _now()
         _write_json_atomic(_drive_state_path(team_dir), data)
         return data
+
+
+def _drive_subtree_state_path(team_dir: Path) -> Path:
+    return _state_root(team_dir) / _DRIVE_SUBTREE_STATE_FILE
+
+
+def _default_drive_subtree_state(*, mode: str) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "created_at": _now(),
+        "updated_at": _now(),
+        "mode": _normalize_drive_mode(mode) if mode else _DRIVE_MODE_DEFAULT,
+        # keyed by subtree root base (e.g. "admin-REQ-001")
+        "subtrees": {},
+    }
+
+
+def _drive_subtree_entry(state: dict[str, Any], *, base: str) -> dict[str, Any]:
+    base = (base or "").strip()
+    if not base:
+        return {}
+    subs = state.get("subtrees")
+    if not isinstance(subs, dict):
+        subs = {}
+        state["subtrees"] = subs
+    raw = subs.get(base)
+    if not isinstance(raw, dict):
+        raw = {}
+        subs[base] = raw
+    raw.setdefault("base", base)
+    status = str(raw.get("status", "") or "").strip().lower()
+    if status not in _DRIVE_SUBTREE_STATUSES:
+        status = _DRIVE_SUBTREE_STATUS_ACTIVE
+    raw["status"] = status
+    raw.setdefault("stopped_at", "")
+    raw.setdefault("stopped_reason", "")
+    raw.setdefault("last_triggered_at", "")
+    raw.setdefault("last_msg_id", "")
+    raw.setdefault("last_reason", "")
+    return raw
+
+
+def _load_drive_subtree_state_unlocked(team_dir: Path, *, mode_default: str) -> dict[str, Any]:
+    path = _drive_subtree_state_path(team_dir)
+    data = _read_json(path) if path.is_file() else {}
+    if not data:
+        data = _default_drive_subtree_state(mode=mode_default)
+        _write_json_atomic(path, data)
+        return data
+
+    data.setdefault("version", 1)
+    data.setdefault("created_at", _now())
+    data["updated_at"] = _now()
+    data.setdefault("subtrees", {})
+
+    mode = _normalize_drive_mode(str(mode_default or ""))
+    if mode not in _DRIVE_MODES:
+        mode = _DRIVE_MODE_DEFAULT
+    data["mode"] = mode
+
+    # Normalize subtree entries (best-effort; keep unknown fields).
+    subs = data.get("subtrees")
+    if isinstance(subs, dict):
+        for k in list(subs.keys()):
+            base = str(k or "").strip()
+            if not base:
+                subs.pop(k, None)
+                continue
+            entry = subs.get(k)
+            if isinstance(entry, dict):
+                entry.setdefault("base", base)
+                status = str(entry.get("status", "") or "").strip().lower()
+                if status not in _DRIVE_SUBTREE_STATUSES:
+                    status = _DRIVE_SUBTREE_STATUS_ACTIVE
+                entry["status"] = status
+                entry.setdefault("stopped_at", "")
+                entry.setdefault("stopped_reason", "")
+                entry.setdefault("last_triggered_at", "")
+                entry.setdefault("last_msg_id", "")
+                entry.setdefault("last_reason", "")
+            else:
+                subs[k] = {
+                    "base": base,
+                    "status": _DRIVE_SUBTREE_STATUS_ACTIVE,
+                    "stopped_at": "",
+                    "stopped_reason": "",
+                    "last_triggered_at": "",
+                    "last_msg_id": "",
+                    "last_reason": "",
+                }
+    return data
+
+
+def _write_drive_subtree_state(team_dir: Path, *, updates: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    """
+    Update per-subtree drive state (keyed by subtree root base).
+    """
+    updates = updates or {}
+    lock = _state_lock_path(team_dir)
+    with _locked(lock):
+        _ensure_share_layout(team_dir)
+        data = _load_drive_subtree_state_unlocked(team_dir, mode_default=_drive_mode_config_hot())
+        for base, patch in updates.items():
+            base_s = str(base or "").strip()
+            if not base_s:
+                continue
+            entry = _drive_subtree_entry(data, base=base_s)
+            if not entry:
+                continue
+            if isinstance(patch, dict):
+                for k, v in patch.items():
+                    entry[k] = v
+        data["updated_at"] = _now()
+        _write_json_atomic(_drive_subtree_state_path(team_dir), data)
+        return data
+
+
+def _set_drive_subtree_status(team_dir: Path, *, base: str, status: str, reason: str = "") -> None:
+    base_s = str(base or "").strip()
+    if not base_s:
+        return
+    st = str(status or "").strip().lower()
+    if st not in _DRIVE_SUBTREE_STATUSES:
+        st = _DRIVE_SUBTREE_STATUS_ACTIVE
+
+    patch: dict[str, Any] = {"status": st}
+    if st == _DRIVE_SUBTREE_STATUS_STOPPED:
+        patch["stopped_at"] = _now()
+        patch["stopped_reason"] = reason.strip()
+    else:
+        patch["stopped_at"] = ""
+        patch["stopped_reason"] = ""
+    _write_drive_subtree_state(team_dir, updates={base_s: patch})
 
 
 def _set_drive_mode_config(mode: str) -> str:
@@ -4910,6 +5072,15 @@ def cmd_stop(args: argparse.Namespace) -> int:
     registry = _registry_path(team_dir)
     data = _load_registry(registry)
 
+    subtree_base_for_drive = ""
+    subtree_arg = getattr(args, "subtree", None)
+    if subtree_arg:
+        root_full = _resolve_target_full(data, str(subtree_arg))
+        if root_full:
+            root_m = _resolve_member(data, root_full)
+            if _member_role(root_m) == "admin":
+                subtree_base_for_drive = _member_base(root_m) or root_full
+
     targets = _select_targets_for_team_op(
         data,
         targets=getattr(args, "targets", None),
@@ -4927,6 +5098,14 @@ def cmd_stop(args: argparse.Namespace) -> int:
     if getattr(args, "dry_run", False):
         print("\n".join(targets))
         return 0
+
+    if subtree_base_for_drive:
+        _set_drive_subtree_status(
+            team_dir,
+            base=subtree_base_for_drive,
+            status=_DRIVE_SUBTREE_STATUS_STOPPED,
+            reason="stopped_via_atwf_stop",
+        )
 
     failures: list[str] = []
     for full in targets:
@@ -4976,6 +5155,15 @@ def cmd_resume(args: argparse.Namespace) -> int:
     _ensure_cap_watch_team(twf=twf, team_dir=team_dir, registry=registry)
     _ensure_watch_idle_team(twf=twf, team_dir=team_dir, registry=registry)
 
+    subtree_base_for_drive = ""
+    subtree_arg = getattr(args, "subtree", None)
+    if subtree_arg:
+        root_full = _resolve_target_full(data, str(subtree_arg))
+        if root_full:
+            root_m = _resolve_member(data, root_full)
+            if _member_role(root_m) == "admin":
+                subtree_base_for_drive = _member_base(root_m) or root_full
+
     targets = _select_targets_for_team_op(
         data,
         targets=getattr(args, "targets", None),
@@ -4989,6 +5177,14 @@ def cmd_resume(args: argparse.Namespace) -> int:
     if getattr(args, "dry_run", False):
         print("\n".join(targets))
         return 0
+
+    if subtree_base_for_drive:
+        _set_drive_subtree_status(
+            team_dir,
+            base=subtree_base_for_drive,
+            status=_DRIVE_SUBTREE_STATUS_ACTIVE,
+            reason="",
+        )
 
     failures: list[str] = []
     for full in targets:
@@ -6341,7 +6537,9 @@ def cmd_state_set(args: argparse.Namespace) -> int:
 def cmd_drive(args: argparse.Namespace) -> int:
     """
     Drive loop mode (human-controlled):
-    - running: watcher treats all-idle + inbox-empty as an abnormal stall and wakes the driver
+    - running: watcher treats "idle + inbox-empty" as an abnormal stall and wakes the driver
+      - if team.drive.unit_role is enabled (default: admin), this is evaluated per subtree rooted at that role
+      - otherwise, this is evaluated for the whole team
     - standby: allow the whole team to be idle with empty inbox (no drive nudge)
     """
     team_dir = _default_team_dir()
@@ -6448,6 +6646,12 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
         all_idle = True
         any_pending = False
 
+        member_status: dict[str, str] = {}
+        member_pending_by_full: dict[str, int] = {}
+        member_tmux_running: dict[str, bool] = {}
+        member_base_by_full: dict[str, str] = {}
+        member_role_by_full: dict[str, str] = {}
+
         for m in members:
             if not isinstance(m, dict):
                 continue
@@ -6476,7 +6680,9 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
             last_output_change_dt = parse_dt(str(st.get("last_output_change_at", "") or ""))
             output_update: dict[str, Any] = {}
             auto_update: dict[str, Any] = {}
-            if _tmux_running(full):
+            tmux_running = _tmux_running(full)
+            member_tmux_running[full] = tmux_running
+            if tmux_running:
                 tail = _tmux_capture_tail(full, lines=capture_lines)
                 if tail is not None:
                     digest = _text_digest(tail)
@@ -6546,6 +6752,11 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
                 any_pending = True
             if status != _STATE_STATUS_IDLE:
                 all_idle = False
+
+            member_status[full] = status
+            member_pending_by_full[full] = int(pending)
+            member_base_by_full[full] = base
+            member_role_by_full[full] = role
 
             # Working stale inbox governance:
             # If the worker is working and has pending inbox messages older than N seconds,
@@ -6801,44 +7012,167 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
                         # Due replies exist but no runnable tmux target; allow normal drive to intervene.
                         suppress_drive = False
 
-        # Drive loop (anti-stall): if the whole team is idle and all inboxes are empty,
-        # wake a single driver to re-kickoff work (only when drive mode is running).
-        if (
-            member_count > 0
-            and all_idle
-            and not any_pending
-            and not dry_run
-            and drive_mode == _DRIVE_MODE_RUNNING
-            and not suppress_drive
-        ):
+        # Drive loop (anti-stall):
+        # Prefer per-subtree drive (unit_role) when configured/enabled (default: admin),
+        # otherwise fall back to the legacy whole-team drive.
+        if not dry_run and drive_mode == _DRIVE_MODE_RUNNING and not suppress_drive:
             cooldown_drive_s = _drive_cooldown_s()
             driver_role = _drive_driver_role()
             backup_role = _drive_backup_role()
 
-            lock = _state_lock_path(team_dir)
-            with _locked(lock):
-                _ensure_share_layout(team_dir)
-                drive_state = _load_drive_state_unlocked(team_dir, mode_default=drive_mode)
-            last_drive_dt = parse_dt(str(drive_state.get("last_triggered_at", "") or ""))
-            if last_drive_dt is None or (now_dt - last_drive_dt).total_seconds() >= max(0.0, cooldown_drive_s):
-                driver_m = _resolve_latest_by_role(data, driver_role)
-                driver_full = str(driver_m.get("full", "")).strip() if isinstance(driver_m, dict) else ""
-                driver_base = _member_base(driver_m) if isinstance(driver_m, dict) else ""
-                driver_base = driver_base or driver_full
+            driver_m = _resolve_latest_by_role(data, driver_role)
+            driver_full = str(driver_m.get("full", "")).strip() if isinstance(driver_m, dict) else ""
+            driver_base = _member_base(driver_m) if isinstance(driver_m, dict) else ""
+            driver_base = driver_base or driver_full
 
-                target_full = driver_full
-                target_role = driver_role
-                target_base = driver_base
-                if target_full and not _tmux_running(target_full):
-                    backup_m = _resolve_latest_by_role(data, backup_role)
-                    backup_full = str(backup_m.get("full", "")).strip() if isinstance(backup_m, dict) else ""
-                    backup_base = _member_base(backup_m) if isinstance(backup_m, dict) else ""
-                    if backup_full and _tmux_running(backup_full):
-                        target_full = backup_full
-                        target_role = backup_role
-                        target_base = backup_base or backup_full
+            target_full = driver_full
+            target_role = driver_role
+            target_base = driver_base
+            if target_full and not _tmux_running(target_full):
+                backup_m = _resolve_latest_by_role(data, backup_role)
+                backup_full = str(backup_m.get("full", "")).strip() if isinstance(backup_m, dict) else ""
+                backup_base = _member_base(backup_m) if isinstance(backup_m, dict) else ""
+                if backup_full and _tmux_running(backup_full):
+                    target_full = backup_full
+                    target_role = backup_role
+                    target_base = backup_base or backup_full
 
-                if target_full:
+            unit_role = _drive_unit_role()
+            if unit_role and target_full:
+                roots = _members_by_role(data, unit_role)
+                if roots:
+                    lock = _state_lock_path(team_dir)
+                    with _locked(lock):
+                        _ensure_share_layout(team_dir)
+                        subtree_state = _load_drive_subtree_state_unlocked(team_dir, mode_default=drive_mode)
+                    subs = subtree_state.get("subtrees") if isinstance(subtree_state, dict) else None
+                    subs = subs if isinstance(subs, dict) else {}
+
+                    stalled: list[dict[str, Any]] = []
+                    for root_full in roots:
+                        root_m = _resolve_member(data, root_full) or {}
+                        root_base = _member_base(root_m) or root_full
+                        entry = subs.get(root_base) if isinstance(subs, dict) else {}
+                        status = str(entry.get("status", "") or "").strip().lower() if isinstance(entry, dict) else ""
+                        if status == _DRIVE_SUBTREE_STATUS_STOPPED:
+                            continue
+
+                        subtree_fulls = _subtree_fulls(data, root_full)
+                        if not subtree_fulls:
+                            continue
+
+                        sub_all_idle = True
+                        sub_any_pending = False
+                        missing_tmux: list[str] = []
+                        for f in subtree_fulls:
+                            st = member_status.get(f, "")
+                            if st and st != _STATE_STATUS_IDLE:
+                                sub_all_idle = False
+                            if int(member_pending_by_full.get(f, 0) or 0) > 0:
+                                sub_any_pending = True
+                            if not bool(member_tmux_running.get(f, False)):
+                                missing_tmux.append(f)
+                        if not sub_all_idle or sub_any_pending:
+                            continue
+
+                        last_drive_dt = parse_dt(str(entry.get("last_triggered_at", "") or "")) if isinstance(entry, dict) else None
+                        if last_drive_dt is not None and (now_dt - last_drive_dt).total_seconds() < max(0.0, cooldown_drive_s):
+                            continue
+
+                        stalled.append(
+                            {
+                                "root_full": root_full,
+                                "root_base": root_base,
+                                "members": subtree_fulls,
+                                "missing_tmux": missing_tmux,
+                            }
+                        )
+
+                    if stalled:
+                        msg_id = _next_msg_id(team_dir)
+                        bases = [str(s.get("root_base") or "").strip() for s in stalled if str(s.get("root_base") or "").strip()]
+                        bases_short = ", ".join(bases[:5]) + (", ..." if len(bases) > 5 else "")
+
+                        def fmt_missing(fulls: list[str]) -> str:
+                            parts: list[str] = []
+                            for ff in fulls[:6]:
+                                b = member_base_by_full.get(ff, "") or ff
+                                r = member_role_by_full.get(ff, "") or "?"
+                                parts.append(f"{b}({r})")
+                            if len(fulls) > 6:
+                                parts.append("...")
+                            return ", ".join(parts)
+
+                        lines: list[str] = []
+                        for s in stalled:
+                            base = str(s.get("root_base") or "").strip()
+                            full = str(s.get("root_full") or "").strip()
+                            members_list = s.get("members") if isinstance(s.get("members"), list) else []
+                            missing_list = s.get("missing_tmux") if isinstance(s.get("missing_tmux"), list) else []
+                            members_n = len(members_list)
+                            miss_n = len(missing_list)
+                            tail = f" missing=[{fmt_missing(missing_list)}]" if miss_n else ""
+                            lines.append(f"- {base}: root={full} members={members_n} tmux_missing={miss_n}{tail}")
+                        subtree_lines = "\n".join(lines).rstrip() + "\n"
+
+                        extra = {
+                            "count": str(len(stalled)),
+                            "unit_role": unit_role,
+                            "subtree_bases": bases_short,
+                            "subtree_lines": subtree_lines.rstrip(),
+                        }
+                        body = _drive_message_body(iso_ts=now_iso_tick, msg_id=msg_id, extra=extra)
+                        _write_inbox_message(
+                            team_dir,
+                            msg_id=msg_id,
+                            kind="drive",
+                            from_full="atwf-drive",
+                            from_base="atwf-drive",
+                            from_role="system",
+                            to_full=target_full,
+                            to_base=target_base,
+                            to_role=target_role,
+                            body=body,
+                        )
+                        short = _drive_message_summary(iso_ts=now_iso_tick, msg_id=msg_id, extra=extra)
+                        wrapped = _wrap_team_message(
+                            team_dir,
+                            kind="drive",
+                            sender_full="atwf-drive",
+                            sender_role="system",
+                            to_full=target_full,
+                            body=short,
+                            msg_id=msg_id,
+                        )
+                        _run_twf(twf, ["send", target_full, wrapped])
+
+                        updates: dict[str, dict[str, Any]] = {}
+                        for s in stalled:
+                            base = str(s.get("root_base") or "").strip()
+                            if not base:
+                                continue
+                            updates[base] = {
+                                "last_triggered_at": now_iso_tick,
+                                "last_msg_id": msg_id,
+                                "last_reason": "subtree_all_idle_inbox_empty",
+                            }
+                        if updates:
+                            _write_drive_subtree_state(team_dir, updates=updates)
+
+            # Legacy whole-team drive: only when no unit_role drive is active.
+            if (
+                (not unit_role)
+                and target_full
+                and member_count > 0
+                and all_idle
+                and not any_pending
+            ):
+                lock = _state_lock_path(team_dir)
+                with _locked(lock):
+                    _ensure_share_layout(team_dir)
+                    drive_state = _load_drive_state_unlocked(team_dir, mode_default=drive_mode)
+                last_drive_dt = parse_dt(str(drive_state.get("last_triggered_at", "") or ""))
+                if last_drive_dt is None or (now_dt - last_drive_dt).total_seconds() >= max(0.0, cooldown_drive_s):
                     msg_id = _next_msg_id(team_dir)
                     body = _drive_message_body(iso_ts=now_iso_tick, msg_id=msg_id)
                     _write_inbox_message(

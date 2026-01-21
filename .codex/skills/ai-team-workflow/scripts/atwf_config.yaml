@@ -166,11 +166,16 @@ team:
 
   # Drive loop (anti-stall)
   #
-  # When `mode=running`, the watcher will treat "all members idle + all inbox empty"
-  # as an abnormal stall and will wake a single driver to re-kickoff work or switch
-  # to standby explicitly.
+  # When `mode=running`, the watcher will treat "a drive unit is idle + inbox-empty"
+  # as an abnormal stall and will wake a single driver to re-kickoff work.
+  #
+  # Drive units:
+  # - If `unit_role` is set and enabled (default: admin), each subtree rooted at that role
+  #   is monitored independently.
+  # - If `unit_role` is empty (or not enabled), the whole team is monitored as one unit (legacy).
   drive:
     mode: running # running | standby
+    unit_role: admin      # role name for subtree drive; set "" to use whole-team drive
     driver_role: coord     # who is woken to drive the team
     backup_role: coord     # escalation target if driver is missing
     cooldown: 600          # seconds between repeated drive nudges
@@ -182,28 +187,38 @@ team:
       # - {{iso_ts}}   detection timestamp (ISO8601)
       # - {{msg_id}}   inbox message id
       # - {{open_cmd}} open command for the inbox body
+      # - {{count}}    number of stalled units in this drive tick
+      # - {{unit_role}} drive unit root role (e.g. admin)
+      # - {{subtree_bases}} short list of stalled unit bases (for summary)
+      # - {{subtree_lines}} multi-line detail list of stalled units (for body)
       summary: |
-        [DRIVE] team stalled: ALL IDLE + INBOX EMPTY
+        [DRIVE] stalled {{unit_role}} subtrees: {{count}} ({{subtree_bases}})
         inbox id={{msg_id}} (open: {{open_cmd}})
         Rule: DO NOT change team.drive.mode or edit atwf_config.yaml (operator-only).
-        Now: diagnose ({{ATWF_CMD}} state/list/inbox), then re-drive by assigning next actions (owner+ETA). If the current request is done, create/assign the next admin-* chain.
+        Action: inspect each subtree, then re-drive (resume/assign) or stop it to exclude from drive scanning.
       body: |
-        [DRIVE] team stalled: ALL IDLE + INBOX EMPTY
+        [DRIVE] stalled {{unit_role}} subtrees: {{count}}
         - detected_at: {{iso_ts}}
-        - meaning: In running mode (continuous iteration), this is an ABNORMAL STALL: nobody is driving work.
+
+        Subtrees:
+        {{subtree_lines}}
 
         Hard rule (operator-only):
         - DO NOT change team.drive.mode.
         - DO NOT edit {{ATWF_CONFIG}}.
 
-        1) Diagnose now:
-        - {{ATWF_CMD}} state
-        - {{ATWF_CMD}} list
-        - {{ATWF_CMD}} inbox (your own inbox)
+        Coordinator actions:
+        1) Inspect a subtree:
+        - {{ATWF_CMD}} tree <subtree_base>
+        - {{ATWF_CMD}} state <subtree_base>
+        - {{ATWF_CMD}} inbox --target <subtree_base>
 
-        2) Re-drive now:
-        - assign next actions (owner + next step + ETA) via {{ATWF_CMD}} action
-        - if the current iteration/batch is complete, immediately kick off the next iteration: remind PM to have Prod draft the next iteration batch (features + AC/Verify), then start assignments (do not "go idle")
+        2) Re-drive/restart a subtree:
+        - {{ATWF_CMD}} resume --subtree <subtree_base>
+
+        3) If DONE/BLOCKED and awaiting acceptance, freeze + stop scanning:
+        - {{ATWF_CMD}} stop --subtree <subtree_base>
+          (resume re-enables scanning)
 
   # Reply-needed requests (fan-in replies without CLI injection)
   #
