@@ -40,6 +40,7 @@ Env:
   TWF_CODEX_HOME_SRC  Default: ~/.codex             (forwarded to codex_up_tmux.sh)
   TWF_AUTH_SRC        Optional: auth file to copy into worker as `auth.json` (overrides synced auth.json)
   TWF_CODEX_PROFILE   Optional: codex profile (equivalent to `codex -p <profile>`)
+  TWF_PYTHON_VENV      Optional python virtualenv (prepends bin to PATH; exports VIRTUAL_ENV)
   TWF_ACCOUNT_POOL_CMD  Optional: path to `codex-account-pool/scripts/cap` (used when twf_use_account_pool=true)
   TWF_CODEX_CMD_CONFIG  Default: scripts/twf_config.yaml (model + model_reasoning_effort + twf_state_dir_mode)
   TWF_CODEX_CMD       Override full codex command (forwarded to codex_up_tmux.sh)
@@ -160,6 +161,11 @@ elif not isinstance(allow_env_overrides, str):
   allow_env_overrides = "false"
 allow_env_overrides = allow_env_overrides.strip().lower() or "false"
 
+python_venv = get_any(["codex", "python_venv"], ["python_venv"], default="")
+if not isinstance(python_venv, str):
+  python_venv = ""
+python_venv = python_venv.strip()
+
 mode = get_any(["twf", "state_dir", "mode"], ["twf_state_dir_mode"], default="auto")
 if not isinstance(mode, str):
   mode = "auto"
@@ -216,6 +222,7 @@ print(auth_team_dir)
 print(auth_team_glob)
 print(auth_team_strategy)
 print(allow_env_overrides)
+print(python_venv)
 PY
 }
 
@@ -230,6 +237,7 @@ twf_auth_team_dir_cfg="${state_cfg[6]:-}"
 twf_auth_team_glob_cfg="${state_cfg[7]:-}"
 twf_auth_team_strategy_cfg="${state_cfg[8]:-}"
 twf_allow_env_overrides="${state_cfg[9]:-false}"
+twf_python_venv_cfg="${state_cfg[10]:-}"
 
 state_dir="${TWF_STATE_DIR:-}"
 if [[ -z "$state_dir" ]]; then
@@ -269,10 +277,10 @@ warn_ignored_env_overrides_once() {
   if [[ -n "${TWF__WARNED_IGNORED_ENV_OVERRIDES:-}" ]]; then
     return 0
   fi
-  if [[ -n "${TWF_AUTH_SRC:-}" || -n "${TWF_CODEX_HOME_SRC:-}" || -n "${TWF_CODEX_PROFILE:-}" ]]; then
-    echo "ℹ️  ignoring env overrides (twf_allow_env_overrides=false): TWF_AUTH_SRC/TWF_CODEX_HOME_SRC/TWF_CODEX_PROFILE" >&2
+  if [[ -n "${TWF_AUTH_SRC:-}" || -n "${TWF_CODEX_HOME_SRC:-}" || -n "${TWF_CODEX_PROFILE:-}" || -n "${TWF_PYTHON_VENV:-}" ]]; then
+    echo "ℹ️  ignoring env overrides (twf_allow_env_overrides=false): TWF_AUTH_SRC/TWF_CODEX_HOME_SRC/TWF_CODEX_PROFILE/TWF_PYTHON_VENV" >&2
     echo "   Tip: if you previously did 'tmux set-environment -g TWF_AUTH_SRC ...', clear it with:" >&2
-    echo "        tmux set-environment -gu TWF_AUTH_SRC; tmux set-environment -gu TWF_CODEX_HOME_SRC; tmux set-environment -gu TWF_CODEX_PROFILE" >&2
+    echo "        tmux set-environment -gu TWF_AUTH_SRC; tmux set-environment -gu TWF_CODEX_HOME_SRC; tmux set-environment -gu TWF_CODEX_PROFILE; tmux set-environment -gu TWF_PYTHON_VENV" >&2
   fi
   TWF__WARNED_IGNORED_ENV_OVERRIDES="1"
 }
@@ -768,6 +776,12 @@ start_worker() {
     profile_final=""
   fi
 
+  local python_venv_final
+  python_venv_final="$(get_env_override TWF_PYTHON_VENV)"
+  if [[ -z "$python_venv_final" ]]; then
+    python_venv_final="$twf_python_venv_cfg"
+  fi
+
   local env_args=()
   if [[ -n "$home_src" ]]; then
     env_args+=("TWF_CODEX_HOME_SRC=$home_src")
@@ -778,8 +792,11 @@ start_worker() {
   if [[ -n "$profile_final" ]]; then
     env_args+=("TWF_CODEX_PROFILE=$profile_final")
   fi
+  if [[ -n "$python_venv_final" ]]; then
+    env_args+=("TWF_PYTHON_VENV=$python_venv_final")
+  fi
   # Always clear any inherited overrides (tmux server/global env can leak these).
-  env -u TWF_CODEX_HOME_SRC -u TWF_AUTH_SRC -u TWF_CODEX_PROFILE "${env_args[@]}" bash "$script_dir/codex_up_tmux.sh" --session "$worker" --session-file "$session_file" "${up_args[@]}" 1>&2
+  env -u TWF_CODEX_HOME_SRC -u TWF_AUTH_SRC -u TWF_CODEX_PROFILE -u TWF_PYTHON_VENV "${env_args[@]}" bash "$script_dir/codex_up_tmux.sh" --session "$worker" --session-file "$session_file" "${up_args[@]}" 1>&2
   echo "$session_file"
 }
 
@@ -1672,6 +1689,46 @@ PY
       rm -f "$codex_home/.auth_current_name" >/dev/null 2>&1 || true
     fi
 
+    local python_venv_final
+    python_venv_final="$(get_env_override TWF_PYTHON_VENV)"
+    if [[ -z "$python_venv_final" ]]; then
+      python_venv_final="$twf_python_venv_cfg"
+    fi
+    python_venv_final="$(echo "$python_venv_final" | xargs)"
+
+    local quoted_python_venv=""
+    local quoted_python_path=""
+    local python_path=""
+    if [[ -n "$python_venv_final" ]]; then
+      python_venv_final="$(python3 - "$python_venv_final" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+raw = sys.argv[1].strip()
+p = Path(os.path.expanduser(raw))
+if not p.is_absolute():
+  p = (Path.cwd() / p).resolve()
+print(str(p))
+PY
+)"
+      if [[ ! -d "$python_venv_final" ]]; then
+        echo "❌ TWF_PYTHON_VENV is not a directory: $python_venv_final" >&2
+        exit 1
+      fi
+      if [[ ! -x "$python_venv_final/bin/python" ]]; then
+        echo "❌ python venv missing executable: $python_venv_final/bin/python" >&2
+        exit 1
+      fi
+      if [[ -n "${PATH:-}" ]]; then
+        python_path="$python_venv_final/bin:$PATH"
+      else
+        python_path="$python_venv_final/bin"
+      fi
+      quoted_python_venv="$(python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$python_venv_final")"
+      quoted_python_path="$(python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$python_path")"
+    fi
+
     local quoted_codex_home
     quoted_codex_home="$(python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$codex_home")"
     local cmd="$codex_cmd"
@@ -1680,8 +1737,16 @@ PY
       quoted_id="$(python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$resume_id")"
       cmd="$cmd resume $quoted_id"
     fi
-    tmux new-session -d -s "$tmux_session" -c "$work_dir" "env CODEX_HOME=$quoted_codex_home $cmd"
+    if [[ -n "$python_venv_final" ]]; then
+      tmux new-session -d -s "$tmux_session" -c "$work_dir" "env CODEX_HOME=$quoted_codex_home VIRTUAL_ENV=$quoted_python_venv PATH=$quoted_python_path $cmd"
+    else
+      tmux new-session -d -s "$tmux_session" -c "$work_dir" "env CODEX_HOME=$quoted_codex_home $cmd"
+    fi
     tmux set-environment -t "$tmux_session" CODEX_HOME "$codex_home" >/dev/null 2>&1 || true
+    if [[ -n "$python_venv_final" ]]; then
+      tmux set-environment -t "$tmux_session" VIRTUAL_ENV "$python_venv_final" >/dev/null 2>&1 || true
+      tmux set-environment -t "$tmux_session" PATH "$python_path" >/dev/null 2>&1 || true
+    fi
     echo "▶️  resumed tmux session: $tmux_session" >&2
   fi
 

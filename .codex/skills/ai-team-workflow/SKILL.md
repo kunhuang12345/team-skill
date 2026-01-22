@@ -1,6 +1,10 @@
 ---
 name: ai-team-workflow
-description: Role-based multi-agent workflow built on tmux-workflow/twf. Use when you want to run a configurable AI team (default: Coord/Admin/Dev/Reviewer/Test) as multiple Codex tmux workers, keep a shared responsibilities registry, and route work via Coordinator.
+description: >-
+  Role-based multi-agent workflow built on tmux-workflow/twf. Use when you want
+  to run a configurable AI team (default: Coord/Admin/Dev/Reviewer/Test) as
+  multiple Codex tmux workers, keep a shared responsibilities registry, and
+  route work via Coordinator.
 ---
 
 # ai-team-workflow
@@ -217,3 +221,4 @@ All commands are wrappers around `twf` plus registry management:
 - `AITWF_REGISTRY`: override registry file path
 - `AITWF_PROJECT_ROOT`: stable project root for watcher/session naming (optional; otherwise derived from install location, falling back to cwd/git root)
 - Config file: `.codex/skills/ai-team-workflow/scripts/atwf_config.yaml` (unified: `codex.*`, `twf.*`, `cap.*`, `share.*`, `team.*`)
+- `codex.python_venv`: optional Python virtualenv for Codex workers (exports `VIRTUAL_ENV` and prepends `<venv>/bin` to `PATH`; e.g. `/root/.virtualenvs/uxbot`)

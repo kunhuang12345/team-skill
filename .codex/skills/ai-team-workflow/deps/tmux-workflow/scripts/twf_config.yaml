@@ -21,6 +21,15 @@ codex:
   # Optional profile (equivalent to `codex -p <profile>`).
   profile: "codez"
 
+  # Optional Python virtualenv for Codex workers.
+  #
+  # When set (non-empty), tmux-workflow will export:
+  # - VIRTUAL_ENV=<python_venv>
+  # - PATH=<python_venv>/bin:<original PATH>
+  #
+  # so `python/pip` executed by Codex uses this venv.
+  python_venv: ""
+
 twf:
   # Worker state directory (where twf writes its worker state JSON files)
   state_dir:

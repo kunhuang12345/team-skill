@@ -22,6 +22,7 @@
 配置文件：`.codex/skills/ai-team-workflow/scripts/atwf_config.yaml`（同时配置 atwf + twf + cap）
 
 - `codex.*`、`twf.*`：tmux worker 默认模型/账号池/状态目录等
+- `codex.python_venv`：可选，启动/恢复 Codex worker 时激活 Python 虚拟环境（设置 `VIRTUAL_ENV` 并将 `<venv>/bin` prepend 到 `PATH`），例如 `/root/.virtualenvs/uxbot`
 - `cap.*`：账号池的 source/state（供 twf 调用 cap 时使用）
 - `share.*`、`team.*`：团队共享目录与组织/通讯/drive policy
 

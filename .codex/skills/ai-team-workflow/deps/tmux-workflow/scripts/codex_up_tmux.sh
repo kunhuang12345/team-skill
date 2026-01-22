@@ -18,6 +18,7 @@ Environment:
   TWF_SESSION_FILE      Override session file path
   TWF_TMUX_SESSION      Override tmux session name
   TWF_CODEX_CMD         Override codex command
+  TWF_PYTHON_VENV        Optional python virtualenv (prepends bin to PATH; exports VIRTUAL_ENV)
   TWF_CODEX_PROFILE     Optional codex profile (adds `-p <profile>`)
   TWF_CODEX_CMD_CONFIG  Override YAML config path (default: scripts/twf_config.yaml)
   TWF_WORK_DIR          Override starting work directory for the tmux session
@@ -143,6 +144,98 @@ print(" ".join(shlex.quote(a) for a in args))
 PY
 }
 
+read_python_venv() {
+  python3 - "$config_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+cfg_path = Path(sys.argv[1]).expanduser()
+raw = ""
+try:
+    if cfg_path.exists():
+        raw = cfg_path.read_text(encoding="utf-8")
+except Exception:
+    raw = ""
+
+def parse_yaml(text: str) -> dict:
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if ":" not in stripped:
+            continue
+        key, value = stripped.split(":", 1)
+        key = key.strip()
+        if not key:
+            continue
+        value = value.strip()
+        if not value:
+            out[key] = ""
+            continue
+        if value[0] in {"'", '"'}:
+            q = value[0]
+            if value.endswith(q) and len(value) >= 2:
+                out[key] = value[1:-1]
+            else:
+                out[key] = value[1:]
+            continue
+        if "#" in value:
+            # strip inline comment (only when it starts a token)
+            for i, ch in enumerate(value):
+                if ch == "#" and (i == 0 or value[i - 1].isspace()):
+                    value = value[:i].strip()
+                    break
+        out[key] = value.strip()
+    return out
+
+def load_cfg(text: str) -> dict:
+    raw_s = text.strip()
+    if not raw_s:
+        return {}
+
+    if raw_s.startswith("{"):
+        try:
+            data = json.loads(raw_s)
+        except Exception:
+            data = None
+        if isinstance(data, dict):
+            return data
+
+    try:
+        import yaml  # type: ignore
+
+        data = yaml.safe_load(text)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+
+    return parse_yaml(text)
+
+cfg = load_cfg(raw)
+
+def get_path(data: dict, path: list[str]):
+    cur = data
+    for k in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(k)
+    return cur
+
+def get_str(*paths: list[str], default: str = "") -> str:
+    for p in paths:
+        v = get_path(cfg, p)
+        if isinstance(v, str):
+            return v.strip()
+    return default
+
+venv = get_str(["codex", "python_venv"], ["python_venv"], default="")
+print(venv.strip())
+PY
+}
+
 session_file="${TWF_SESSION_FILE:-.codex-tmux-session.json}"
 tmux_session="${TWF_TMUX_SESSION:-}"
 codex_cmd="${TWF_CODEX_CMD:-}"
@@ -172,6 +265,45 @@ done
 
 if [[ -z "$codex_cmd" ]]; then
   codex_cmd="$(build_default_codex_cmd)"
+fi
+
+python_venv="${TWF_PYTHON_VENV:-}"
+if [[ -z "$python_venv" ]]; then
+  python_venv="$(read_python_venv)"
+fi
+python_venv="$(echo "$python_venv" | xargs)"
+
+quoted_python_venv=""
+quoted_python_path=""
+python_path=""
+if [[ -n "$python_venv" ]]; then
+  python_venv="$(python3 - "$python_venv" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+raw = sys.argv[1].strip()
+p = Path(os.path.expanduser(raw))
+if not p.is_absolute():
+    p = (Path.cwd() / p).resolve()
+print(str(p))
+PY
+)"
+  if [[ ! -d "$python_venv" ]]; then
+    echo "❌ TWF_PYTHON_VENV is not a directory: $python_venv" >&2
+    exit 1
+  fi
+  if [[ ! -x "$python_venv/bin/python" ]]; then
+    echo "❌ python venv missing executable: $python_venv/bin/python" >&2
+    exit 1
+  fi
+  if [[ -n "${PATH:-}" ]]; then
+    python_path="$python_venv/bin:$PATH"
+  else
+    python_path="$python_venv/bin"
+  fi
+  quoted_python_venv="$(python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$python_venv")"
+  quoted_python_path="$(python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$python_path")"
 fi
 
 profile="${TWF_CODEX_PROFILE:-}"
@@ -259,10 +391,18 @@ if tmux has-session -t "$tmux_session" >/dev/null 2>&1; then
 else
   echo "🚀 Starting tmux session: $tmux_session" >&2
   quoted_worker_home="$(python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$worker_home")"
-  tmux new-session -d -s "$tmux_session" -c "$work_dir" "env CODEX_HOME=$quoted_worker_home $codex_cmd"
+  if [[ -n "$python_venv" ]]; then
+    tmux new-session -d -s "$tmux_session" -c "$work_dir" "env CODEX_HOME=$quoted_worker_home VIRTUAL_ENV=$quoted_python_venv PATH=$quoted_python_path $codex_cmd"
+  else
+    tmux new-session -d -s "$tmux_session" -c "$work_dir" "env CODEX_HOME=$quoted_worker_home $codex_cmd"
+  fi
 fi
 
 tmux set-environment -t "$tmux_session" CODEX_HOME "$worker_home" >/dev/null 2>&1 || true
+if [[ -n "$python_venv" ]]; then
+  tmux set-environment -t "$tmux_session" VIRTUAL_ENV "$python_venv" >/dev/null 2>&1 || true
+  tmux set-environment -t "$tmux_session" PATH "$python_path" >/dev/null 2>&1 || true
+fi
 
 pane_id="$(tmux display-message -p -t "$tmux_target" '#{pane_id}' 2>/dev/null || true)"
 

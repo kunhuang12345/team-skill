@@ -20,6 +20,17 @@ codex:
   # Leave empty for portability; prefer auth files over profiles when using account_pool.
   profile: ""
 
+  # Optional Python virtualenv for Codex workers.
+  #
+  # When set (non-empty), tmux-workflow will export:
+  # - VIRTUAL_ENV=<python_venv>
+  # - PATH=<python_venv>/bin:<original PATH>
+  #
+  # so `python/pip` executed by Codex uses this venv.
+  #
+  # Recommended: absolute path. Example: "/root/.virtualenvs/uxbot"
+  python_venv: ""
+
 # tmux-workflow (twf): worker lifecycle + auth/account-pool integration
 twf:
   # Worker state directory (where twf writes its worker state JSON files)
