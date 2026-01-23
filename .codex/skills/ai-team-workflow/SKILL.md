@@ -34,6 +34,7 @@ Rules for humans editing templates/config:
 - In `templates/*.md` and `scripts/atwf_config.yaml`, always write runnable commands/paths using placeholders:
   - atwf command: `{{ATWF_CMD}} <subcmd> ...`
   - config path: `{{ATWF_CONFIG}}`
+  - skill root (absolute): `{{SKILL_DIR}}` (use for `{{SKILL_DIR}}/references/...`)
 - Do **NOT** hardcode `.codex/...` paths or write bare `atwf ...` commands in templates.
 
 Validate (also enforced by `init`/`up`/`spawn` unless `--no-bootstrap`):

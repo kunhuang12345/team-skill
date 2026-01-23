@@ -1732,6 +1732,7 @@ def _render_template(raw: str, *, role: str, full: str, base: str, registry: Pat
         .replace("{{BASE_NAME}}", base)
         .replace("{{REGISTRY_PATH}}", str(registry))
         .replace("{{TEAM_DIR}}", str(team_dir))
+        .replace("{{SKILL_DIR}}", str(_skill_dir().resolve()))
     )
     return _substitute_atwf_paths(rendered)
 

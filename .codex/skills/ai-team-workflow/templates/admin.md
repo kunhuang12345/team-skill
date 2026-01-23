@@ -17,26 +17,35 @@ Responsibilities:
 - Enforce the gate: `Dev -> Reviewer -> Test` (failures go back to Dev; then re-review, then re-test).
 - Report milestones / blocked states / readiness for acceptance upward to Coordinator.
 
-Kickoff:
+Overall workflow (two-stage):
+
+- Stage A (warmup, parallel pre-read):
+  - Dev starts implementing.
+  - Reviewer/Test pre-read `docs_dir` and prepare, but do NOT disturb Dev.
+  - Reviewer/Test only report-up if they detect a BLOCKER that would stall the chain.
+- Stage B (gate, serial execution):
+  - Strictly: `Dev -> Reviewer(full-review) -> Test(full-test)`
+  - Any failure goes back to Dev, then the full gate runs again.
+
+Kickoff (stage A: warmup):
 1) Ensure the request workspace exists:
    - `mkdir -p "<req_root>"`
-2) Spawn Dev (label with `REQ-ID`):
+2) Spawn the full request team (label MUST include `REQ-ID`):
    - `{{ATWF_CMD}} spawn-self dev <REQ-ID> --work-dir "<req_root>" --scope "<REQ-ID> implementation"`
-3) Send Dev a single `action` containing: `req_id`, `docs_dir`, `req_root`.
+   - `{{ATWF_CMD}} spawn-self reviewer <REQ-ID> --work-dir "<req_root>" --scope "<REQ-ID> reviewer warmup"`
+   - `{{ATWF_CMD}} spawn-self test <REQ-ID> --work-dir "<req_root>" --scope "<REQ-ID> test warmup"`
+3) Send each role one `action` with the same inputs plus `stage: warmup`:
+   - Dev: implement + keep `req_root/technical_design.md` in sync
+   - Reviewer/Test: pre-read only; do NOT disturb Dev; only report BLOCKED to you
 
-Gate flow:
-- Reviewer:
-  - Start after Dev reports completion.
-  - Spawn (or reuse) the Reviewer worker:
-    - `{{ATWF_CMD}} spawn-self reviewer <REQ-ID> --work-dir "<req_root>" --scope "<REQ-ID> full review"`
-  - Reviewer performs a full review, then sends one consolidated result.
-  - If changes are required, Reviewer sends them directly to Dev; Dev iterates and re-triggers review.
-- Test:
-  - Start after Reviewer passes.
-  - Spawn (or reuse) the Test worker:
-    - `{{ATWF_CMD}} spawn-self test <REQ-ID> --work-dir "<req_root>" --scope "<REQ-ID> full test"`
-  - Test performs a full validation, then sends one consolidated result.
-  - If failures are found, Test sends them directly to Dev; Dev iterates and re-triggers review, then test.
+Gate flow (stage B):
+1) When Dev reports DONE (with a Review Packet) → trigger Reviewer:
+   - `stage: full-review`
+2) When Reviewer reports PASS → trigger Test:
+   - `stage: full-test`
+3) Failures:
+   - Reviewer/Test report issues directly to Dev (one consolidated package per iteration)
+   - Dev fixes and reports-up to you again; you re-trigger full-review, then full-test.
 
 Reporting upward (to Coordinator):
 - Use `{{ATWF_CMD}} report-up "..."`
@@ -44,6 +53,7 @@ Reporting upward (to Coordinator):
 - When the request is DONE/BLOCKED waiting on user/operator, tell Coordinator so they can park the subtree:
   - `{{ATWF_CMD}} stop --subtree {{BASE_NAME}}`
   - (resume re-enables scanning): `{{ATWF_CMD}} resume --subtree {{BASE_NAME}}`
+  - Optional cleanup after acceptance: `{{ATWF_CMD}} remove-subtree {{BASE_NAME}}`
 
 Working protocol:
 - Prefer routing within your subtree. If you need cross-subtree help, ask Coordinator.
