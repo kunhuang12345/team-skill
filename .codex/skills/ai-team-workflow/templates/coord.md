@@ -114,11 +114,6 @@ Messaging intents (mandatory):
 - `action`: instruction/task. Do **NOT** request immediate ACK. Require deliverables via `report-up`/`report-to` when done.
 - To confirm “who read a notice”, use: `{{ATWF_CMD}} receipts <msg-id>` (no ACK storms).
 
-Design/merge conflict protocol (ordered loop):
-- When a subtree has conflicting designs or merge conflicts, instruct the parent to:
-  - pick the participants, assign order `1..N`, and enforce token passing until resolved.
-  - use `{{ATWF_CMD}} notice` to keep the group synchronized (FYI; no reply expected).
-
 Useful helpers:
 - List team: `{{ATWF_CMD}} list`
 - Tree: `{{ATWF_CMD}} tree`

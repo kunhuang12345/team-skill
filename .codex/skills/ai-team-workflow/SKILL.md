@@ -60,15 +60,17 @@ It records, per worker:
 - `scope`: what this worker owns (used for routing)
 - `parent` / `children`: org tree links (mirrors `twf spawn`)
 
-## Shared artifacts (task + designs)
+## Shared artifacts (task + ops)
 
 Within the same share dir as `registry.json`, this skill also standardizes:
 - Shared task: `share/task.md` (written by `atwf init ...`)
-- Per-member designs: `share/design/<full>.md` (create via `atwf design-init[-self]`)
-- Consolidated design: `share/design.md` (subtree owner maintains)
+- Coordinator user-facing log: `share/to_user.md` (append-only)
 - Ops environment docs:
   - `share/ops/env.md`
   - `share/ops/host-deps.md` (records any host-level installs like `apt`/`curl` downloads)
+
+Note:
+- This repo’s default workflow does **NOT** use `share/design/` or `share/design.md` as required collaboration artifacts. Dev design lives in `req_root/technical_design.md` per request.
 
 ## Quick start
 
@@ -135,25 +137,22 @@ Helpers (run inside tmux worker):
   4. Only if a real **user/operator decision** is required, Coordinator asks the user/operator, then distributes the decision.
 
 User “bounce” rule (assistant is a relay):
-- If the user responds with “I don’t understand / shouldn’t this be answerable from docs?”, Coordinator routes it back down to the originator to self-confirm using existing docs (task/design/assets).
+- If the user responds with “I don’t understand / shouldn’t this be answerable from docs?”, Coordinator routes it back down to the originator to self-confirm using existing docs (task/docs/assets).
 - Only re-escalate to the user when a real **user decision** is required.
 
-## Design → Development workflow (required)
+## Request → Development workflow (required)
 
 1. Everyone reads the shared task: `share/task.md`.
-2. Everyone writes a per-scope design doc under `share/design/`:
-   - inside tmux: `bash .codex/skills/ai-team-workflow/scripts/atwf design-init-self`
-3. Bottom-up consolidation:
-   - contributors → admin
-4. After `admin-*` confirms the request plan is coherent and “no conflicts”, `admin-*` announces **START DEV**.
-5. Each `dev-*` (including interns) creates a dedicated git worktree (no work on current branch):
+2. For each request (`REQ-ID`), Admin creates a request workspace directory (`req_root`) and passes `req_id` + `docs_dir` + `req_root` to Dev/Reviewer/Test.
+3. Dev creates and maintains: `req_root/technical_design.md` (must match implementation).
+4. Each `dev-*` (including interns) creates a dedicated git worktree (no work on current branch):
    - Single-repo (run inside that repo):
      - inside tmux: `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self`
      - then: `cd <git-root>/worktree/<your-full-name>`
    - Multi-module (repo roots are different subdirs; worker started in a non-git dev-workdir):
      - inside tmux: `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self --repo /path/to/module-repo`
      - default location: `<your-work-dir>/<repo-basename>` (override with `--dest-root` + `--name`)
-6. Implement + commit + report upward with verification steps. Parent integrates subtree first; Coordinator integrates last.
+5. Implement + commit + report upward with verification steps. Parent integrates subtree first; Coordinator integrates last.
 
 ## Conflict resolution protocol (ordered loop)
 
@@ -181,9 +180,6 @@ All commands are wrappers around `twf` plus registry management:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf policy`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf perms-self`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf tree [root]`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf design-path <full|base|role>`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf design-init <full|base|role> [--force]`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf design-init-self [--force]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-path <full|base|role>`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create <full|base|role> [--base REF] [--branch BR] [--repo PATH] [--dest-root DIR] [--name NAME]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-create-self [--base REF] [--branch BR] [--repo PATH] [--dest-root DIR] [--name NAME]`
@@ -208,6 +204,11 @@ All commands are wrappers around `twf` plus registry management:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf reply-needed [--target <full|base|role>]` (list pending reply-needed)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf request <req-id>` (show request status/paths)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf handoff <a> <b> [--reason "..."] [--ttl SECONDS]`
+
+Legacy (optional; not used by default in this repo):
+- `bash .codex/skills/ai-team-workflow/scripts/atwf design-path <full|base|role>`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf design-init <full|base|role> [--force]`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf design-init-self [--force]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf pend <full|base|role> [N]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf ping <full|base|role>`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf drive [running|standby]` (drive mode lives in config; watcher hot-reloads; setting mode must be outside worker tmux)
