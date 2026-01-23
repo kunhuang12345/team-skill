@@ -5,19 +5,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import config as config_mod
-from . import constants as C
-from . import inbox
-from . import io as io_mod
-from . import policy as policy_mod
-from . import registry as registry_mod
-from . import resolve
-from . import runtime
-from . import state_store
-from . import templates
-from . import tmux as tmux_mod
-from . import twf as twf_mod
-from . import util
+from ..core import config as config_mod
+from ..core import constants as C
+from ..state import inbox
+from ..infra import io as io_mod
+from ..core import policy as policy_mod
+from ..state import registry as registry_mod
+from ..state import resolve
+from ..core import runtime
+from ..state import state_store
+from ..core import templates
+from ..infra import tmux as tmux_mod
+from ..infra import twf as twf_mod
+from ..core import util
 
 
 def _base_name(role: str, label: str | None) -> str:
@@ -466,4 +466,3 @@ def _design_seed(*, member: dict[str, Any], full: str, team_dir: Path) -> str:
         "",
     ]
     return "\n".join(lines)
-

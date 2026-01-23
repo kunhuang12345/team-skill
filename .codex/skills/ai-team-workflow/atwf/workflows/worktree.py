@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import io as io_mod
+from ..infra import io as io_mod
 
 
 def _worktrees_dir(git_root: Path) -> Path:

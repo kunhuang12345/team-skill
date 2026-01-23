@@ -4,9 +4,9 @@ import os
 import subprocess
 from pathlib import Path
 
-from . import config as config_mod
+from ..core import config as config_mod
 from . import io as io_mod
-from . import runtime
+from ..core import runtime
 
 
 def _resolve_twf() -> Path:

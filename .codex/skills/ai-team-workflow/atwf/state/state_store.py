@@ -4,11 +4,11 @@ import re
 from pathlib import Path
 from typing import Any
 
-from . import constants as C
-from . import io as io_mod
-from . import runtime
-from . import settings
-from . import util
+from ..core import constants as C
+from ..infra import io as io_mod
+from ..core import runtime
+from ..core import settings
+from ..core import util
 
 
 def _inbox_root(team_dir: Path) -> Path:

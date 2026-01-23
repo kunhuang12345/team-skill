@@ -6,7 +6,7 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SKILL_DIR))
 
-from atwf import runtime  # noqa: E402
+from atwf.core import runtime  # noqa: E402
 
 
 class RuntimeTests(unittest.TestCase):
@@ -16,4 +16,3 @@ class RuntimeTests(unittest.TestCase):
         self.assertNotIn("{{ATWF_CMD}}", out)
         self.assertNotIn("{{ATWF_CONFIG}}", out)
         self.assertIn("atwf_config.yaml", out)
-

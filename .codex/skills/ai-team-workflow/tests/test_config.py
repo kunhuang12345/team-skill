@@ -7,7 +7,7 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SKILL_DIR))
 
-from atwf import config  # noqa: E402
+from atwf.core import config  # noqa: E402
 
 
 class ConfigTests(unittest.TestCase):
@@ -41,4 +41,3 @@ class ConfigTests(unittest.TestCase):
             cfg = config._read_yaml_or_json(p)
             self.assertEqual(cfg.get("x"), 1)
             self.assertEqual(cfg.get("y"), "z")
-

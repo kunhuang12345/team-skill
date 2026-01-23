@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from . import io as io_mod
+from ..infra import io as io_mod
 from . import runtime
-from . import worktree as worktree_mod
+from ..workflows import worktree as worktree_mod
 
 
 def _expected_project_root() -> Path:
@@ -50,4 +50,3 @@ def _state_file_matches_project(state_file: Path, expected_root: Path) -> bool:
 
     expected = expected_root.resolve()
     return actual == expected or expected in actual.parents
-

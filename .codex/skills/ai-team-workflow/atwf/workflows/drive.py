@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from . import config as config_mod
-from . import templates
-from . import runtime
+from ..core import config as config_mod
+from ..core import templates
+from ..core import runtime
 
 
 def _drive_message_body(*, iso_ts: str, msg_id: str, extra: dict[str, str] | None = None) -> str:
@@ -36,4 +36,3 @@ def _drive_message_summary(*, iso_ts: str, msg_id: str, extra: dict[str, str] | 
         "Action: diagnose root cause, then re-drive the team back to work.\n"
     )
     return templates._render_drive_template(default, iso_ts=iso_ts, msg_id=msg_id, extra=extra)
-

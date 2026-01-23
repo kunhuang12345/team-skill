@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import runtime
+from ..core import runtime
 
 
 def _extract_task_file_from_text(task: str) -> str | None:
@@ -58,4 +58,3 @@ def _read_task_content(args: argparse.Namespace) -> tuple[str | None, str | None
     if stdin_text:
         return stdin_text, None
     return None, None
-

@@ -4,12 +4,12 @@ import os
 from pathlib import Path
 from typing import Any
 
-from . import constants as C
-from . import io as io_mod
-from . import policy as policy_mod
+from ..core import constants as C
+from ..infra import io as io_mod
+from ..core import policy as policy_mod
 from . import registry as registry_mod
-from . import runtime
-from . import tmux as tmux_mod
+from ..core import runtime
+from ..infra import tmux as tmux_mod
 
 
 def _member_state_file(m: dict[str, Any]) -> Path | None:
@@ -91,4 +91,3 @@ def _member_base(m: dict[str, Any] | None) -> str:
     base = str(m.get("base", "")).strip()
     full = str(m.get("full", "")).strip()
     return base or full
-

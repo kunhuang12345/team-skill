@@ -5,12 +5,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import constants as C
-from . import io as io_mod
-from . import runtime
-from . import settings
+from ..core import constants as C
+from ..infra import io as io_mod
+from ..core import runtime
+from ..core import settings
 from . import state_store
-from . import util
+from ..core import util
 
 
 def _msg_seq_path(team_dir: Path) -> Path:
@@ -354,4 +354,3 @@ def _mark_inbox_read(team_dir: Path, *, to_base: str, msg_id: str) -> Path | Non
             except Exception:
                 pass
         return dst if dst.is_file() else None
-

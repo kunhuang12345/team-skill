@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from . import io as io_mod
-from . import util
+from ..infra import io as io_mod
+from ..core import util
 
 
 def _load_registry(registry: Path) -> dict[str, Any]:

@@ -8,13 +8,13 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from . import config as config_mod
-from . import project
-from . import registry as registry_mod
-from . import runtime
+from ..core import config as config_mod
+from ..core import project
+from ..state import registry as registry_mod
+from ..core import runtime
 from . import tmux as tmux_mod
 from . import twf as twf_mod
-from . import util
+from ..core import util
 
 
 def _cap_watch_session_name(project_root: Path) -> str:
@@ -228,4 +228,3 @@ def _ensure_cap_watch_team(*, twf: Path, team_dir: Path, registry: Path) -> None
         util._eprint(f"⚠️ failed to start cap watch-team tmux session: {session}")
         return
     util._eprint(f"🛰️ cap watch-team started: {session}")
-

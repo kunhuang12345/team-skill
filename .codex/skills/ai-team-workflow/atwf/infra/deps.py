@@ -3,8 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from . import config as config_mod
-from . import runtime
+from ..core import config as config_mod
+from ..core import runtime
 
 
 def _apply_deps_env_defaults() -> None:
@@ -46,4 +46,3 @@ def _cap_state_file_path() -> Path:
         return runtime._expand_path_from(runtime._skill_dir(), state_file)
 
     return (runtime._skill_dir() / "deps" / "codex-account-pool" / "share" / "state.json").resolve()
-

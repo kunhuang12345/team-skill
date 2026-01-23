@@ -7,8 +7,8 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SKILL_DIR))
 
-from atwf import requests  # noqa: E402
-from atwf import state_store  # noqa: E402
+from atwf.state import requests  # noqa: E402
+from atwf.state import state_store  # noqa: E402
 
 
 class RequestsTests(unittest.TestCase):

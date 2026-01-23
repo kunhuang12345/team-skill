@@ -6,8 +6,8 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SKILL_DIR))
 
-from atwf import org  # noqa: E402
-from atwf import registry  # noqa: E402
+from atwf.state import org  # noqa: E402
+from atwf.state import registry  # noqa: E402
 
 
 class OrgRegistryTests(unittest.TestCase):
@@ -37,4 +37,3 @@ class OrgRegistryTests(unittest.TestCase):
         data = {"members": [{"full": "dev-1", "base": "dev", "updated_at": "2026-01-01T00:00:00"}]}
         self.assertEqual(registry._resolve_member(data, "dev-1")["full"], "dev-1")
         self.assertEqual(registry._resolve_member(data, "dev")["full"], "dev-1")
-

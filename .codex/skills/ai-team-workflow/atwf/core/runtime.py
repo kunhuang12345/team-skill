@@ -22,8 +22,14 @@ def _expand_path_from(base: Path, path: str) -> Path:
 
 @lru_cache(maxsize=1)
 def _skill_dir() -> Path:
-    # atwf runtime package lives at: <skill_root>/atwf/*.py
-    return Path(__file__).resolve().parents[1]
+    # Locate the skill root (directory containing SKILL.md), even if the atwf
+    # package is nested (e.g. <skill_root>/atwf/core/runtime.py).
+    here = Path(__file__).resolve()
+    for p in (here.parent, *here.parents):
+        if (p / "SKILL.md").is_file():
+            return p
+    # Fallback: assume <skill_root>/atwf/... layout.
+    return here.parents[2]
 
 
 @lru_cache(maxsize=1)
@@ -62,7 +68,7 @@ def _paused_marker_path(team_dir: Path) -> Path:
 
 
 def _set_paused(team_dir: Path, *, reason: str) -> None:
-    from . import io as io_mod
+    from ..infra import io as io_mod
     from . import util
 
     team_dir.mkdir(parents=True, exist_ok=True)

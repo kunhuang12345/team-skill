@@ -5,13 +5,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import constants as C
+from ..core import constants as C
 from . import inbox
-from . import io as io_mod
+from ..infra import io as io_mod
 from . import registry as registry_mod
-from . import settings
+from ..core import settings
 from . import state_store
-from . import util
+from ..core import util
 
 
 _REQUEST_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
@@ -314,4 +314,3 @@ def _finalize_request(
         meta["updated_at"] = now_iso
         io_mod._write_json_atomic(meta_path, meta)
         return True
-

@@ -14,9 +14,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .constants import *
-from .comm import _add_handoff_permit, _comm_allowed, _permit_allows, _require_comm_allowed
-from .config import (
+from ..core.constants import *
+from ..state.comm import _add_handoff_permit, _comm_allowed, _permit_allows, _require_comm_allowed
+from ..core.config import (
     _cfg_get,
     _cfg_get_boolish,
     _cfg_get_floatish,
@@ -25,9 +25,9 @@ from .config import (
     _cfg_get_str_list,
     _read_yaml_or_json,
 )
-from .deps import _apply_deps_env_defaults, _cap_state_file_path
-from .drive import _drive_message_body, _drive_message_summary
-from .inbox import (
+from ..infra.deps import _apply_deps_env_defaults, _cap_state_file_path
+from ..workflows.drive import _drive_message_body, _drive_message_summary
+from ..state.inbox import (
     _find_inbox_message_file,
     _inbox_enforce_unread_limit_unlocked,
     _inbox_list_msgs,
@@ -44,11 +44,11 @@ from .inbox import (
     _write_inbox_message_unlocked,
     _wrap_team_message,
 )
-from .io import _locked, _read_json, _rm_tree, _run, _write_json_atomic, _write_text_atomic
-from .org import _all_member_fulls, _members_by_role, _select_targets_for_team_op, _subtree_fulls, _tree_children, _tree_roots
-from .policy import TeamPolicy, _norm_role, _policy, _require_role
-from .project import _expected_project_root, _state_file_matches_project
-from .registry import (
+from ..infra.io import _locked, _read_json, _rm_tree, _run, _write_json_atomic, _write_text_atomic
+from ..state.org import _all_member_fulls, _members_by_role, _select_targets_for_team_op, _subtree_fulls, _tree_children, _tree_roots
+from ..core.policy import TeamPolicy, _norm_role, _policy, _require_role
+from ..core.project import _expected_project_root, _state_file_matches_project
+from ..state.registry import (
     _add_child,
     _ensure_member,
     _ensure_registry_file,
@@ -58,7 +58,7 @@ from .registry import (
     _resolve_latest_by_role,
     _resolve_member,
 )
-from .requests import (
+from ..state.requests import (
     _finalize_request,
     _list_request_ids,
     _load_request_meta,
@@ -72,7 +72,7 @@ from .requests import (
     _scan_reply_requests,
     _update_request_meta,
 )
-from .resolve import (
+from ..state.resolve import (
     _member_base,
     _member_role,
     _member_state_file,
@@ -80,7 +80,7 @@ from .resolve import (
     _resolve_actor_full,
     _resolve_target_full,
 )
-from .runtime import (
+from ..core.runtime import (
     _atwf_cmd,
     _atwf_wrapper_path,
     _clear_paused,
@@ -95,7 +95,7 @@ from .runtime import (
     _substitute_atwf_paths,
     _templates_dir,
 )
-from .settings import (
+from ..core.settings import (
     _drive_backup_role,
     _drive_cooldown_s,
     _drive_driver_role,
@@ -120,7 +120,7 @@ from .settings import (
     _state_working_alert_cooldown_s,
     _state_working_stale_threshold_s,
 )
-from .state_store import (
+from ..state.state_store import (
     _agent_state_path,
     _default_agent_state,
     _design_dir,
@@ -150,8 +150,8 @@ from .state_store import (
     _write_drive_subtree_state,
     _write_reply_drive_state,
 )
-from .task_io import _read_task_content
-from .team import (
+from ..state.task_io import _read_task_content
+from ..workflows.team import (
     _base_name,
     _bootstrap_worker,
     _design_seed,
@@ -163,18 +163,18 @@ from .team import (
     _spawn_worker,
     _start_worker,
 )
-from .tmux import _tmux_capture_tail, _tmux_kill_session, _tmux_running, _tmux_send_enter, _tmux_self_full
-from .twf import _resolve_twf, _resolve_twf_config_path, _resolve_twf_state_dir, _run_twf
-from .util import _eprint, _now, _parse_iso_dt, _slugify, _text_digest
-from .watchers import (
+from ..infra.tmux import _tmux_capture_tail, _tmux_kill_session, _tmux_running, _tmux_send_enter, _tmux_self_full
+from ..infra.twf import _resolve_twf, _resolve_twf_config_path, _resolve_twf_state_dir, _run_twf
+from ..core.util import _eprint, _now, _parse_iso_dt, _slugify, _text_digest
+from ..infra.watchers import (
     _cap_watch_session_name,
     _ensure_cap_watch_team,
     _ensure_watch_idle_team,
     _restart_watch_idle_team,
     _watch_idle_session_name,
 )
-from .worktree import _git_root, _git_root_from, _worktree_path, _worktrees_dir
-from .templates import _render_template, _template_for_role, _template_lint_issues, _validate_templates_or_die
+from ..workflows.worktree import _git_root, _git_root_from, _worktree_path, _worktrees_dir
+from ..core.templates import _render_template, _template_for_role, _template_lint_issues, _validate_templates_or_die
 
 
 def _read_optional_message(args: argparse.Namespace, *, attr: str) -> str:

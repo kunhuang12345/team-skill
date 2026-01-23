@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from . import policy as policy_mod
+from ..core import policy as policy_mod
 from . import registry as registry_mod
 from . import resolve
 
@@ -155,4 +155,3 @@ def _require_comm_allowed(
         f"   reason: {reason}\n"
         f"   hint: request a handoff via `{root}` (or run: atwf handoff --as {root} <from> <to> --reason \"...\")"
     )
-
