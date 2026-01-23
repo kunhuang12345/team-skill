@@ -2,5 +2,13 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec python3 "$script_dir/atwf.py" "$@"
+skill_dir="$(cd "$script_dir/.." && pwd)"
 
+# Ensure the bundled stdlib-only atwf package is importable regardless of cwd.
+if [[ -n "${PYTHONPATH:-}" ]]; then
+  export PYTHONPATH="${skill_dir}:${PYTHONPATH}"
+else
+  export PYTHONPATH="${skill_dir}"
+fi
+
+exec python3 -m atwf "$@"
