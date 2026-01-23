@@ -93,7 +93,7 @@ cap:
   # Where to persist cap's counters/pointers (relative to ai-team-workflow root unless absolute).
   state_file: "share/state/cap_state.json"
 
-# Share dir (where registry/task/design/ops live):
+# Share dir (where registry/task/ops live):
 # - If set (non-empty), it overrides the default shared state directory.
 # - Recommended: absolute path
 # - Relative paths are resolved from the skill root (`.codex/skills/ai-team-workflow/`)

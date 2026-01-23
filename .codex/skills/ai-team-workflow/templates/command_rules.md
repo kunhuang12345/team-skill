@@ -20,7 +20,7 @@ Template authoring rule (for humans editing templates):
 - Check hard permissions any time:
   - `{{ATWF_CMD}} policy`
   - `{{ATWF_CMD}} perms-self`
-- Any progress/completion/design conclusion **must** be reported via `{{ATWF_CMD}} report-up` (or `{{ATWF_CMD}} report-to coord`) to count as “reported”; otherwise the parent may treat it as “not received”.
+- Any progress/completion **must** be reported via `{{ATWF_CMD}} report-up` (or `{{ATWF_CMD}} report-to coord`) to count as “reported”; otherwise the parent may treat it as “not received”.
 
 ## Queue-safe message protocol (mandatory)
 
@@ -159,10 +159,10 @@ If you must debug a delivery issue, ask **Coordinator** for approval and documen
 
 - Recipients may be busy; replies can be delayed.
 - Do not spam: if you need a reply, wait; do not re-send the same message repeatedly.
-- Do not stall: unless you *must* have the recipient’s input to proceed, keep working on parallel tasks in your own scope (design/docs/tests/verification/notes) while you wait.
+- Do not stall: unless you *must* have the recipient’s input to proceed, keep working on parallel tasks in your own scope (docs/tests/verification/notes) while you wait.
 - If you suspect delivery failed, ask **Coordinator** to verify via logs; do not invent new raw tmux paste/send scripts.
 
 ## If you think an exception is needed
 
 - Ask **Coordinator** first and wait for approval.
-- If approved, document the exact command and outcome in `{{TEAM_DIR}}/design/<your-full>.md` so the team can reproduce/debug.
+- If approved, document the exact command and outcome in `{{TEAM_DIR}}/ops/env.md` (or if host installs were involved: `{{TEAM_DIR}}/ops/host-deps.md`) so the team can reproduce/debug.
