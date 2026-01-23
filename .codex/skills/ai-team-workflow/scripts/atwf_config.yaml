@@ -214,13 +214,17 @@ team:
         [DRIVE] stalled {{unit_role}} subtrees: {{count}} ({{subtree_bases}})
         inbox id={{msg_id}} (open: {{open_cmd}})
         Rule: DO NOT change team.drive.mode or edit atwf_config.yaml (operator-only).
-        Action: inspect each subtree, then re-drive (resume/assign) or stop it to exclude from drive scanning.
+        Action: inspect each subtree, then re-drive (resume/assign) or park it (stop --subtree) if DONE/BLOCKED.
       body: |
         [DRIVE] stalled {{unit_role}} subtrees: {{count}}
         - detected_at: {{iso_ts}}
 
         Subtrees:
         {{subtree_lines}}
+
+        Meaning:
+        - Each listed subtree has at least one running tmux session, but everyone is `idle` and no inbox is pending.
+        - DONE/BLOCKED chains should be parked so drive stops scanning them until resumed.
 
         Hard rule (operator-only):
         - DO NOT change team.drive.mode.

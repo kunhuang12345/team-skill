@@ -189,6 +189,7 @@ All commands are wrappers around `twf` plus registry management:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf worktree-check-self`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf stop [--role ROLE|--subtree ROOT|targets...]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf resume [--role ROLE|--subtree ROOT|targets...]`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf remove-subtree <root-full|root-base> [--dry-run] [--purge-inbox] [--force]`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf pause [--role ROLE|--subtree ROOT|targets...] [--reason "..."]` (human pause; writes `share/.paused` and stops the watcher session)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf unpause [--role ROLE|--subtree ROOT|targets...]` (human unpause; clears `share/.paused` and restarts watcher so updates take effect)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf notice [--role ROLE|--subtree ROOT|targets...] --message "..."` (or stdin; FYI; no reply expected)

@@ -135,6 +135,12 @@ Hard rules:
   - diagnose the root cause (run: `{{ATWF_CMD}} state`, `{{ATWF_CMD}} list`, `{{ATWF_CMD}} inbox`), and
   - re-drive work by assigning `action` tasks (owners + next action + ETA) or presenting concrete blocker evidence (with handoff when needed).
 
+## Git integration boundary (mandatory)
+
+- Workers MAY create local branches/worktrees and make local commits.
+- Workers MUST NOT run operator-only integration commands: `git merge`, `git rebase`, `git pull`, `git push`.
+- Handoff MUST include: branch name + commit SHA(s) + exact verify commands/results, so the operator can re-review and integrate.
+
 ## Forbidden (do NOT do this)
 
 Do **NOT** use raw tmux keystroke injection to “send” chat messages, including:

@@ -2998,6 +2998,15 @@ def _ensure_task_and_design_files(team_dir: Path, *, task_content: str | None, t
         )
         _write_text_atomic(host_deps_path, seed)
 
+    to_user_path = team_dir / "to_user.md"
+    if not to_user_path.exists():
+        seed = (
+            "# User-facing Log\n\n"
+            "Coordinator appends short user-facing entries here (append-only).\n"
+            "Separate entries with `---`.\n"
+        )
+        _write_text_atomic(to_user_path, seed)
+
     return task_path if task_path.exists() else None
 
 
@@ -5286,6 +5295,149 @@ def cmd_unpause(args: argparse.Namespace) -> int:
     return 0
 
 
+def _delete_drive_subtree_entries(team_dir: Path, *, bases: list[str]) -> None:
+    bases = [str(b or "").strip() for b in (bases or [])]
+    bases = [b for b in bases if b]
+    if not bases:
+        return
+
+    lock = _state_lock_path(team_dir)
+    with _locked(lock):
+        _ensure_share_layout(team_dir)
+        data = _load_drive_subtree_state_unlocked(team_dir, mode_default=_drive_mode_config_hot())
+        subs = data.get("subtrees")
+        if isinstance(subs, dict):
+            for base in bases:
+                subs.pop(base, None)
+        data["updated_at"] = _now()
+        _write_json_atomic(_drive_subtree_state_path(team_dir), data)
+
+
+def cmd_remove_subtree(args: argparse.Namespace) -> int:
+    """
+    Remove a request subtree (typically an `admin-<REQ-ID>` chain):
+    - delete workers via twf (best-effort)
+    - prune members from registry.json
+    - clean atwf per-agent state files
+    - optionally purge inbox dirs
+    """
+    twf = _resolve_twf()
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    policy = _policy()
+
+    root = str(getattr(args, "root", "") or "").strip()
+    if not root:
+        raise SystemExit("❌ root is required (use full or base name, e.g. admin-REQ-001)")
+    if root in set(policy.enabled_roles):
+        raise SystemExit(f"❌ root must be a specific member (full|base), not a role name: {root}")
+
+    lock = team_dir / ".lock"
+    with _locked(lock):
+        data = _load_registry(registry)
+
+        root_full = _resolve_target_full(data, root)
+        if not root_full:
+            raise SystemExit(f"❌ subtree root not found in registry: {root}")
+        root_m = _resolve_member(data, root_full) or {}
+        root_role = _member_role(root_m) or "?"
+        root_base = _member_base(root_m) or root_full
+
+        expected_role = (_drive_unit_role() or "").strip() or "admin"
+        if not bool(getattr(args, "force", False)) and expected_role and root_role != expected_role:
+            raise SystemExit(
+                "❌ remove-subtree refused.\n"
+                f"   expected subtree root role={expected_role!r} (config team.drive.unit_role)\n"
+                f"   got: role={root_role!r} full={root_full} base={root_base}\n"
+                "   If you really want this, pass: --force"
+            )
+
+        subtree = _subtree_fulls(data, root_full)
+        if not subtree:
+            raise SystemExit(f"❌ empty subtree: {root_full}")
+
+        base_by_full: dict[str, str] = {}
+        for full in subtree:
+            m = _resolve_member(data, full) or {}
+            base_by_full[full] = _member_base(m) or full
+
+    ordered = list(reversed(subtree))
+
+    if bool(getattr(args, "dry_run", False)):
+        print("\n".join(ordered))
+        return 0
+
+    failures: list[str] = []
+    for full in ordered:
+        res = _run_twf(twf, ["remove", full, "--no-recursive"])
+        if res.returncode != 0:
+            failures.append(full)
+            err = (res.stderr or "").strip() or (res.stdout or "").strip()
+            _eprint(f"⚠️ twf remove failed for {full}: {err or 'unknown error'}")
+
+    with _locked(lock):
+        data2 = _load_registry(registry)
+        members = data2.get("members")
+        if not isinstance(members, list):
+            members = []
+
+        removed = set(subtree)
+        kept: list[Any] = []
+        for m in members:
+            if not isinstance(m, dict):
+                kept.append(m)
+                continue
+            full = str(m.get("full", "")).strip()
+            if full in removed:
+                continue
+            kept.append(m)
+
+        for m in kept:
+            if not isinstance(m, dict):
+                continue
+            parent = m.get("parent")
+            if isinstance(parent, str) and parent in removed:
+                m["parent"] = None
+            children = m.get("children")
+            if isinstance(children, list):
+                m["children"] = [c for c in children if isinstance(c, str) and c not in removed]
+        data2["members"] = kept
+        data2["updated_at"] = _now()
+        _write_json_atomic(registry, data2)
+
+    for full in subtree:
+        p = _agent_state_path(team_dir, full=full)
+        try:
+            if p.is_file():
+                p.unlink()
+        except Exception:
+            pass
+
+    _delete_drive_subtree_entries(team_dir, bases=[root_base])
+
+    if bool(getattr(args, "purge_inbox", False)):
+        uniq_bases: list[str] = []
+        seen: set[str] = set()
+        for full in subtree:
+            b = str(base_by_full.get(full, "")).strip()
+            if b and b not in seen:
+                seen.add(b)
+                uniq_bases.append(b)
+        for base in uniq_bases:
+            p = _inbox_member_dir(team_dir, base=base)
+            try:
+                if p.is_dir():
+                    shutil.rmtree(p)
+            except Exception:
+                pass
+
+    if failures:
+        _eprint(f"❌ remove-subtree completed with failures: {len(failures)} workers (registry pruned anyway)")
+        return 1
+    _eprint(f"✅ subtree removed: {root_full} ({len(subtree)} workers)")
+    return 0
+
+
 def cmd_broadcast(args: argparse.Namespace) -> int:
     team_dir = _default_team_dir()
     registry = _registry_path(team_dir)
@@ -7050,6 +7202,10 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
         # Drive loop (anti-stall):
         # Prefer per-subtree drive (unit_role) when configured/enabled (default: admin),
         # otherwise fall back to the legacy whole-team drive.
+        #
+        # Important: only scan "active" subtrees (at least one tmux session is running
+        # within the subtree). This prevents DONE/BLOCKED (parked) chains with no
+        # running tmux from repeatedly triggering drive.
         if not dry_run and drive_mode == _DRIVE_MODE_RUNNING and not suppress_drive:
             cooldown_drive_s = _drive_cooldown_s()
             driver_role = _drive_driver_role()
@@ -7099,14 +7255,19 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
                         sub_all_idle = True
                         sub_any_pending = False
                         missing_tmux: list[str] = []
+                        running_n = 0
                         for f in subtree_fulls:
                             st = member_status.get(f, "")
                             if st and st != _STATE_STATUS_IDLE:
                                 sub_all_idle = False
                             if int(member_pending_by_full.get(f, 0) or 0) > 0:
                                 sub_any_pending = True
-                            if not bool(member_tmux_running.get(f, False)):
+                            if bool(member_tmux_running.get(f, False)):
+                                running_n += 1
+                            else:
                                 missing_tmux.append(f)
+                        if running_n <= 0:
+                            continue
                         if not sub_all_idle or sub_any_pending:
                             continue
 
@@ -7119,6 +7280,7 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
                                 "root_full": root_full,
                                 "root_base": root_base,
                                 "members": subtree_fulls,
+                                "tmux_running": running_n,
                                 "missing_tmux": missing_tmux,
                             }
                         )
@@ -7143,11 +7305,12 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
                             base = str(s.get("root_base") or "").strip()
                             full = str(s.get("root_full") or "").strip()
                             members_list = s.get("members") if isinstance(s.get("members"), list) else []
+                            running_n = int(s.get("tmux_running") or 0)
                             missing_list = s.get("missing_tmux") if isinstance(s.get("missing_tmux"), list) else []
                             members_n = len(members_list)
                             miss_n = len(missing_list)
                             tail = f" missing=[{fmt_missing(missing_list)}]" if miss_n else ""
-                            lines.append(f"- {base}: root={full} members={members_n} tmux_missing={miss_n}{tail}")
+                            lines.append(f"- {base}: root={full} members={members_n} tmux_running={running_n} tmux_missing={miss_n}{tail}")
                         subtree_lines = "\n".join(lines).rstrip() + "\n"
 
                         extra = {
@@ -7703,6 +7866,12 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument("--subtree", help="resume all members under a root (full|base|role)")
     resume.add_argument("--dry-run", action="store_true", help="print what would be resumed")
 
+    rmst = sub.add_parser("remove-subtree", help="remove a subtree (stop + delete workers + prune registry)")
+    rmst.add_argument("root", help="subtree root (full|base). Recommended: admin-<REQ-ID>")
+    rmst.add_argument("--dry-run", action="store_true", help="print what would be removed (full names)")
+    rmst.add_argument("--purge-inbox", action="store_true", help="also delete inbox dirs for removed bases (irreversible)")
+    rmst.add_argument("--force", action="store_true", help="allow removing subtrees not rooted at the configured unit_role")
+
     pause = sub.add_parser("pause", help="pause workers and disable watcher actions (recommended for humans)")
     pause.add_argument("targets", nargs="*", help="optional targets (full|base|role)")
     pause.add_argument("--role", choices=enabled_roles, help="pause all members of a role")
@@ -7923,6 +8092,8 @@ def main(argv: list[str]) -> int:
         return cmd_stop(args)
     if args.cmd == "resume":
         return cmd_resume(args)
+    if args.cmd == "remove-subtree":
+        return cmd_remove_subtree(args)
     if args.cmd == "pause":
         return cmd_pause(args)
     if args.cmd == "unpause":
