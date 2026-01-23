@@ -2009,9 +2009,10 @@ PY
       cmd="$cmd resume $quoted_id"
     fi
     if [[ -n "$python_venv_final" ]]; then
-      tmux new-session -d -s "$tmux_session" -c "$work_dir" "env CODEX_HOME=$quoted_codex_home VIRTUAL_ENV=$quoted_python_venv PATH=$quoted_python_path $cmd"
+      # Pass env vars as argv to avoid shell word-splitting (WSL PATH may contain spaces).
+      tmux new-session -d -s "$tmux_session" -c "$work_dir" env "CODEX_HOME=$codex_home" "VIRTUAL_ENV=$python_venv_final" "PATH=$python_path" bash -c "$cmd"
     else
-      tmux new-session -d -s "$tmux_session" -c "$work_dir" "env CODEX_HOME=$quoted_codex_home $cmd"
+      tmux new-session -d -s "$tmux_session" -c "$work_dir" env "CODEX_HOME=$codex_home" bash -c "$cmd"
     fi
     tmux set-environment -t "$tmux_session" CODEX_HOME "$codex_home" >/dev/null 2>&1 || true
     if [[ -n "$python_venv_final" ]]; then

@@ -390,11 +390,11 @@ if tmux has-session -t "$tmux_session" >/dev/null 2>&1; then
   echo "ℹ️  Reusing tmux session: $tmux_session" >&2
 else
   echo "🚀 Starting tmux session: $tmux_session" >&2
-  quoted_worker_home="$(python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$worker_home")"
   if [[ -n "$python_venv" ]]; then
-    tmux new-session -d -s "$tmux_session" -c "$work_dir" "env CODEX_HOME=$quoted_worker_home VIRTUAL_ENV=$quoted_python_venv PATH=$quoted_python_path $codex_cmd"
+    # Pass env vars as argv to avoid shell word-splitting (WSL PATH may contain spaces).
+    tmux new-session -d -s "$tmux_session" -c "$work_dir" env "CODEX_HOME=$worker_home" "VIRTUAL_ENV=$python_venv" "PATH=$python_path" bash -c "$codex_cmd"
   else
-    tmux new-session -d -s "$tmux_session" -c "$work_dir" "env CODEX_HOME=$quoted_worker_home $codex_cmd"
+    tmux new-session -d -s "$tmux_session" -c "$work_dir" env "CODEX_HOME=$worker_home" bash -c "$codex_cmd"
   fi
 fi
 
