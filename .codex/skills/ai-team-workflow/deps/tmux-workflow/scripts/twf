@@ -5,21 +5,21 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
   cat <<'USAGE' >&2
-tmux-workflow helper: manage multiple Codex tmux workers with short names.
+tmux-workflow helper: manage multiple tmux workers (Codex/Claude) with short names.
 
 Usage:
   twf <name>                       # start a new worker: <name>-<timestamp>
   twf <name> "<message>"           # ask the latest worker for <name> (auto-up if missing)
-  twf up <name> [--profile P] [up-args...]  # explicit start (forwards args to codex_up_tmux.sh)
+  twf up <name> [--provider codex|claude] [--profile P] [up-args...]  # explicit start
   twf ask <name> [message]          # explicit ask (reads stdin if message omitted)
   twf send <name> [message]         # send-only: submit message without waiting for reply
   twf pend <name> [N]               # show latest reply / last N Q&A
   twf ping <name>                   # health check
   twf self                          # print current worker full name (tmux session name)
-  twf spawn-self <child> [up-args...]# spawn a child worker from the current worker (inside tmux)
+  twf spawn-self <child> [--provider codex|claude] [up-args...] # spawn a child worker (inside tmux)
   twf stop <name|full-name>          # stop tmux session but keep worker home + state (resume-able)
   twf resume <name|full-name>        # resume worker (default: resume subtree; pass --no-tree for single node)
-  twf spawn <parent-full> <child>    # start child worker and link parent/child in state
+  twf spawn <parent-full> <child> [--provider codex|claude] # start child worker and link parent/child
   twf remove <full-name> [--no-recursive]  # delete worker (default: recursive subtree)
   twf tree [root-full]               # show parent/child tree (running status)
   twf list [--running|--stopped|--orphans] # list all workers (flat)
@@ -44,6 +44,7 @@ Env:
   TWF_ACCOUNT_POOL_CMD  Optional: path to `codex-account-pool/scripts/cap` (used when twf_use_account_pool=true)
   TWF_CODEX_CMD_CONFIG  Default: scripts/twf_config.yaml (model + model_reasoning_effort + twf_state_dir_mode)
   TWF_CODEX_CMD       Override full codex command (forwarded to codex_up_tmux.sh)
+  CLAUDE_CONFIG_DIR    Optional Claude config dir (affects Claude session storage; default: ~/.claude)
 USAGE
 }
 
@@ -719,10 +720,19 @@ start_worker() {
   local base="$1"
   shift || true
 
+  local provider="codex"
   local cli_profile=""
   local up_args=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --provider|--cli)
+        provider="${2:-}"
+        shift 2
+        ;;
+      --provider=*|--cli=*)
+        provider="${1#*=}"
+        shift
+        ;;
       -p|--profile)
         cli_profile="${2:-}"
         shift 2
@@ -738,6 +748,19 @@ start_worker() {
     esac
   done
 
+  provider="$(echo "$provider" | tr '[:upper:]' '[:lower:]' | xargs)"
+  if [[ -z "$provider" ]]; then
+    provider="codex"
+  fi
+  if [[ "$provider" != "codex" && "$provider" != "claude" ]]; then
+    echo "❌ unknown provider: $provider (expected: codex|claude)" >&2
+    exit 1
+  fi
+  if [[ "$provider" == "claude" && -n "$cli_profile" ]]; then
+    echo "❌ --profile is codex-only (remove it or use --provider codex)" >&2
+    exit 1
+  fi
+
   local worker="$base"
   if ! is_ts_name "$base"; then
     local ts
@@ -747,6 +770,16 @@ start_worker() {
 
   local session_file="$state_dir/$worker.json"
   warn_ignored_env_overrides_once
+
+  if [[ "$provider" == "claude" ]]; then
+    local claude_session_id
+    claude_session_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+    # Always clear any inherited Codex overrides (tmux server/global env can leak these).
+    env -u TWF_CODEX_HOME_SRC -u TWF_AUTH_SRC -u TWF_CODEX_PROFILE -u TWF_PYTHON_VENV \
+      bash "$script_dir/claude_up_tmux.sh" --session "$worker" --session-file "$session_file" --claude-session-id "$claude_session_id" "${up_args[@]}" 1>&2
+    echo "$session_file"
+    return 0
+  fi
 
   local home_src
   home_src="$(get_env_override TWF_CODEX_HOME_SRC)"
@@ -800,6 +833,26 @@ start_worker() {
   echo "$session_file"
 }
 
+provider_from_session_file() {
+  local session_file="$1"
+  python3 - "$session_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+try:
+    data = json.loads(p.read_text(encoding="utf-8"))
+except Exception:
+    data = {}
+v = data.get("provider") if isinstance(data, dict) else None
+if isinstance(v, str) and v.strip():
+    print(v.strip().lower())
+else:
+    print("codex")
+PY
+}
+
 self_worker() {
   if [[ -z "${TMUX:-}" ]]; then
     echo "❌ twf self must run inside tmux" >&2
@@ -841,12 +894,23 @@ ask_worker() {
     fi
   fi
 
+  local provider
+  provider="$(provider_from_session_file "$session_file")"
+
   if [[ $# -gt 0 ]]; then
     local msg
     msg="$*"
-    python3 "$script_dir/codex_ask.py" --session-file "$session_file" "$msg"
+    if [[ "$provider" == "claude" ]]; then
+      python3 "$script_dir/claude_ask.py" --session-file "$session_file" "$msg"
+    else
+      python3 "$script_dir/codex_ask.py" --session-file "$session_file" "$msg"
+    fi
   else
-    python3 "$script_dir/codex_ask.py" --session-file "$session_file"
+    if [[ "$provider" == "claude" ]]; then
+      python3 "$script_dir/claude_ask.py" --session-file "$session_file"
+    else
+      python3 "$script_dir/codex_ask.py" --session-file "$session_file"
+    fi
   fi
 }
 
@@ -868,12 +932,23 @@ send_worker() {
     fi
   fi
 
+  local provider
+  provider="$(provider_from_session_file "$session_file")"
+
   if [[ $# -gt 0 ]]; then
     local msg
     msg="$*"
-    python3 "$script_dir/codex_ask.py" --send-only --session-file "$session_file" "$msg"
+    if [[ "$provider" == "claude" ]]; then
+      python3 "$script_dir/claude_ask.py" --send-only --session-file "$session_file" "$msg"
+    else
+      python3 "$script_dir/codex_ask.py" --send-only --session-file "$session_file" "$msg"
+    fi
   else
-    python3 "$script_dir/codex_ask.py" --send-only --session-file "$session_file"
+    if [[ "$provider" == "claude" ]]; then
+      python3 "$script_dir/claude_ask.py" --send-only --session-file "$session_file"
+    else
+      python3 "$script_dir/codex_ask.py" --send-only --session-file "$session_file"
+    fi
   fi
 }
 
@@ -893,7 +968,13 @@ pend_worker() {
     exit 1
   fi
 
-  python3 "$script_dir/codex_pend.py" --session-file "$session_file" "$@"
+  local provider
+  provider="$(provider_from_session_file "$session_file")"
+  if [[ "$provider" == "claude" ]]; then
+    python3 "$script_dir/claude_pend.py" --session-file "$session_file" "$@"
+  else
+    python3 "$script_dir/codex_pend.py" --session-file "$session_file" "$@"
+  fi
 }
 
 ping_worker() {
@@ -912,7 +993,13 @@ ping_worker() {
     exit 1
   fi
 
-  python3 "$script_dir/codex_ping.py" --session-file "$session_file" "$@"
+  local provider
+  provider="$(provider_from_session_file "$session_file")"
+  if [[ "$provider" == "claude" ]]; then
+    python3 "$script_dir/claude_ping.py" --session-file "$session_file" "$@"
+  else
+    python3 "$script_dir/codex_ping.py" --session-file "$session_file" "$@"
+  fi
 }
 
 list_workers() {
@@ -961,6 +1048,9 @@ for p in state_dir.glob("*.json"):
     tmux_session = data.get("tmux_session") if isinstance(data.get("tmux_session"), str) else name
     running = tmux_running(tmux_session)
 
+    provider = data.get("provider") if isinstance(data.get("provider"), str) else "codex"
+    provider = (provider or "codex").strip().lower() or "codex"
+
     parent = data.get("parent") if isinstance(data.get("parent"), str) else ""
     is_orphan = bool(parent) and not (state_dir / f"{parent}.json").exists()
     if orphans_only and not is_orphan:
@@ -971,16 +1061,22 @@ for p in state_dir.glob("*.json"):
     if filter_mode == "stopped" and running:
         continue
 
-    current_id = data.get("codex_current_id") if isinstance(data.get("codex_current_id"), str) else ""
-    if not current_id:
-        current_id = data.get("codex_session_id") if isinstance(data.get("codex_session_id"), str) else ""
-    resume_from = data.get("codex_resume_from_id") if isinstance(data.get("codex_resume_from_id"), str) else ""
+    current_id = ""
+    resume_from = ""
+    if provider == "claude":
+        current_id = data.get("claude_session_id") if isinstance(data.get("claude_session_id"), str) else ""
+    else:
+        current_id = data.get("codex_current_id") if isinstance(data.get("codex_current_id"), str) else ""
+        if not current_id:
+            current_id = data.get("codex_session_id") if isinstance(data.get("codex_session_id"), str) else ""
+        resume_from = data.get("codex_resume_from_id") if isinstance(data.get("codex_resume_from_id"), str) else ""
 
     items.append(
         {
             "name": name,
             "mtime": p.stat().st_mtime if p.exists() else 0.0,
             "running": running,
+            "provider": provider,
             "parent": parent or None,
             "is_orphan": is_orphan,
             "current": current_id,
@@ -995,6 +1091,7 @@ for it in items:
     cur = it["current"][:8] if it["current"] else ""
     res = it["resume_from"][:8] if it["resume_from"] else ""
     extra = []
+    extra.append(f"provider={it['provider']}")
     if it["parent"]:
         extra.append(f"parent={it['parent']}")
     if it["is_orphan"]:
@@ -1087,11 +1184,18 @@ def node_line(name: str) -> str:
     tmux_session = get_str(data, "tmux_session") or name
     running = tmux_running(tmux_session)
     status = "running" if running else "stopped"
-    current_id = get_str(data, "codex_current_id") or get_str(data, "codex_session_id")
-    resume_from = get_str(data, "codex_resume_from_id")
+    provider = get_str(data, "provider") or "codex"
+    provider = provider.lower() or "codex"
+    current_id = ""
+    resume_from = ""
+    if provider == "claude":
+        current_id = get_str(data, "claude_session_id")
+    else:
+        current_id = get_str(data, "codex_current_id") or get_str(data, "codex_session_id")
+        resume_from = get_str(data, "codex_resume_from_id")
     cur = current_id[:8] if current_id else ""
     res = resume_from[:8] if resume_from else ""
-    parts = [f"[{status}]"]
+    parts = [f"[{status}]", f"provider={provider}"]
     if res:
         parts.append(f"resume_from={res}")
     if cur:
@@ -1147,8 +1251,87 @@ stop_worker() {
   local session_file
   session_file="$(resolve_session_file_or_fail "$name")"
 
+  local provider
+  provider="$(provider_from_session_file "$session_file")"
+
   lock_state
   trap 'unlock_state' RETURN
+
+  if [[ "$provider" == "claude" ]]; then
+    local meta=()
+    readarray -t meta < <(
+      python3 - "$session_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+try:
+    data = json.loads(p.read_text(encoding="utf-8"))
+except Exception:
+    data = {}
+
+def get_str(key: str) -> str:
+    v = data.get(key)
+    return v.strip() if isinstance(v, str) else ""
+
+tmux_session = get_str("tmux_session") or p.stem
+sid = get_str("claude_session_id")
+log_path = get_str("claude_session_path")
+
+print(tmux_session)
+print(sid)
+print(log_path)
+PY
+    )
+
+    local tmux_session="${meta[0]:-}"
+    local sid="${meta[1]:-}"
+    local log_path="${meta[2]:-}"
+    if [[ -z "$tmux_session" ]]; then
+      tmux_session="$name"
+    fi
+
+    if tmux has-session -t "$tmux_session" >/dev/null 2>&1; then
+      tmux kill-session -t "$tmux_session" >/dev/null 2>&1 || true
+      echo "🛑 stopped tmux session: $tmux_session" >&2
+    else
+      echo "ℹ️  tmux session not running: $tmux_session" >&2
+    fi
+
+    local now
+    now="$(now_human)"
+    python3 - "$session_file" "$now" "$log_path" "$sid" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+now = sys.argv[2]
+log_path = sys.argv[3] or None
+sid = sys.argv[4] or None
+
+try:
+    data = json.loads(p.read_text(encoding="utf-8"))
+except Exception:
+    data = {}
+
+data["active"] = False
+data["stopped_at"] = now
+if log_path:
+    data["claude_session_path"] = log_path
+if sid:
+    data["claude_session_id"] = sid
+
+tmp = p.with_suffix(p.suffix + ".tmp")
+tmp.parent.mkdir(parents=True, exist_ok=True)
+tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+tmp.replace(p)
+PY
+
+    reset_account_pool_state_if_all_stopped || true
+    return 0
+  fi
 
   local meta=()
   readarray -t meta < <(
@@ -1253,6 +1436,94 @@ resume_worker_inner() {
     return 0
   fi
   TWF_RESUME_VISITED["$full_name"]=1
+
+  local provider
+  provider="$(provider_from_session_file "$session_file")"
+  if [[ "$provider" == "claude" ]]; then
+    local meta=()
+    readarray -t meta < <(
+      python3 - "$session_file" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+try:
+    data = json.loads(p.read_text(encoding="utf-8"))
+except Exception:
+    data = {}
+
+def get_str(key: str) -> str:
+    v = data.get(key)
+    return v.strip() if isinstance(v, str) else ""
+
+tmux_session = get_str("tmux_session") or p.stem
+work_dir = get_str("work_dir") or os.getcwd()
+claude_config_dir = get_str("claude_config_dir")
+claude_session_id = get_str("claude_session_id")
+
+children = data.get("children")
+if not isinstance(children, list):
+    children = []
+children = [c.strip() for c in children if isinstance(c, str) and c.strip()]
+
+print(tmux_session)
+print(work_dir)
+print(claude_config_dir)
+print(claude_session_id)
+print("\n".join(children))
+PY
+    )
+
+    local tmux_session="${meta[0]:-}"
+    local work_dir="${meta[1]:-$PWD}"
+    local claude_config_dir="${meta[2]:-}"
+    local claude_session_id="${meta[3]:-}"
+    if [[ -z "$tmux_session" ]]; then
+      tmux_session="$full_name"
+    fi
+    if [[ -z "$claude_session_id" ]]; then
+      echo "❌ claude_session_id missing in state: $session_file" >&2
+      exit 1
+    fi
+
+    local env_args=()
+    if [[ -n "$claude_config_dir" ]]; then
+      env_args+=("CLAUDE_CONFIG_DIR=$claude_config_dir")
+    fi
+
+    env "${env_args[@]}" bash "$script_dir/claude_up_tmux.sh" --resume --session "$tmux_session" --session-file "$session_file" --work-dir "$work_dir" --claude-session-id "$claude_session_id" 1>&2
+
+    if [[ "$tree" != "true" ]]; then
+      return 0
+    fi
+
+    local child
+    for child in "${meta[@]:4}"; do
+      [[ -n "$child" ]] || continue
+
+      local resolved="$child"
+      if ! is_ts_name "$child"; then
+        local sf
+        sf="$(latest_session_file "$child" 2>/dev/null || true)"
+        if [[ -z "$sf" ]]; then
+          echo "⚠️  child state missing, skipping: $child" >&2
+          continue
+        fi
+        resolved="$(basename "$sf" .json)"
+      else
+        if [[ ! -f "$state_dir/$child.json" ]]; then
+          echo "⚠️  child state missing, skipping: $child" >&2
+          continue
+        fi
+      fi
+
+      resume_worker_inner "$resolved" "true"
+    done
+
+    return 0
+  fi
 
   local meta=()
   readarray -t meta < <(
@@ -2078,17 +2349,20 @@ def get_str(key: str) -> str:
     return v if isinstance(v, str) else ""
 
 tmux_session = get_str("tmux_session") or p.stem
+provider = (get_str("provider") or "codex").strip().lower() or "codex"
 codex_home = get_str("codex_home")
 parent = get_str("parent")
 print(tmux_session)
+print(provider)
 print(codex_home)
 print(parent)
 PY
     )
 
     local tmux_session="${meta[0]:-$node}"
-    local codex_home="${meta[1]:-}"
-    local parent="${meta[2]:-}"
+    local provider="${meta[1]:-codex}"
+    local codex_home="${meta[2]:-}"
+    local parent="${meta[3]:-}"
 
     if tmux has-session -t "$tmux_session" >/dev/null 2>&1; then
       tmux kill-session -t "$tmux_session" >/dev/null 2>&1 || true
@@ -2097,7 +2371,7 @@ PY
       echo "ℹ️  tmux session not running: $tmux_session" >&2
     fi
 
-    if [[ -n "$codex_home" ]]; then
+    if [[ "$provider" == "codex" && -n "$codex_home" ]]; then
       local base_default="$HOME/.codex-workers"
       local base_env="${TWF_WORKERS_DIR:-$base_default}"
       local ok="false"

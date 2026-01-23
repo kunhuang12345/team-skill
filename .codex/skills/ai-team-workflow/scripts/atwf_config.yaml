@@ -31,6 +31,14 @@ codex:
   # Recommended: absolute path. Example: "/root/.virtualenvs/uxbot"
   python_venv: ""
 
+# Claude Code CLI defaults (optional)
+claude:
+  # Base Claude command (without --session-id / --resume; twf manages session selection).
+  cmd: "claude"
+
+  # Extra args for Claude (optional). Example: "--model sonnet".
+  args: ""
+
 # tmux-workflow (twf): worker lifecycle + auth/account-pool integration
 twf:
   # Worker state directory (where twf writes its worker state JSON files)

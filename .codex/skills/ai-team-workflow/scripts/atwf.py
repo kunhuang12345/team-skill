@@ -3641,6 +3641,30 @@ def _spawn_worker(twf: Path, *, parent_full: str, child_base: str, up_args: list
     return full, session_path
 
 
+def _normalize_provider(raw: Any, *, default: str = "") -> str:
+    v = str(raw or "").strip().lower()
+    if not v:
+        v = str(default or "").strip().lower()
+    if not v:
+        return ""
+    if v not in {"codex", "claude"}:
+        raise SystemExit(f"❌ unknown provider: {v} (expected: codex|claude)")
+    return v
+
+
+def _provider_from_state_file(state_file: Path | None) -> str:
+    if not state_file:
+        return "codex"
+    try:
+        data = _read_json(state_file)
+    except SystemExit as e:
+        _eprint(f"⚠️ failed to read provider from state_file: {state_file} ({e})")
+        return "codex"
+    v = data.get("provider")
+    provider = str(v).strip().lower() if isinstance(v, str) else ""
+    return provider if provider in {"codex", "claude"} else "codex"
+
+
 def _bootstrap_worker(
     twf: Path,
     *,
@@ -3725,6 +3749,8 @@ def cmd_up(args: argparse.Namespace) -> int:
     base = _base_name(role, args.label)
 
     up_args: list[str] = []
+    provider = _normalize_provider(getattr(args, "provider", "codex"), default="codex")
+    up_args += ["--provider", provider]
     work_dir = str(getattr(args, "work_dir", "") or "").strip()
     if work_dir:
         up_args += ["--work-dir", work_dir]
@@ -3797,6 +3823,14 @@ def cmd_spawn(args: argparse.Namespace) -> int:
         )
 
     up_args: list[str] = []
+    requested_provider = _normalize_provider(getattr(args, "provider", ""), default="")
+    if requested_provider:
+        provider = requested_provider
+    else:
+        parent_state_file_raw = str(parent_m.get("state_file") or "").strip() if isinstance(parent_m, dict) else ""
+        parent_state_file = _expand_path(parent_state_file_raw) if parent_state_file_raw else None
+        provider = _provider_from_state_file(parent_state_file)
+    up_args += ["--provider", provider]
     work_dir = str(getattr(args, "work_dir", "") or "").strip()
     if work_dir:
         up_args += ["--work-dir", work_dir]
@@ -3849,6 +3883,7 @@ def cmd_spawn_self(args: argparse.Namespace) -> int:
         role=args.role,
         label=args.label,
         scope=args.scope,
+        provider=getattr(args, "provider", ""),
         no_bootstrap=args.no_bootstrap,
         work_dir=getattr(args, "work_dir", ""),
     )
@@ -7541,6 +7576,7 @@ def build_parser() -> argparse.ArgumentParser:
     up.add_argument("role")
     up.add_argument("label", nargs="?")
     up.add_argument("--scope", default="")
+    up.add_argument("--provider", choices=("codex", "claude"), default="codex", help="worker provider (default: codex)")
     up.add_argument("--work-dir", default="", help="start worker in this directory (passed to twf/codex_up_tmux.sh)")
     up.add_argument("--no-bootstrap", action="store_true")
 
@@ -7549,6 +7585,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("role")
     sp.add_argument("label", nargs="?")
     sp.add_argument("--scope", default="")
+    sp.add_argument("--provider", choices=("codex", "claude"), default="", help="worker provider (default: inherit from parent)")
     sp.add_argument("--work-dir", default="", help="start worker in this directory (passed to twf/codex_up_tmux.sh)")
     sp.add_argument("--no-bootstrap", action="store_true")
 
@@ -7556,6 +7593,7 @@ def build_parser() -> argparse.ArgumentParser:
     sps.add_argument("role")
     sps.add_argument("label", nargs="?")
     sps.add_argument("--scope", default="")
+    sps.add_argument("--provider", choices=("codex", "claude"), default="", help="worker provider (default: inherit from parent)")
     sps.add_argument("--work-dir", default="", help="start worker in this directory (passed to twf/codex_up_tmux.sh)")
     sps.add_argument("--no-bootstrap", action="store_true")
 

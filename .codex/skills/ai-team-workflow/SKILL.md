@@ -166,9 +166,9 @@ For design conflicts or merge conflicts within a subtree:
 
 All commands are wrappers around `twf` plus registry management:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf init ["task"] [--task-file PATH] [--registry-only]`
-- `bash .codex/skills/ai-team-workflow/scripts/atwf up <role> [label] --scope "..." [--work-dir DIR]` (root_role only; start + register + bootstrap)
-- `bash .codex/skills/ai-team-workflow/scripts/atwf spawn <parent-full> <role> [label] --scope "..." [--work-dir DIR]` (spawn child + register + bootstrap)
-- `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self <role> [label] --scope "..." [--work-dir DIR]` (inside tmux; uses current worker as parent)
+- `bash .codex/skills/ai-team-workflow/scripts/atwf up <role> [label] --scope "..." [--provider codex|claude] [--work-dir DIR]` (root_role only; start + register + bootstrap)
+- `bash .codex/skills/ai-team-workflow/scripts/atwf spawn <parent-full> <role> [label] --scope "..." [--provider codex|claude] [--work-dir DIR]` (spawn child + register + bootstrap)
+- `bash .codex/skills/ai-team-workflow/scripts/atwf spawn-self <role> [label] --scope "..." [--provider codex|claude] [--work-dir DIR]` (inside tmux; uses current worker as parent)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf parent <name|full>`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf parent-self`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf children <name|full>`

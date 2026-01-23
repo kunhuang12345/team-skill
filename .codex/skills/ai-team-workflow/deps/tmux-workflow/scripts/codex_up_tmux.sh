@@ -477,6 +477,7 @@ data = load_json(session_file)
 
 data.update(
     {
+        "provider": "codex",
         "terminal": "tmux",
         "tmux_session": tmux_session,
         "tmux_target": tmux_target,

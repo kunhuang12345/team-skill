@@ -30,6 +30,13 @@ codex:
   # so `python/pip` executed by Codex uses this venv.
   python_venv: ""
 
+claude:
+  # Base Claude command (without --session-id / --resume; twf manages session selection).
+  cmd: "claude"
+
+  # Extra args for Claude (optional). Example: "--model sonnet".
+  args: ""
+
 twf:
   # Worker state directory (where twf writes its worker state JSON files)
   state_dir:

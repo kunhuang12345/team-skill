@@ -7,13 +7,15 @@ description: Portable tmux-based workflow to drive one or multiple long-running 
 
 This skill is a self-contained toolkit under `scripts/` (copy this whole folder to any repo’s `.codex/skills/` or to `~/.codex/skills/`).
 
-## Quick start (Claude → Codex)
+## Quick start (multi-provider)
 
 1. (Optional) Check deps:
    - `bash .codex/skills/ai-team-workflow/deps/tmux-workflow/scripts/check_deps.sh`
 2. Start a worker and ask with short names (state directory is configurable; default is `<skill_root>/.twf/`):
    - `bash .codex/skills/ai-team-workflow/deps/tmux-workflow/scripts/twf codex-a`
    - `bash .codex/skills/ai-team-workflow/deps/tmux-workflow/scripts/twf codex-a "你好"`
+   - Claude worker: `bash .codex/skills/ai-team-workflow/deps/tmux-workflow/scripts/twf up claude-a --provider claude`
+   - Ask Claude: `bash .codex/skills/ai-team-workflow/deps/tmux-workflow/scripts/twf ask claude-a "你好"`
 
 ## Scripts
 
@@ -21,8 +23,12 @@ This skill is a self-contained toolkit under `scripts/` (copy this whole folder 
 - `scripts/codex_ask.py`: inject text into the tmux pane and poll Codex `sessions/*.jsonl` until the next assistant reply appears.
 - `scripts/codex_pend.py`: print the latest reply (or last N Q/A pairs) from the bound or auto-detected Codex log.
 - `scripts/codex_ping.py`: health check for tmux worker and log binding.
+- `scripts/claude_up_tmux.sh`: start/reuse a Claude Code CLI worker in tmux and write its state JSON.
+- `scripts/claude_ask.py`: inject text into the Claude pane and poll `~/.claude/projects/<key>/<session-id>.jsonl` for the next reply (uses `TWF_DONE:` marker protocol).
+- `scripts/claude_pend.py`: print latest Claude reply (or last N Q/A pairs) from the bound session log.
+- `scripts/claude_ping.py`: health check for tmux Claude worker and log binding.
 - `scripts/sync_codex_home.py`: sync `~/.codex` into a per-worker `CODEX_HOME` (excludes `sessions/`, `log/`, `history.jsonl`).
-- `scripts/twf`: recommended wrapper for managing many workers: `up/ask/pend/ping/stop/resume/spawn/tree/list/remove` with automatic naming and “pick latest” behavior.
+- `scripts/twf`: recommended wrapper for managing many workers (Codex/Claude): `up/ask/pend/ping/stop/resume/spawn/tree/list/remove` with automatic naming and “pick latest” behavior.
 - `scripts/install_claude_cmds.sh` (optional): install Claude custom commands (`/cask`, `/cpend`, `/cping`) that call this skill’s scripts.
 
 ## Recommended usage (`twf`)
