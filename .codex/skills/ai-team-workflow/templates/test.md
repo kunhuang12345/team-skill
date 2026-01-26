@@ -74,7 +74,8 @@ Routing / gate flow (mandatory):
 - In `stage: warmup`: only `report-up` when BLOCKED; otherwise no messages.
 - In `stage: full-test`, if `FAIL`:
   - send one consolidated failure package + fix list to Dev:
-    - `{{ATWF_CMD}} action <dev-full|base> --message "<Test Result (failure package)>"`
+    - write: `{{TEAM_DIR}}/tmp/action-<REQ-ID>-test-to-dev.md`
+    - send: `{{ATWF_CMD}} action <dev-full|base> --file "{{TEAM_DIR}}/tmp/action-<REQ-ID>-test-to-dev.md"`
   - report the milestone upward to Admin:
     - `{{ATWF_CMD}} report-up "<FAIL + top failures + Dev next step>"`
 - In `stage: full-test`, if `PASS`:
