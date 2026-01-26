@@ -64,7 +64,7 @@ It records, per worker:
 
 Within the same share dir as `registry.json`, this skill also standardizes:
 - Shared task: `share/task.md` (written by `atwf init ...`)
-- Coordinator user-facing log: `share/to_user.md` (append-only)
+- Coordinator user-facing log: `share/to_user.md` (append-only; write via `atwf to-user` / `atwf to-user-from-inbox`)
 - Ops environment docs:
   - `share/ops/env.md`
   - `share/ops/host-deps.md` (records any host-level installs like `apt`/`curl` downloads)
@@ -177,6 +177,8 @@ All commands are wrappers around `twf` plus registry management:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf report-to <full|base|role> ["message"]` (inside tmux; stdin supported)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf list`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf where`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf to-user --req-id <REQ-ID> --type <...> --need-you "..." --summary "..." [--links "..."]`
+- `bash .codex/skills/ai-team-workflow/scripts/atwf to-user-from-inbox <msg-id> --type <...> --need-you "..."`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf policy`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf perms-self`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf tree [root]`
