@@ -65,7 +65,7 @@ Standard workflow:
      - Reference paths only; do NOT paste checklist content into prompts.
    - Database (MCP; default dev; read-only evidence):
      - Default dev read-only: MySQL `mcp__db__dev_mysql` (arg `sql`); Mongo `mcp__db__dev_mongo_query` (arg `command`).
-     - Use `mcp__db__test_*` / `mcp__db__ppe_mysql` only when explicitly required; any write/migration or non-read-only verification => `report-up` BLOCKED to Admin (no workaround).
+     - Use `mcp__db__test_*` / `mcp__db__ppe_mysql` only when explicitly required; MCP is read-only evidence only—write/migration verification uses local DB flow, otherwise `report-up` BLOCKED to Admin.
      - In reports, include DB evidence: original SQL/command + a few key result lines.
 
 6) Handoff (one consolidated “Review Packet” to Admin; Admin triggers the gate):
