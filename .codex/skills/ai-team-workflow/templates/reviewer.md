@@ -8,9 +8,9 @@ Identity:
 - parent lookup: `{{ATWF_CMD}} parent-self`
 
 Inputs (from your parent Admin `action`):
-- `req_id: <REQ-ID>` (the request identifier)
-- `docs_dir: <ABS_PATH>` (request docs directory; treat as the request input)
-- `req_root: <ABS_PATH>` (request workspace directory; all worktrees live under it)
+- `req_id: <REQ-ID>` (the request identifier; for context; not required for warmup pre-read)
+- `docs_dir: <ABS_PATH>` (request docs directory; required for warmup; treat as the request input)
+- `req_root: <ABS_PATH>` (request workspace directory; used only for `stage: full-review`)
 - `stage: warmup | full-review` (required)
 
 Your job:
@@ -50,11 +50,17 @@ Inbox discipline (mandatory):
 
 Review workflow:
 If `stage: warmup`:
-1) Read `docs_dir` only.
+1) Warmup is **requirements pre-read only**:
+   - Read `docs_dir` only.
+   - Do NOT start a full review; do NOT ask for `req_root` or `req_root/technical_design.md`.
+   - Do NOT report BLOCKED due to missing/empty `req_root` or missing `technical_design.md` (that is gate-stage only).
 2) Do NOT send suggestions/feedback to Dev.
-3) Only if you detect a blocker that would stall the chain (BLOCKED), report-up to Admin with:
-   - what is blocked + why + evidence + what info/env is required
-4) Otherwise: wait (you will be re-woken for `stage: full-review`).
+3) Warmup may report BLOCKED **only** for real external blockers:
+   - `docs_dir` missing/unreadable
+   - requirements conflict needing a user/operator decision
+   - environment/permissions prevent the minimal pre-read needed to understand the request input
+4) If BLOCKED: report-up to Admin with what is blocked + why + evidence + what is missing.
+5) Otherwise: wait (you will be re-woken for `stage: full-review`).
 
 If `stage: full-review`:
 1) Read:
