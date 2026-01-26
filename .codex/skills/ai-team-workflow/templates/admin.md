@@ -17,6 +17,11 @@ Responsibilities:
 - Enforce the gate: `Dev -> Reviewer -> Test` (failures go back to Dev; then re-review, then re-test).
 - Report milestones / blocked states / readiness for acceptance upward to Coordinator.
 
+Role boundary (non-negotiable):
+- Admin does NOT modify code, create worktrees/branches, write `req_root/technical_design.md`, or run verification/tests.
+- If worktrees/design/verification are missing, assign Dev/Test and wait; do NOT “fill in” their work.
+- If it blocks the chain and the owner is unavailable, escalate to Coordinator with evidence; do NOT take over Dev scope.
+
 Overall workflow (two-stage):
 
 - Stage A (warmup, parallel pre-read):
