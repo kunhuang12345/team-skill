@@ -1006,6 +1006,230 @@ def cmd_where(_: argparse.Namespace) -> int:
     print(str(registry))
     return 0
 
+_TO_USER_TYPES = ("status_update", "decision_needed", "risk_change", "awaiting_acceptance")
+_REQ_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def _to_user_path(team_dir: Path) -> Path:
+    return team_dir / "to_user.md"
+
+
+def _split_bullets(raw: str, *, max_items: int) -> list[str]:
+    out: list[str] = []
+    for line in (raw or "").splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        for prefix in ("- ", "* ", "• "):
+            if s.startswith(prefix):
+                s = s[len(prefix) :].strip()
+                break
+        if s:
+            out.append(s)
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def _ensure_to_user_seed(path: Path) -> None:
+    if path.exists():
+        try:
+            if path.stat().st_size > 0:
+                return
+        except OSError:
+            return
+    seed = (
+        "# User-facing Log\n\n"
+        "Coordinator appends short user-facing entries here (append-only).\n"
+        "Separate entries with `---`.\n"
+    )
+    _write_text_atomic(path, seed)
+
+
+def _require_root_actor(policy: TeamPolicy, member: dict[str, Any], *, actor_full: str) -> None:
+    role = _member_role(member)
+    if role != policy.root_role:
+        raise SystemExit(f"❌ only root_role can write to_user.md: expected {policy.root_role}, got {role or '(missing)'} ({actor_full})")
+
+
+def _render_to_user_entry(
+    *,
+    req_id: str,
+    entry_type: str,
+    summary_lines: list[str],
+    need_you: str,
+    links_lines: list[str],
+) -> str:
+    req_id = req_id.strip()
+    if not req_id:
+        raise SystemExit("❌ --req-id is required (or use: multi)")
+    if not _REQ_ID_RE.match(req_id) and req_id != "multi":
+        raise SystemExit("❌ invalid --req-id: {!r} (allowed: [a-zA-Z0-9_-]+ or 'multi')".format(req_id))
+
+    entry_type = entry_type.strip()
+    if entry_type not in _TO_USER_TYPES:
+        raise SystemExit(f"❌ invalid --type: {entry_type!r} (allowed: {', '.join(_TO_USER_TYPES)})")
+
+    clean_summary = [s.strip() for s in summary_lines if str(s).strip()]
+    if not clean_summary:
+        raise SystemExit("❌ summary is required (pass --summary or pipe via stdin)")
+    if len(clean_summary) > 5:
+        raise SystemExit("❌ summary must be 1–5 bullets (too many lines)")
+
+    need_you_s = " ".join(str(need_you or "").split())
+    if not need_you_s:
+        raise SystemExit("❌ --need-you is required (one explicit sentence)")
+
+    clean_links = [s.strip() for s in links_lines if str(s).strip()]
+    if not clean_links:
+        clean_links = ["(none)"]
+
+    lines: list[str] = []
+    lines.append(f"time: {_now()}")
+    lines.append(f"req_id: {req_id}")
+    lines.append(f"type: {entry_type}")
+    lines.append("summary:")
+    for s in clean_summary:
+        lines.append(f"- {s}")
+    lines.append(f"need_you: {need_you_s}")
+    lines.append("links:")
+    for s in clean_links:
+        lines.append(f"- {s}")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _append_to_user(team_dir: Path, *, text: str) -> Path:
+    team_dir.mkdir(parents=True, exist_ok=True)
+    path = _to_user_path(team_dir)
+    lock = team_dir / ".lock"
+    with _locked(lock):
+        _ensure_to_user_seed(path)
+
+        needs_newline = False
+        try:
+            if path.stat().st_size > 0:
+                with open(path, "rb") as f:
+                    f.seek(-1, os.SEEK_END)
+                    needs_newline = f.read(1) != b"\n"
+        except OSError:
+            needs_newline = True
+
+        with open(path, "a", encoding="utf-8") as f:
+            if needs_newline:
+                f.write("\n")
+            f.write("---\n")
+            f.write(text.rstrip())
+            f.write("\n")
+    return path
+
+
+def cmd_to_user(args: argparse.Namespace) -> int:
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+    policy = _policy()
+
+    actor_full = _resolve_actor_full(data, as_target=getattr(args, "as_target", None))
+    actor_m = _resolve_member(data, actor_full)
+    if not actor_m:
+        raise SystemExit(f"❌ actor not found in registry: {actor_full}")
+    _require_root_actor(policy, actor_m, actor_full=actor_full)
+
+    req_id = str(getattr(args, "req_id", "") or "").strip()
+    entry_type = str(getattr(args, "type", "") or "").strip()
+    need_you = str(getattr(args, "need_you", "") or "").strip()
+
+    summary_raw = _read_optional_message(args, attr="summary")
+    summary_lines = _split_bullets(summary_raw, max_items=6)
+
+    links_raw = str(getattr(args, "links", "") or "")
+    links_lines = _split_bullets(links_raw, max_items=20)
+
+    entry = _render_to_user_entry(
+        req_id=req_id,
+        entry_type=entry_type,
+        summary_lines=summary_lines,
+        need_you=need_you,
+        links_lines=links_lines,
+    )
+    path = _append_to_user(team_dir, text=entry)
+    print(str(path))
+    return 0
+
+
+_GIT_SHA_RE = re.compile(r"\b[0-9a-f]{7,40}\b")
+_REQ_ID_LINE_RE = re.compile(r"\breq[_-]?id\s*:\s*([a-zA-Z0-9_-]+)\b", re.IGNORECASE)
+
+
+def _extract_req_id_from_inbox(*, policy: TeamPolicy, from_base: str, body_lines: list[str]) -> str:
+    for line in body_lines[:80]:
+        m = _REQ_ID_LINE_RE.search(line)
+        if m:
+            return m.group(1).strip()
+
+    for role in sorted(policy.enabled_roles):
+        prefix = f"{role}-"
+        if from_base.startswith(prefix) and len(from_base) > len(prefix):
+            return from_base[len(prefix) :].strip() or "multi"
+    return "multi"
+
+
+def cmd_to_user_from_inbox(args: argparse.Namespace) -> int:
+    team_dir = _default_team_dir()
+    registry = _registry_path(team_dir)
+    data = _load_registry(registry)
+    policy = _policy()
+
+    actor_full = _resolve_actor_full(data, as_target=getattr(args, "as_target", None))
+    actor_m = _resolve_member(data, actor_full)
+    if not actor_m:
+        raise SystemExit(f"❌ actor not found in registry: {actor_full}")
+    _require_root_actor(policy, actor_m, actor_full=actor_full)
+    to_base = _member_base(actor_m) or actor_full
+
+    msg_id = str(getattr(args, "msg_id", "") or "").strip()
+    if not msg_id:
+        raise SystemExit("❌ msg_id is required")
+
+    hit = _find_inbox_message_file(team_dir, to_base=to_base, msg_id=msg_id)
+    if not hit:
+        raise SystemExit(f"❌ message not found in inbox: {msg_id}")
+    _state, from_base, path = hit
+    content = path.read_text(encoding="utf-8", errors="ignore")
+    lines = content.splitlines()
+
+    sep_idx = next((i for i, s in enumerate(lines) if s.strip() == "---"), None)
+    body_lines = lines[sep_idx + 1 :] if isinstance(sep_idx, int) else lines
+    report_sep = next((i for i, s in enumerate(body_lines) if s.strip() == "---"), None)
+    report_body_lines = body_lines[report_sep + 1 :] if isinstance(report_sep, int) else body_lines
+
+    req_id = str(getattr(args, "req_id", "") or "").strip() or _extract_req_id_from_inbox(
+        policy=policy,
+        from_base=from_base,
+        body_lines=report_body_lines,
+    )
+    entry_type = str(getattr(args, "type", "") or "").strip()
+    need_you = str(getattr(args, "need_you", "") or "").strip()
+
+    bullet_lines = _split_bullets("\n".join(report_body_lines), max_items=6)
+    summary_lines = bullet_lines[:5] if bullet_lines else [f"inbox report {msg_id} from {from_base}"]
+
+    links: list[str] = [f"inbox_msg_id: {msg_id}", f"from: {from_base}"]
+    for sha in _GIT_SHA_RE.findall(content):
+        links.append(f"commit: {sha}")
+    links.append(f"inbox_file: {path}")
+
+    entry = _render_to_user_entry(
+        req_id=req_id,
+        entry_type=entry_type,
+        summary_lines=summary_lines,
+        need_you=need_you,
+        links_lines=links,
+    )
+    out_path = _append_to_user(team_dir, text=entry)
+    print(str(out_path))
+    return 0
+
 def cmd_templates_check(_: argparse.Namespace) -> int:
     issues = _template_lint_issues()
     if issues:
@@ -4173,6 +4397,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("where", help="print resolved shared dirs (team_dir + registry)")
 
+    to_user = sub.add_parser("to-user", help="append a user-facing entry to share/to_user.md (root_role only)")
+    to_user.add_argument("--req-id", required=True, help="request id (or 'multi')")
+    to_user.add_argument("--type", required=True, choices=_TO_USER_TYPES, help="entry type")
+    to_user.add_argument("--summary", default="", help="summary bullets (if omitted, read stdin)")
+    to_user.add_argument("--need-you", required=True, help="one explicit sentence for the user/operator")
+    to_user.add_argument("--links", default="", help="links/paths (one per line; optional)")
+    to_user.add_argument("--as", dest="as_target", default=None, help="actor (full|base|role); required outside tmux")
+
+    tufi = sub.add_parser("to-user-from-inbox", help="append a user-facing entry from an inbox message (root_role only)")
+    tufi.add_argument("msg_id", help="inbox msg id (e.g. 000049)")
+    tufi.add_argument("--type", required=True, choices=_TO_USER_TYPES, help="entry type")
+    tufi.add_argument("--need-you", required=True, help="one explicit sentence for the user/operator")
+    tufi.add_argument("--req-id", default="", help="override request id (default: infer from report/from_base)")
+    tufi.add_argument("--as", dest="as_target", default=None, help="actor (full|base|role); required outside tmux")
+
     sub.add_parser("templates-check", help="validate templates/config portability ({{ATWF_CMD}}/{{ATWF_CONFIG}})")
 
     sub.add_parser("policy", help="print resolved team policy (hard constraints)")
@@ -4429,6 +4668,10 @@ def main(argv: list[str]) -> int:
         return cmd_list(args)
     if args.cmd == "where":
         return cmd_where(args)
+    if args.cmd == "to-user":
+        return cmd_to_user(args)
+    if args.cmd == "to-user-from-inbox":
+        return cmd_to_user_from_inbox(args)
     if args.cmd == "templates-check":
         return cmd_templates_check(args)
     if args.cmd == "policy":
