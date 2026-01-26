@@ -124,3 +124,42 @@ class ActionFileTests(unittest.TestCase):
                 self.assertEqual(rc, 0)
             finally:
                 os.environ.pop("AITWF_DIR", None)
+
+    def test_action_stage_rejects_placeholders_and_relative_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            team_dir = Path(td)
+            _write_registry(team_dir)
+
+            os.environ["AITWF_DIR"] = str(team_dir)
+            try:
+                args_relative = SimpleNamespace(
+                    targets=["dev-REQ-1"],
+                    role=None,
+                    subtree=None,
+                    include_excluded=False,
+                    notify=False,
+                    as_target="admin-REQ-1",
+                    message="stage: warmup\nreq_id: REQ-1\ndocs_dir: ./docs\nreq_root: /tmp/x\n",
+                    message_file=None,
+                )
+                with self.assertRaises(SystemExit):
+                    with redirect_stdout(io.StringIO()):
+                        cli_main.cmd_action(args_relative)  # type: ignore[arg-type]
+                self.assertEqual(list((team_dir / "inbox").rglob("*.md")), [])
+
+                args_placeholder = SimpleNamespace(
+                    targets=["dev-REQ-1"],
+                    role=None,
+                    subtree=None,
+                    include_excluded=False,
+                    notify=False,
+                    as_target="admin-REQ-1",
+                    message="stage: warmup\nreq_id: REQ-1\ndocs_dir: /tmp/docs\nreq_root: ${REQ_ROOT}\n",
+                    message_file=None,
+                )
+                with self.assertRaises(SystemExit):
+                    with redirect_stdout(io.StringIO()):
+                        cli_main.cmd_action(args_placeholder)  # type: ignore[arg-type]
+                self.assertEqual(list((team_dir / "inbox").rglob("*.md")), [])
+            finally:
+                os.environ.pop("AITWF_DIR", None)
