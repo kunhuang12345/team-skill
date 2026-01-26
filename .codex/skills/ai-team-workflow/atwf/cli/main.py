@@ -29,6 +29,7 @@ from ..infra.deps import _apply_deps_env_defaults, _cap_state_file_path
 from ..workflows.drive import _drive_message_body, _drive_message_summary
 from ..state.inbox import (
     _find_inbox_message_file,
+    _has_unread_bootstrap,
     _inbox_enforce_unread_limit_unlocked,
     _inbox_list_msgs,
     _inbox_member_dir,
@@ -213,6 +214,31 @@ def _require_abs_concrete_path(*, field: str, value: str) -> None:
         raise SystemExit(f"❌ stage action `{field}` must not contain placeholders ($, ~): {v!r}")
     if not v.startswith("/"):
         raise SystemExit(f"❌ stage action `{field}` must be an absolute path: {v!r}")
+
+
+def _require_bootstrap_read_or_die(team_dir: Path, data: dict[str, Any]) -> None:
+    """
+    Worker-side gate: block message/report commands until the worker has opened
+    (and thus auto-marked read) their bootstrap inbox message.
+    """
+    self_full = _tmux_self_full()
+    if not self_full:
+        return
+    self_m = _resolve_member(data, self_full)
+    if not self_m:
+        return
+    base = _member_base(self_m) or self_full
+    has, msg_id = _has_unread_bootstrap(team_dir, to_base=base)
+    if not has:
+        return
+    atwf_cmd = _atwf_cmd()
+    cmd = f"{atwf_cmd} inbox-open {msg_id}" if msg_id else f"{atwf_cmd} inbox"
+    raise SystemExit(
+        "❌ bootstrap not read: you must open your role template before sending team messages.\n"
+        f"   run: {cmd}\n"
+        "   (inbox-open on self auto-marks read)"
+    )
+
 
 def cmd_reset(args: argparse.Namespace) -> int:
     """
@@ -743,6 +769,7 @@ def cmd_report_up(args: argparse.Namespace) -> int:
     sender = _resolve_member(data, self_name)
     if not sender:
         raise SystemExit(f"❌ current worker not found in registry: {self_name} (run: atwf register-self ...)")
+    _require_bootstrap_read_or_die(team_dir, data)
 
     parent = sender.get("parent")
     parent_full = str(parent).strip() if isinstance(parent, str) else ""
@@ -817,6 +844,7 @@ def cmd_report_to(args: argparse.Namespace) -> int:
     sender = _resolve_member(data, self_name)
     if not sender:
         raise SystemExit(f"❌ current worker not found in registry: {self_name} (run: atwf register-self ...)")
+    _require_bootstrap_read_or_die(team_dir, data)
 
     policy = _policy()
     _require_comm_allowed(policy, data, actor_full=self_name, target_full=to_full)
@@ -1158,6 +1186,7 @@ def cmd_to_user(args: argparse.Namespace) -> int:
     registry = _registry_path(team_dir)
     data = _load_registry(registry)
     policy = _policy()
+    _require_bootstrap_read_or_die(team_dir, data)
 
     actor_full = _resolve_actor_full(data, as_target=getattr(args, "as_target", None))
     actor_m = _resolve_member(data, actor_full)
@@ -1362,6 +1391,7 @@ def cmd_handoff(args: argparse.Namespace) -> int:
     permit_exists = False
     with _locked(lock):
         data = _load_registry(registry)
+        _require_bootstrap_read_or_die(team_dir, data)
         actor_full = _resolve_actor_full(data, as_target=getattr(args, "as_target", None))
         actor_m = _resolve_member(data, actor_full)
         if not actor_m:
@@ -2354,6 +2384,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
     registry = _registry_path(team_dir)
     data = _load_registry(registry)
     policy = _policy()
+    _require_bootstrap_read_or_die(team_dir, data)
 
     actor_full = _resolve_actor_full(data, as_target=getattr(args, "as_target", None))
     actor_m = _resolve_member(data, actor_full)
@@ -2569,6 +2600,7 @@ def _cmd_intent_message(args: argparse.Namespace, *, kind: str) -> int:
     registry = _registry_path(team_dir)
     data = _load_registry(registry)
     policy = _policy()
+    _require_bootstrap_read_or_die(team_dir, data)
 
     actor_full = _resolve_actor_full(data, as_target=getattr(args, "as_target", None))
     actor_m = _resolve_member(data, actor_full)
@@ -2946,6 +2978,7 @@ def cmd_respond(args: argparse.Namespace) -> int:
     team_dir = _default_team_dir()
     registry = _registry_path(team_dir)
     data = _load_registry(registry)
+    _require_bootstrap_read_or_die(team_dir, data)
 
     actor_full = _resolve_actor_full(data, as_target=getattr(args, "as_target", None))
     actor_m = _resolve_member(data, actor_full)

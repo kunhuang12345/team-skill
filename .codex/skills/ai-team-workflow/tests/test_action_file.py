@@ -163,3 +163,55 @@ class ActionFileTests(unittest.TestCase):
                 self.assertEqual(list((team_dir / "inbox").rglob("*.md")), [])
             finally:
                 os.environ.pop("AITWF_DIR", None)
+
+    def test_action_blocked_until_bootstrap_read_in_tmux(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            team_dir = Path(td)
+            _write_registry(team_dir)
+
+            os.environ["AITWF_DIR"] = str(team_dir)
+            old_tmux = getattr(cli_main, "_tmux_self_full")
+            try:
+                # Simulate a worker tmux session.
+                cli_main._tmux_self_full = lambda: "dev-REQ-1"  # type: ignore[assignment]
+
+                # Write a bootstrap message to dev's inbox (unread).
+                boot_id = cli_main._next_msg_id(team_dir)
+                cli_main._write_inbox_message(
+                    team_dir,
+                    msg_id=boot_id,
+                    kind="bootstrap",
+                    from_full="atwf-bootstrap",
+                    from_base="atwf",
+                    from_role="system",
+                    to_full="dev-REQ-1",
+                    to_base="dev-REQ-1",
+                    to_role="dev",
+                    body="bootstrap\n",
+                )
+
+                args = SimpleNamespace(
+                    targets=["dev-REQ-1"],
+                    role=None,
+                    subtree=None,
+                    include_excluded=False,
+                    notify=False,
+                    as_target="admin-REQ-1",
+                    message="hello\n",
+                    message_file=None,
+                )
+                with self.assertRaises(SystemExit):
+                    with redirect_stdout(io.StringIO()):
+                        cli_main.cmd_action(args)  # type: ignore[arg-type]
+                self.assertEqual(len(list((team_dir / "inbox").rglob("*.md"))), 1)
+
+                # Mark bootstrap read (equivalent to inbox-open self).
+                cli_main._mark_inbox_read(team_dir, to_base="dev-REQ-1", msg_id=boot_id)
+
+                with redirect_stdout(io.StringIO()):
+                    rc = cli_main.cmd_action(args)  # type: ignore[arg-type]
+                self.assertEqual(rc, 0)
+                self.assertEqual(len(list((team_dir / "inbox").rglob("*.md"))), 2)
+            finally:
+                cli_main._tmux_self_full = old_tmux  # type: ignore[assignment]
+                os.environ.pop("AITWF_DIR", None)

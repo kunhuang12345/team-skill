@@ -174,6 +174,37 @@ def _inbox_message_created_at(team_dir: Path, *, to_base: str, msg_id: str) -> d
     return None
 
 
+def _inbox_message_kind(path: Path) -> str:
+    try:
+        head = path.read_text(encoding="utf-8", errors="ignore").splitlines()[:60]
+    except Exception:
+        return ""
+    for line in head:
+        s = line.strip()
+        if s.startswith("- kind:"):
+            return s.split(":", 1)[1].strip().strip("`")
+    return ""
+
+
+def _has_unread_bootstrap(team_dir: Path, *, to_base: str) -> tuple[bool, str]:
+    """
+    Return (has_unread_bootstrap, msg_id).
+
+    Gate is based on unread+overflow: if a bootstrap message exists outside `read/`,
+    the worker is considered to have not read their role template yet.
+    """
+    base_dir = _inbox_member_dir(team_dir, base=to_base)
+    for state in (C.INBOX_UNREAD_DIR, C.INBOX_OVERFLOW_DIR):
+        root = base_dir / state
+        if not root.is_dir():
+            continue
+        for from_dir in sorted([p for p in root.glob("from-*") if p.is_dir()]):
+            for _n, stem, p in _inbox_list_msgs(from_dir):
+                if _inbox_message_kind(p) == "bootstrap":
+                    return True, stem
+    return False, ""
+
+
 def _inbox_list_msgs(dir_path: Path) -> list[tuple[int, str, Path]]:
     if not dir_path.is_dir():
         return []
