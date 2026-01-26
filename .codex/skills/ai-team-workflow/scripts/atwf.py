@@ -524,6 +524,30 @@ _REQ_ID_FIELD_RE = re.compile(r"(?m)^[ \t]*req_id[ \t]*:[ \t]*\S")
 _DOCS_DIR_FIELD_RE = re.compile(r"(?m)^[ \t]*docs_dir[ \t]*:[ \t]*\S")
 _REQ_ROOT_FIELD_RE = re.compile(r"(?m)^[ \t]*req_root[ \t]*:[ \t]*\S")
 
+def _extract_structured_field_value(msg: str, *, field: str) -> str:
+    """
+    Extract a single-line `field: value` entry from a structured action message.
+    Returns empty string when not present.
+    """
+    s = msg or ""
+    pat = re.compile(rf"(?m)^[ \t-]*{re.escape(field)}[ \t]*:[ \t]*(.+?)\s*$")
+    m = pat.search(s)
+    if not m:
+        return ""
+    v = m.group(1).strip()
+    if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
+        v = v[1:-1].strip()
+    return v
+
+def _require_abs_concrete_path(*, field: str, value: str) -> None:
+    v = str(value or "").strip()
+    if not v:
+        raise SystemExit(f"❌ stage action missing `{field}:` value")
+    if "$" in v or "~" in v:
+        raise SystemExit(f"❌ stage action `{field}` must not contain placeholders ($, ~): {v!r}")
+    if not v.startswith("/"):
+        raise SystemExit(f"❌ stage action `{field}` must be an absolute path: {v!r}")
+
 
 def _registry_path(team_dir: Path) -> Path:
     override = os.environ.get("AITWF_REGISTRY", "").strip()
@@ -6178,12 +6202,16 @@ def _cmd_intent_message(args: argparse.Namespace, *, kind: str) -> int:
         missing: list[str] = []
         if not _REQ_ID_FIELD_RE.search(msg):
             missing.append("req_id")
-        if not _DOCS_DIR_FIELD_RE.search(msg):
+        docs_dir = _extract_structured_field_value(msg, field="docs_dir")
+        req_root = _extract_structured_field_value(msg, field="req_root")
+        if not docs_dir:
             missing.append("docs_dir")
-        if not _REQ_ROOT_FIELD_RE.search(msg):
+        if not req_root:
             missing.append("req_root")
         if missing:
             raise SystemExit("❌ stage action missing required fields: " + ", ".join(missing))
+        _require_abs_concrete_path(field="docs_dir", value=docs_dir)
+        _require_abs_concrete_path(field="req_root", value=req_root)
 
     targets, is_broadcast = _resolve_intent_targets(
         data=data,
