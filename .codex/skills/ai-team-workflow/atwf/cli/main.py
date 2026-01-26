@@ -184,6 +184,12 @@ def _read_optional_message(args: argparse.Namespace, *, attr: str) -> str:
     stdin_msg = _forward_stdin()
     return (stdin_msg or "").strip()
 
+_STAGE_KEY_RE = re.compile(r"(?m)^[ \t]*stage[ \t]*:")
+_STAGE_VALUE_RE = re.compile(r"(?m)^[ \t]*stage[ \t]*:[ \t]*\S")
+_REQ_ID_FIELD_RE = re.compile(r"(?m)^[ \t]*req_id[ \t]*:[ \t]*\S")
+_DOCS_DIR_FIELD_RE = re.compile(r"(?m)^[ \t]*docs_dir[ \t]*:[ \t]*\S")
+_REQ_ROOT_FIELD_RE = re.compile(r"(?m)^[ \t]*req_root[ \t]*:[ \t]*\S")
+
 def cmd_reset(args: argparse.Namespace) -> int:
     """
     Reset current environment by deleting all local temp/state artifacts:
@@ -2307,6 +2313,18 @@ def _forward_stdin() -> str | None:
         return None
     return sys.stdin.read()
 
+def _read_message_from_file(path: str) -> str:
+    raw = str(path or "").strip()
+    if not raw:
+        raise SystemExit("❌ --file is empty")
+    p = _expand_path(raw)
+    if not p.is_file():
+        raise SystemExit(f"❌ --file does not exist: {p}")
+    try:
+        return p.read_text(encoding="utf-8")
+    except OSError as e:
+        raise SystemExit(f"❌ failed to read --file: {p} ({e})")
+
 def cmd_ask(args: argparse.Namespace) -> int:
     team_dir = _default_team_dir()
     registry = _registry_path(team_dir)
@@ -2535,14 +2553,33 @@ def _cmd_intent_message(args: argparse.Namespace, *, kind: str) -> int:
     actor_role = _member_role(actor_m)
     actor_base = _member_base(actor_m) or actor_full
 
+    msg_file = getattr(args, "message_file", None)
     msg = getattr(args, "message", None)
+    if msg_file:
+        if msg is not None:
+            raise SystemExit("❌ use either --file or --message (not both)")
+        msg = _read_message_from_file(str(msg_file))
     if msg is None:
         msg = _forward_stdin()
     if msg is None:
-        raise SystemExit("❌ message missing (use --message or pipe via stdin)")
-    msg = str(msg).strip()
-    if not msg:
+        raise SystemExit("❌ message missing (use --file/--message or pipe via stdin)")
+    msg = str(msg).rstrip()
+    if not msg.strip():
         raise SystemExit("❌ empty message")
+    if msg.strip() == "-":
+        raise SystemExit("❌ empty message ('-' is not allowed)")
+    if kind == "action" and _STAGE_KEY_RE.search(msg):
+        if not _STAGE_VALUE_RE.search(msg):
+            raise SystemExit("❌ stage action requires a non-empty `stage:` value")
+        missing: list[str] = []
+        if not _REQ_ID_FIELD_RE.search(msg):
+            missing.append("req_id")
+        if not _DOCS_DIR_FIELD_RE.search(msg):
+            missing.append("docs_dir")
+        if not _REQ_ROOT_FIELD_RE.search(msg):
+            missing.append("req_root")
+        if missing:
+            raise SystemExit("❌ stage action missing required fields: " + ", ".join(missing))
 
     targets, is_broadcast = _resolve_intent_targets(
         data=data,
@@ -4506,11 +4543,12 @@ def build_parser() -> argparse.ArgumentParser:
     notice.add_argument("--include-excluded", action="store_true", help="include excluded roles when using --subtree")
     notice.add_argument("--notify", action="store_true", help="also inject inbox notice into recipient CLIs (discouraged)")
 
-    action = sub.add_parser("action", help="send an action/instruction (no immediate ACK; supports stdin)")
+    action = sub.add_parser("action", help="send an action/instruction (no immediate ACK; recommended: --file)")
     action.add_argument("targets", nargs="*", help="targets (full|base|role). Ignored when --role/--subtree is used.")
     action.add_argument("--role", choices=enabled_roles, help="send an action to all members of a role")
     action.add_argument("--subtree", help="send an action to all members under a root (full|base|role)")
-    action.add_argument("--message", default=None, help="message text (if omitted, read stdin)")
+    action.add_argument("--file", dest="message_file", default=None, help="read message body from a file (recommended)")
+    action.add_argument("--message", default=None, help="message text (legacy; if omitted, read stdin)")
     action.add_argument("--as", dest="as_target", default=None, help="actor (full|base|role); required outside tmux")
     action.add_argument("--include-excluded", action="store_true", help="include excluded roles when using --subtree")
     action.add_argument("--notify", action="store_true", help="also inject inbox notice into recipient CLIs (discouraged)")

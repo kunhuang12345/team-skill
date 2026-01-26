@@ -54,6 +54,9 @@ def _ops_env_notes_path(team_dir: Path) -> Path:
 def _ops_host_deps_path(team_dir: Path) -> Path:
     return _ops_dir(team_dir) / "host-deps.md"
 
+def _tmp_dir(team_dir: Path) -> Path:
+    return team_dir / "tmp"
+
 
 def _design_member_path(team_dir: Path, full: str) -> Path:
     safe = full.strip()
@@ -66,6 +69,7 @@ def _ensure_share_layout(team_dir: Path) -> None:
     team_dir.mkdir(parents=True, exist_ok=True)
     _design_dir(team_dir).mkdir(parents=True, exist_ok=True)
     _ops_dir(team_dir).mkdir(parents=True, exist_ok=True)
+    _tmp_dir(team_dir).mkdir(parents=True, exist_ok=True)
     _inbox_root(team_dir).mkdir(parents=True, exist_ok=True)
     _requests_root(team_dir).mkdir(parents=True, exist_ok=True)
     _state_root(team_dir).mkdir(parents=True, exist_ok=True)
