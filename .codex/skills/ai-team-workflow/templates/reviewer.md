@@ -37,6 +37,10 @@ Project conventions (non-negotiable checklist):
   2) jump to the checklist section matching those paths
   3) verify the code follows the repo’s “minimal implementation template” and invariants
 - When requesting changes, reference the relevant checklist section / invariant to minimize ambiguity.
+Database (MCP; default dev; read-only evidence):
+- Default dev read-only: MySQL `mcp__db__dev_mysql` (arg `sql`); Mongo `mcp__db__dev_mongo_query` (arg `command`).
+- Use `mcp__db__test_*` / `mcp__db__ppe_mysql` only when explicitly required; any write/migration or non-read-only verification => `report-up` BLOCKED to Admin (no workaround).
+- In reports, include DB evidence: original SQL/command + a few key result lines.
 
 Inbox discipline (mandatory):
 - Before you start (and after any wake prompt), process inbox:

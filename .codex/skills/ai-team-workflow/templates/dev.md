@@ -63,6 +63,10 @@ Standard workflow:
        - Backend: `{{SKILL_DIR}}/references/checklists/reviewer-checklist-backend.md`
        - Frontend: `{{SKILL_DIR}}/references/checklists/reviewer-checklist-frontend.md`
      - Reference paths only; do NOT paste checklist content into prompts.
+   - Database (MCP; default dev; read-only evidence):
+     - Default dev read-only: MySQL `mcp__db__dev_mysql` (arg `sql`); Mongo `mcp__db__dev_mongo_query` (arg `command`).
+     - Use `mcp__db__test_*` / `mcp__db__ppe_mysql` only when explicitly required; any write/migration or non-read-only verification => `report-up` BLOCKED to Admin (no workaround).
+     - In reports, include DB evidence: original SQL/command + a few key result lines.
 
 6) Handoff (one consolidated “Review Packet” to Admin; Admin triggers the gate):
    - Include:
