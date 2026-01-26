@@ -39,7 +39,7 @@ Project conventions (non-negotiable checklist):
 - When requesting changes, reference the relevant checklist section / invariant to minimize ambiguity.
 Database (MCP; default dev; read-only evidence):
 - Default dev read-only: MySQL `mcp__db__dev_mysql` (arg `sql`); Mongo `mcp__db__dev_mongo_query` (arg `command`).
-- Use `mcp__db__test_*` / `mcp__db__ppe_mysql` only when explicitly required; any write/migration or non-read-only verification => `report-up` BLOCKED to Admin (no workaround).
+- Use `mcp__db__test_*` / `mcp__db__ppe_mysql` only when explicitly required; MCP is read-only evidence only—write/migration verification uses local DB flow, otherwise `report-up` BLOCKED to Admin.
 - In reports, include DB evidence: original SQL/command + a few key result lines.
 
 Inbox discipline (mandatory):
