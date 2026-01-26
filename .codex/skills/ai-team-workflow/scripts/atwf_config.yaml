@@ -14,11 +14,11 @@
 # tmux-workflow (twf): Codex model defaults
 codex:
   model: gpt-5.2
-  model_reasoning_effort: high
+  model_reasoning_effort: xhigh
 
   # Optional profile (equivalent to `codex -p <profile>`).
   # Leave empty for portability; prefer auth files over profiles when using account_pool.
-  profile: ""
+  profile: "codez"
 
   # Optional Python virtualenv for Codex workers.
   #
@@ -29,7 +29,7 @@ codex:
   # so `python/pip` executed by Codex uses this venv.
   #
   # Recommended: absolute path. Example: "/root/.virtualenvs/uxbot"
-  python_venv: ""
+  python_venv: "/root/.virtualenvs/uxbot"
 
 # Claude Code CLI defaults (optional)
 claude:
@@ -79,7 +79,7 @@ twf:
   # Default auth when account pool is disabled.
   # When set (non-empty), twf copies this file into each worker as `auth.json`.
   auth:
-    src: ""
+    src: "/root/.codex/auth.json.codez"
 
 # codex-account-pool (cap): shared CODEX_HOME source selection + auth pick state
 cap:

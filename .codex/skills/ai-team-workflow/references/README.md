@@ -17,5 +17,5 @@ Template placeholder:
 
 Notes:
 
-- Keep these files small and practical. Templates should **reference paths**, not paste long content into prompts.
+- Keep these files practical. Templates should **reference paths**, not paste long content into prompts.
 - You (the operator) can freely edit these files to match your org/project standards.

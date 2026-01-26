@@ -58,9 +58,11 @@ Standard workflow:
 5) Self-verify:
    - Run the most relevant build/lint/tests for your change.
    - Record exact commands + observed results (so others can reproduce).
-   - Self-check against the project checklists (reference paths only; do NOT paste into prompts):
-     - Backend: `{{SKILL_DIR}}/references/checklists/reviewer-checklist-backend.md`
-     - Frontend: `{{SKILL_DIR}}/references/checklists/reviewer-checklist-frontend.md`
+   - Quality checklist (self-check; mandatory):
+     - Use the same project checklists as Reviewer (path-indexed; open relevant sections by changed file paths):
+       - Backend: `{{SKILL_DIR}}/references/checklists/reviewer-checklist-backend.md`
+       - Frontend: `{{SKILL_DIR}}/references/checklists/reviewer-checklist-frontend.md`
+     - Reference paths only; do NOT paste checklist content into prompts.
 
 6) Handoff (one consolidated “Review Packet” to Admin; Admin triggers the gate):
    - Include:
