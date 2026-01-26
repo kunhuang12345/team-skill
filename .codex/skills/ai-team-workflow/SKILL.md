@@ -192,7 +192,7 @@ All commands are wrappers around `twf` plus registry management:
 - `bash .codex/skills/ai-team-workflow/scripts/atwf pause [--role ROLE|--subtree ROOT|targets...] [--reason "..."]` (human pause; writes `share/.paused` and stops the watcher session)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf unpause [--role ROLE|--subtree ROOT|targets...]` (human unpause; clears `share/.paused` and restarts watcher so updates take effect)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf notice [--role ROLE|--subtree ROOT|targets...] --message "..."` (or stdin; FYI; no reply expected)
-- `bash .codex/skills/ai-team-workflow/scripts/atwf action [--role ROLE|--subtree ROOT|targets...] --message "..."` (or stdin; instruction/task; report deliverables when done)
+- `bash .codex/skills/ai-team-workflow/scripts/atwf action [--role ROLE|--subtree ROOT|targets...] --file /abs/path/to/action.md` (instruction/task; report deliverables when done)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf receipts <msg-id> [--role ROLE|--subtree ROOT|targets...]` (read receipts for notice/any msg-id)
 - `bash .codex/skills/ai-team-workflow/scripts/atwf resolve <full|base|role>`
 - `bash .codex/skills/ai-team-workflow/scripts/atwf attach <full|base|role>`

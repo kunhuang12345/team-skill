@@ -34,15 +34,28 @@ Kickoff (stage A: warmup):
    - `{{ATWF_CMD}} spawn-self dev <REQ-ID> --work-dir "<req_root>" --scope "<REQ-ID> implementation"`
    - `{{ATWF_CMD}} spawn-self reviewer <REQ-ID> --work-dir "<req_root>" --scope "<REQ-ID> reviewer warmup"`
    - `{{ATWF_CMD}} spawn-self test <REQ-ID> --work-dir "<req_root>" --scope "<REQ-ID> test warmup"`
-3) Send each role one `action` with the same inputs plus `stage: warmup`:
-   - Dev: implement + keep `req_root/technical_design.md` in sync
-   - Reviewer/Test: pre-read only; do NOT disturb Dev; only report BLOCKED to you
+3) Send each role one `action` via a temp file (do NOT paste long messages into tmux):
+   - Create files under: `{{TEAM_DIR}}/tmp/`
+   - Example file: `{{TEAM_DIR}}/tmp/action-<REQ-ID>-warmup-dev.md`:
+     - `req_id: <REQ-ID>`
+     - `docs_dir: <ABS_PATH>`
+     - `req_root: <ABS_PATH>`
+     - `stage: warmup`
+   - Send:
+     - Dev: `{{ATWF_CMD}} action dev-<REQ-ID> --file "{{TEAM_DIR}}/tmp/action-<REQ-ID>-warmup-dev.md"`
+     - Reviewer: `{{ATWF_CMD}} action reviewer-<REQ-ID> --file "{{TEAM_DIR}}/tmp/action-<REQ-ID>-warmup-reviewer.md"`
+     - Test: `{{ATWF_CMD}} action test-<REQ-ID> --file "{{TEAM_DIR}}/tmp/action-<REQ-ID>-warmup-test.md"`
+   - Warmup meaning:
+     - Dev: implement + keep `req_root/technical_design.md` in sync
+     - Reviewer/Test: pre-read only; do NOT disturb Dev; only report BLOCKED to you
 
 Gate flow (stage B):
 1) When Dev reports DONE (with a Review Packet) → trigger Reviewer:
-   - `stage: full-review`
+   - Write `{{TEAM_DIR}}/tmp/action-<REQ-ID>-full-review.md` (must include `req_id/docs_dir/req_root/stage: full-review`)
+   - Send: `{{ATWF_CMD}} action reviewer-<REQ-ID> --file "{{TEAM_DIR}}/tmp/action-<REQ-ID>-full-review.md"`
 2) When Reviewer reports PASS → trigger Test:
-   - `stage: full-test`
+   - Write `{{TEAM_DIR}}/tmp/action-<REQ-ID>-full-test.md` (must include `req_id/docs_dir/req_root/stage: full-test`)
+   - Send: `{{ATWF_CMD}} action test-<REQ-ID> --file "{{TEAM_DIR}}/tmp/action-<REQ-ID>-full-test.md"`
 3) Failures:
    - Reviewer/Test report issues directly to Dev (one consolidated package per iteration)
    - Dev fixes and reports-up to you again; you re-trigger full-review, then full-test.

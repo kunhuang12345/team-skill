@@ -60,6 +60,9 @@ New request SOP (repeatable):
    - `{{ATWF_CMD}} spawn-self admin <REQ-ID> --work-dir "<req_root>" --scope "<REQ-ID> owner + workspace + gate flow"`
 5. Send Admin a single `action` containing: `req_id`, `docs_dir`, `req_root`, plus gate rules:
    - `Dev -> Reviewer -> Test` (Reviewer/Test failures go directly back to Dev; then re-review, then re-test)
+   - Use a temp file (avoid paste failures):
+     - write: `{{TEAM_DIR}}/tmp/action-<REQ-ID>-kickoff-admin.md`
+     - send: `{{ATWF_CMD}} action admin-<REQ-ID> --file "{{TEAM_DIR}}/tmp/action-<REQ-ID>-kickoff-admin.md"`
 
 How to route (internal):
 1. Prefer routing within the same request subtree (`admin-<REQ-ID>` and its children).

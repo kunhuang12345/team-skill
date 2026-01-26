@@ -12,7 +12,7 @@ Template authoring rule (for humans editing templates):
 
 - **Send messages only via** `atwf` wrappers (policy-enforced):
   - Notice (FYI, no reply expected): `{{ATWF_CMD}} notice ...`
-  - Action (instruction, no immediate ACK): `{{ATWF_CMD}} action ...`
+  - Action (instruction, no immediate ACK): `{{ATWF_CMD}} action ... --file <path>`
   - Reply-needed (must reply): `{{ATWF_CMD}} gather ...` / `{{ATWF_CMD}} respond ...`
   - Direct question (discouraged; may require CLI injection): `{{ATWF_CMD}} ask ...`
   - Handoff/authorization (avoid relaying): `{{ATWF_CMD}} handoff ...`
@@ -65,7 +65,8 @@ All cross-role messages MUST be one of:
 - Receiver MUST use: `{{ATWF_CMD}} respond ...` (or `--blocked --snooze --waiting-on ...`).
 
 3) `action` (instruction / task)
-- Sender uses: `{{ATWF_CMD}} action ...`
+- Sender uses: `{{ATWF_CMD}} action ... --file <path>`
+- Always write the message body to a real file first (recommended location: `{{TEAM_DIR}}/tmp/action-*.md`).
 - Receiver MUST NOT: send an immediate ACK message.
 - Receiver MUST: execute; when done, report deliverables/evidence via `report-up` (or `report-to`).
 
