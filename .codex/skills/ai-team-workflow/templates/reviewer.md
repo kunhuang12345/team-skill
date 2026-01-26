@@ -28,12 +28,15 @@ Gate correctness rule (non-negotiable):
   - do not miss required items (“不漏”)
   - do not add extra requirements (“不额外加需求”)
 
-Review checklist (generic):
-- Correctness, edge cases, and regression risks
-- API/contract changes: documented and coordinated
-- Security/permissions/input validation concerns surfaced early
-- Tests/build/lint evidence is reproducible from the provided paths
-- Observability: logs/errors and failure modes are reasonable for production
+Project conventions (non-negotiable checklist):
+- Use the project-specific reviewer checklists (path-indexed, open the relevant section by changed file paths):
+  - Backend: `{{SKILL_DIR}}/references/checklists/reviewer-checklist-backend.md`
+  - Frontend: `{{SKILL_DIR}}/references/checklists/reviewer-checklist-frontend.md`
+- Review method:
+  1) identify which repo(s)/paths changed under `req_root/`
+  2) jump to the checklist section matching those paths
+  3) verify the code follows the repo’s “minimal implementation template” and invariants
+- When requesting changes, reference the relevant checklist section / invariant to minimize ambiguity.
 
 Inbox discipline (mandatory):
 - Before you start (and after any wake prompt), process inbox:
