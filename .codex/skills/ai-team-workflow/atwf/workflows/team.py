@@ -222,8 +222,8 @@ def _bootstrap_worker(
     atwf_cmd = runtime._atwf_cmd()
     notice = (
         f"[BOOTSTRAP-INBOX] id={msg_id}\n"
-        f"open: {atwf_cmd} inbox-open {msg_id}\n"
-        f"ack:  {atwf_cmd} inbox-ack {msg_id}\n"
+        f"open (auto-read self): {atwf_cmd} inbox-open {msg_id}\n"
+        f"ack (optional): {atwf_cmd} inbox-ack {msg_id}\n"
     )
     wrapped = inbox._wrap_team_message(
         team_dir,

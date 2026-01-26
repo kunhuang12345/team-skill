@@ -3605,9 +3605,9 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
             member_base_by_full[full] = base
             member_role_by_full[full] = role
 
-            # Working stale inbox governance:
-            # If the worker is working and has pending inbox messages older than N seconds,
-            # write an inbox-only alert to coord (cooldown applies).
+            # Working stale inbox governance (2-stage):
+            # - Stage 1: nudge the worker to read inbox.
+            # - Stage 2: if still stale after a grace window, alert coord (cooldown applies).
             if (
                 coord_full
                 and coord_base
@@ -3625,14 +3625,54 @@ def cmd_watch_idle(args: argparse.Namespace) -> int:
 
                         last_alert_dt = parse_dt(str(st.get("stale_alert_sent_at", "") or ""))
                         alert_age_s = (now_dt - last_alert_dt).total_seconds() if last_alert_dt else None
-                        should_alert = age_s >= max(1.0, stale_s)
+                        last_nudge_dt = parse_dt(str(st.get("stale_nudge_sent_at", "") or ""))
+                        nudge_age_s = (now_dt - last_nudge_dt).total_seconds() if last_nudge_dt else None
+                        nudge_oldest_id = str(st.get("stale_nudge_oldest_id", "") or "").strip()
+
+                        should_stale = age_s >= max(1.0, stale_s)
                         # If we just woke the worker, give them a grace period before alerting.
-                        if should_alert and wake_dt is not None and grace_s > 0:
+                        if should_stale and wake_dt is not None and grace_s > 0:
                             wake_age_s = (now_dt - wake_dt).total_seconds()
                             if wake_age_s < max(1.0, grace_s):
-                                should_alert = False
-                        if should_alert and check_age_s is not None:
-                            should_alert = should_alert and check_age_s >= max(1.0, stale_s)
+                                should_stale = False
+                        if should_stale and check_age_s is not None:
+                            should_stale = should_stale and check_age_s >= max(1.0, stale_s)
+
+                        can_nudge = tmux_running
+                        nudged = bool(min_id and nudge_oldest_id == min_id and last_nudge_dt is not None)
+
+                        if should_stale and can_nudge and not nudged:
+                            nudge_id = _next_msg_id(team_dir)
+                            short = (
+                                "[NUDGE] stale inbox while working\n"
+                                f"pending={unread}+{overflow} oldest={min_id} age_s={int(age_s)}\n"
+                                f"run: {_atwf_cmd()} inbox\n"
+                            )
+                            wrapped = _wrap_team_message(
+                                team_dir,
+                                kind="nudge-inbox",
+                                sender_full="atwf-watch",
+                                sender_role="system",
+                                to_full=full,
+                                body=short,
+                                msg_id=nudge_id,
+                            )
+                            _run_twf(twf, ["send", full, wrapped])
+                            _write_agent_state(
+                                team_dir,
+                                full=full,
+                                base=base,
+                                role=role,
+                                update={
+                                    "stale_nudge_sent_at": _now(),
+                                    "stale_nudge_oldest_id": min_id,
+                                    "stale_nudge_msg_id": nudge_id,
+                                },
+                            )
+
+                        should_alert = should_stale
+                        if should_alert and can_nudge:
+                            should_alert = bool(nudged and nudge_age_s is not None and nudge_age_s >= max(1.0, stale_s))
                         if should_alert and alert_age_s is not None:
                             should_alert = should_alert and alert_age_s >= max(1.0, cooldown_s)
 
@@ -4196,12 +4236,13 @@ def cmd_inbox_open(args: argparse.Namespace) -> int:
     if content and not content.endswith("\n"):
         sys.stdout.write("\n")
 
-    # Update "last_inbox_check_at" for self only.
+    # Self only: auto-mark the message read, and update agent state.
     if not target:
         self_full = _tmux_self_full() or ""
         if self_full and isinstance(m, dict):
             base = _member_base(m) or self_full
             role = _member_role(m)
+            _mark_inbox_read(team_dir, to_base=base, msg_id=msg_id)
             unread, overflow, _ids = _inbox_unread_stats(team_dir, to_base=base)
             _update_agent_state(
                 team_dir,

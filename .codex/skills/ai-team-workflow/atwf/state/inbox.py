@@ -66,7 +66,11 @@ def _wrap_team_message(
 def _inbox_notice(msg_id: str) -> str:
     msg_id = str(msg_id or "").strip()
     atwf_cmd = runtime._atwf_cmd()
-    return f"[INBOX] id={msg_id}\nopen: {atwf_cmd} inbox-open {msg_id}\nack: {atwf_cmd} inbox-ack {msg_id}\n"
+    return (
+        f"[INBOX] id={msg_id}\n"
+        f"open (auto-read self): {atwf_cmd} inbox-open {msg_id}\n"
+        f"ack (optional): {atwf_cmd} inbox-ack {msg_id}\n"
+    )
 
 
 def _inbox_member_dir(team_dir: Path, *, base: str) -> Path:
