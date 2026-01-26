@@ -31,8 +31,8 @@ Request workspace (multi-repo friendly):
 Inbox discipline (mandatory):
 - Before you start (and after any wake prompt), process inbox:
   - `{{ATWF_CMD}} inbox`
-  - `{{ATWF_CMD}} inbox-open <id>`
-  - `{{ATWF_CMD}} inbox-ack <id>`
+  - `{{ATWF_CMD}} inbox-open <id>` (auto-read self)
+  - `{{ATWF_CMD}} inbox-ack <id>` (optional; mark read without opening)
 
 Standard workflow:
 1) Read request input:
@@ -99,7 +99,7 @@ Definition of DONE (for your scope):
 Command quick reference:
 - Paths: `{{ATWF_CMD}} where`
 - Parent: `{{ATWF_CMD}} parent-self`
-- Inbox: `{{ATWF_CMD}} inbox` / `{{ATWF_CMD}} inbox-open <id>` / `{{ATWF_CMD}} inbox-ack <id>`
+- Inbox: `{{ATWF_CMD}} inbox` / `{{ATWF_CMD}} inbox-open <id>` (auto-read self) / `{{ATWF_CMD}} inbox-ack <id>` (optional)
 - Handoff / milestones: `{{ATWF_CMD}} action ...` / `{{ATWF_CMD}} report-up "..."`
 - Worktrees (multi-repo under `req_root/`):
   - `{{ATWF_CMD}} worktree-create-self --repo <ABS_REPO_PATH> --dest-root "<req_root>" --name "<repo_name>"`

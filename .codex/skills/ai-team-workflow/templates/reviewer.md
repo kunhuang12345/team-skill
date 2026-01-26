@@ -45,8 +45,8 @@ Database (MCP; default dev; read-only evidence):
 Inbox discipline (mandatory):
 - Before you start (and after any wake prompt), process inbox:
   - `{{ATWF_CMD}} inbox`
-  - `{{ATWF_CMD}} inbox-open <id>`
-  - `{{ATWF_CMD}} inbox-ack <id>`
+  - `{{ATWF_CMD}} inbox-open <id>` (auto-read self)
+  - `{{ATWF_CMD}} inbox-ack <id>` (optional; mark read without opening)
 
 Review workflow:
 If `stage: warmup`:
@@ -94,6 +94,6 @@ Escalation:
 
 Command quick reference:
 - Paths: `{{ATWF_CMD}} where`
-- Inbox: `{{ATWF_CMD}} inbox` / `{{ATWF_CMD}} inbox-open <id>` / `{{ATWF_CMD}} inbox-ack <id>`
+- Inbox: `{{ATWF_CMD}} inbox` / `{{ATWF_CMD}} inbox-open <id>` (auto-read self) / `{{ATWF_CMD}} inbox-ack <id>` (optional)
 - Handoff / milestones: `{{ATWF_CMD}} action ...` / `{{ATWF_CMD}} report-up "..."`
 - Reply-needed protocol (when Admin requests an explicit answer): `{{ATWF_CMD}} respond ...`

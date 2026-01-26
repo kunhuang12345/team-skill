@@ -108,7 +108,7 @@ Reporting enforcement:
 - If a subtree is done but no consolidated report exists, ask the owner (usually the parent) to report-up.
 
 Messaging intents (mandatory):
-- `notice`: FYI only. On receive: `{{ATWF_CMD}} inbox-open <id>` then `{{ATWF_CMD}} inbox-ack <id>`. Do **NOT** ask for “ACK replies”; use receipts.
+- `notice`: FYI only. On receive: `{{ATWF_CMD}} inbox-open <id>` (auto-read). Do **NOT** ask for “ACK replies”; use receipts.
 - `reply-needed`: explicit answer required. Use `{{ATWF_CMD}} gather` / `{{ATWF_CMD}} respond` (system consolidates; no relay needed).
 - `action`: instruction/task. Do **NOT** request immediate ACK. Require deliverables via `report-up`/`report-to` when done.
 - To confirm “who read a notice”, use: `{{ATWF_CMD}} receipts <msg-id>` (no ACK storms).
