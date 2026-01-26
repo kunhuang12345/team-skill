@@ -47,7 +47,7 @@ To reduce token waste and avoid “confirm storms”, **the full message body is
 
 Hard rules:
 - For every received `id`, load the full body via: `{{ATWF_CMD}} inbox-open <id>`
-- After you have fully processed the message, mark it read via: `{{ATWF_CMD}} inbox-ack <id>`
+- `inbox-open` on your own inbox auto-marks the message read. Use `{{ATWF_CMD}} inbox-ack <id>` only when you want to mark read without opening.
 - To see your pending unread queue: `{{ATWF_CMD}} inbox`
 - When you send many messages to the same target, check backlog first: `{{ATWF_CMD}} inbox-pending <target>`
 
@@ -57,7 +57,7 @@ All cross-role messages MUST be one of:
 
 1) `notice` (notification / FYI)
 - Sender uses: `{{ATWF_CMD}} notice ...`
-- Receiver MUST: `{{ATWF_CMD}} inbox-open <id>` → read → `{{ATWF_CMD}} inbox-ack <id>`.
+- Receiver MUST: `{{ATWF_CMD}} inbox-open <id>` → read (auto-read).
 - Receiver MUST NOT: reply upward with “received/ok/ack” via `report-up`/`action`/`ask`.
 
 2) `reply-needed` (explicit answer required)
@@ -120,7 +120,7 @@ Commands:
 - View others: `{{ATWF_CMD}} state <target>`
 
 Hard rules:
-- If you are actively working (or after any wake prompt): run `{{ATWF_CMD}} inbox` at least once per minute (or before any blocking wait). If it lists unread `id`s, you must `inbox-open` + process + `inbox-ack` them, then continue work.
+- If you are actively working (or after any wake prompt): run `{{ATWF_CMD}} inbox` at least once per minute (or before any blocking wait). If it lists unread `id`s, you must `inbox-open` + process them (auto-read), then continue work.
 - Do **NOT** use `state-set-self` as part of normal workflow; it will be overwritten by the watcher and is only for debugging.
 - When you have nothing actionable: simply wait. If new inbox arrives, the watcher will wake you with a short prompt.
 
