@@ -32,6 +32,8 @@ config_file="${TWF_CODEX_CMD_CONFIG:-$script_dir/twf_config.yaml}"
 if [[ -z "${TWF_CODEX_CMD_CONFIG:-}" && ! -f "$config_file" && -f "$script_dir/twf_config.json" ]]; then
   config_file="$script_dir/twf_config.json"
 fi
+# Resolve to an absolute path for tmux sessions started in other directories.
+config_file="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "$config_file")"
 
 build_default_codex_cmd() {
   python3 - "$config_file" <<'PY'
@@ -362,6 +364,24 @@ if [[ -z "$tmux_session" ]]; then
   tmux_session="codex-$hash"
 fi
 
+aitwf_dir_raw="${AITWF_DIR:-}"
+aitwf_dir_resolved="$(
+  python3 - "$aitwf_dir_raw" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+raw = (sys.argv[1] or "").strip()
+if not raw:
+    print("")
+    raise SystemExit(0)
+p = Path(os.path.expanduser(raw))
+if not p.is_absolute():
+    p = (Path.cwd() / p).resolve()
+print(str(p))
+PY
+)"
+
 # Per-worker CODEX_HOME isolation: ~/.codex-workers/<worker_id>
 worker_id="$tmux_session"
 codex_workers_dir="${TWF_WORKERS_DIR:-$HOME/.codex-workers}"
@@ -390,15 +410,29 @@ if tmux has-session -t "$tmux_session" >/dev/null 2>&1; then
   echo "ℹ️  Reusing tmux session: $tmux_session" >&2
 else
   echo "🚀 Starting tmux session: $tmux_session" >&2
+  # Clear cross-project env leakage from long-lived tmux server, then re-inject
+  # the current values explicitly.
+  tmux_env=(env -u AITWF_DIR -u TWF_CODEX_CMD_CONFIG -u TWF_WORKERS_DIR)
+  tmux_env+=("CODEX_HOME=$worker_home" "TWF_CODEX_CMD_CONFIG=$config_file" "TWF_WORKERS_DIR=$codex_workers_dir")
+  if [[ -n "$aitwf_dir_resolved" ]]; then
+    tmux_env+=("AITWF_DIR=$aitwf_dir_resolved")
+  fi
   if [[ -n "$python_venv" ]]; then
     # Pass env vars as argv to avoid shell word-splitting (WSL PATH may contain spaces).
-    tmux new-session -d -s "$tmux_session" -c "$work_dir" env "CODEX_HOME=$worker_home" "VIRTUAL_ENV=$python_venv" "PATH=$python_path" bash -c "$codex_cmd"
+    tmux new-session -d -s "$tmux_session" -c "$work_dir" "${tmux_env[@]}" "VIRTUAL_ENV=$python_venv" "PATH=$python_path" bash -c "$codex_cmd"
   else
-    tmux new-session -d -s "$tmux_session" -c "$work_dir" env "CODEX_HOME=$worker_home" bash -c "$codex_cmd"
+    tmux new-session -d -s "$tmux_session" -c "$work_dir" "${tmux_env[@]}" bash -c "$codex_cmd"
   fi
 fi
 
 tmux set-environment -t "$tmux_session" CODEX_HOME "$worker_home" >/dev/null 2>&1 || true
+tmux set-environment -t "$tmux_session" TWF_CODEX_CMD_CONFIG "$config_file" >/dev/null 2>&1 || true
+tmux set-environment -t "$tmux_session" TWF_WORKERS_DIR "$codex_workers_dir" >/dev/null 2>&1 || true
+if [[ -n "$aitwf_dir_resolved" ]]; then
+  tmux set-environment -t "$tmux_session" AITWF_DIR "$aitwf_dir_resolved" >/dev/null 2>&1 || true
+else
+  tmux set-environment -t "$tmux_session" -u AITWF_DIR >/dev/null 2>&1 || true
+fi
 if [[ -n "$python_venv" ]]; then
   tmux set-environment -t "$tmux_session" VIRTUAL_ENV "$python_venv" >/dev/null 2>&1 || true
   tmux set-environment -t "$tmux_session" PATH "$python_path" >/dev/null 2>&1 || true

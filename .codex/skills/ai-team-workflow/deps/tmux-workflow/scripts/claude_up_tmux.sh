@@ -262,22 +262,57 @@ print(str(p))
 PY
 )"
 
+aitwf_dir_raw="${AITWF_DIR:-}"
+aitwf_dir_resolved="$(
+  python3 - "$aitwf_dir_raw" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+raw = (sys.argv[1] or "").strip()
+if not raw:
+    print("")
+    raise SystemExit(0)
+p = Path(os.path.expanduser(raw))
+if not p.is_absolute():
+    p = (Path.cwd() / p).resolve()
+print(str(p))
+PY
+)"
+
 tmux_target="${tmux_session}:0.0"
 
 if tmux has-session -t "$tmux_session" >/dev/null 2>&1; then
   echo "ℹ️  Reusing tmux session: $tmux_session" >&2
 else
   echo "🚀 Starting tmux session: $tmux_session" >&2
+  # Clear cross-project env leakage from long-lived tmux server, then re-inject
+  # the current values explicitly.
+  tmux_env=(env -u AITWF_DIR -u CLAUDE_CONFIG_DIR)
+  if [[ -n "$aitwf_dir_resolved" ]]; then
+    tmux_env+=("AITWF_DIR=$aitwf_dir_resolved")
+  fi
   if [[ -n "$claude_config_dir_resolved" ]]; then
-    quoted_cfg="$(python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$claude_config_dir_resolved")"
-    tmux new-session -d -s "$tmux_session" -c "$work_dir" "env CLAUDE_CONFIG_DIR=$quoted_cfg $final_cmd"
+    tmux_env+=("CLAUDE_CONFIG_DIR=$claude_config_dir_resolved")
+  fi
+
+  if [[ ${#tmux_env[@]} -gt 1 ]]; then
+    tmux new-session -d -s "$tmux_session" -c "$work_dir" "${tmux_env[@]}" bash -c "$final_cmd"
   else
-    tmux new-session -d -s "$tmux_session" -c "$work_dir" "$final_cmd"
+    tmux new-session -d -s "$tmux_session" -c "$work_dir" bash -c "$final_cmd"
   fi
 fi
 
 if [[ -n "$claude_config_dir_resolved" ]]; then
   tmux set-environment -t "$tmux_session" CLAUDE_CONFIG_DIR "$claude_config_dir_resolved" >/dev/null 2>&1 || true
+else
+  tmux set-environment -t "$tmux_session" -u CLAUDE_CONFIG_DIR >/dev/null 2>&1 || true
+fi
+
+if [[ -n "$aitwf_dir_resolved" ]]; then
+  tmux set-environment -t "$tmux_session" AITWF_DIR "$aitwf_dir_resolved" >/dev/null 2>&1 || true
+else
+  tmux set-environment -t "$tmux_session" -u AITWF_DIR >/dev/null 2>&1 || true
 fi
 
 pane_id="$(tmux display-message -p -t "$tmux_target" '#{pane_id}' 2>/dev/null || true)"
@@ -355,4 +390,3 @@ PY
 if [[ "$attach" -eq 1 ]]; then
   tmux attach -t "$tmux_session"
 fi
-

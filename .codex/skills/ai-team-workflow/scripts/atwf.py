@@ -27,6 +27,7 @@ DEFAULT_ROLE_SCOPES: dict[str, str] = {
     "pm": "overall delivery / milestone planning",
 }
 FULL_NAME_RE = re.compile(r"^.+-[0-9]{8}-[0-9]{6}-[0-9]+$")
+FULL_NAME_SPLIT_RE = re.compile(r"^(.+)-[0-9]{8}-[0-9]{6}-[0-9]+$")
 
 _MSG_SEQ_FILE = "message_seq.json"
 _MSG_ID_WIDTH = 6
@@ -575,10 +576,22 @@ def _atwf_cmd() -> str:
 
 def _substitute_atwf_paths(text: str) -> str:
     s = text or ""
-    s = s.replace("{{ATWF_CMD}}", _atwf_cmd())
-    s = s.replace("{{ATWF_CONFIG}}", str(_config_file()))
-    s = s.replace("bash .codex/skills/ai-team-workflow/scripts/atwf", _atwf_cmd())
-    s = s.replace(".codex/skills/ai-team-workflow/scripts/atwf_config.yaml", str(_config_file()))
+    atwf_cmd = _atwf_cmd()
+    cfg = str(_config_file())
+
+    # Legacy path replacements (do this first to avoid duplicating prefixes when the
+    # absolute config path contains the legacy substring, e.g. /.../.codex/...).
+    legacy_atwf = "bash .codex/skills/ai-team-workflow/scripts/atwf"
+    legacy_cfg = ".codex/skills/ai-team-workflow/scripts/atwf_config.yaml"
+    s = s.replace(legacy_atwf, atwf_cmd)
+    # Only replace the legacy cfg path when it appears as a standalone token-ish
+    # (avoid matching inside an already-absolute path like /root/.../.codex/...).
+    s = re.sub(rf"(?m)(^|[\\s'\"`]){re.escape(legacy_cfg)}", lambda m: m.group(1) + cfg, s)
+
+    # Placeholder replacements.
+    s = s.replace("{{ATWF_CMD}}", atwf_cmd)
+    s = s.replace("{{ATWF_CONFIG}}", cfg)
+    s = s.replace("{{ATWF_TEAM_DIR_SHELL}}", shlex.quote(str(_default_team_dir())))
     return s
 
 
@@ -3203,6 +3216,46 @@ def _member_base(m: dict[str, Any] | None) -> str:
     base = str(m.get("base", "")).strip()
     full = str(m.get("full", "")).strip()
     return base or full
+
+
+def _base_from_full_name(full: str) -> str:
+    s = (full or "").strip()
+    if not s:
+        return ""
+    m = FULL_NAME_SPLIT_RE.match(s)
+    if m:
+        return (m.group(1) or "").strip() or s
+    return s
+
+
+def _self_inbox_bases(team_dir: Path, data: dict[str, Any], *, self_full: str) -> tuple[list[str], str, str]:
+    """
+    Return (bases_to_try, primary_base, role).
+
+    When registry is temporarily unavailable/mismatched, fall back to derive base from
+    tmux full name and also try the full name itself as inbox base.
+    """
+    m = _resolve_member(data, self_full)
+    registry_base = _member_base(m) if m else ""
+    derived_base = _base_from_full_name(self_full)
+
+    bases: list[str] = []
+    for b in (registry_base, derived_base, self_full):
+        s = str(b or "").strip()
+        if not s or s in bases:
+            continue
+        bases.append(s)
+
+    # Prefer bases that already have an inbox dir, but keep fallbacks if none exist yet.
+    existing = [b for b in bases if _inbox_member_dir(team_dir, base=b).is_dir()]
+    bases_to_try = existing or bases
+
+    primary_base = bases_to_try[0] if bases_to_try else self_full
+    role = _member_role(m) if m else ""
+    if not role:
+        role = primary_base.split("-", 1)[0].strip() if primary_base else ""
+
+    return bases_to_try, primary_base, role
 
 
 def _is_direct_parent_child(data: dict[str, Any], a_full: str, b_full: str) -> bool:
@@ -7804,27 +7857,23 @@ def cmd_inbox(args: argparse.Namespace) -> int:
 
     target = str(getattr(args, "target", "") or "").strip()
     is_self = False
+    primary_base = ""
+    role = ""
     if target:
         full = _resolve_target_full(data, target)
         if not full:
             raise SystemExit(f"❌ target not found in registry: {target}")
         m = _resolve_member(data, full) or {}
-        to_base = _member_base(m) or full
+        to_bases = [_member_base(m) or full]
     else:
         self_full = _tmux_self_full()
         if not self_full:
             raise SystemExit("❌ inbox must run inside tmux (or use: inbox --target <full|base|role>)")
-        m = _resolve_member(data, self_full)
-        if not m:
-            raise SystemExit(f"❌ current worker not found in registry: {self_full}")
-        to_base = _member_base(m) or self_full
+        to_bases, primary_base, role = _self_inbox_bases(team_dir, data, self_full=self_full)
         is_self = True
 
-    base_dir = _inbox_member_dir(team_dir, base=to_base)
-    unread_root = base_dir / _INBOX_UNREAD_DIR
-    overflow_root = base_dir / _INBOX_OVERFLOW_DIR
-
     rows: list[tuple[int, str, str, str, str, str]] = []
+    seen: set[str] = set()
 
     def parse_meta(path: Path) -> tuple[str, str]:
         kind = ""
@@ -7841,19 +7890,30 @@ def cmd_inbox(args: argparse.Namespace) -> int:
                 summary = s.split(":", 1)[1].strip()
         return kind, summary
 
-    if unread_root.is_dir():
-        for from_dir in sorted([p for p in unread_root.glob("from-*") if p.is_dir()]):
-            from_base = from_dir.name[len("from-") :]
-            for n, stem, p in _inbox_list_msgs(from_dir):
-                kind, summary = parse_meta(p)
-                rows.append((n, stem, from_base, kind, summary, _INBOX_UNREAD_DIR))
+    for to_base in to_bases:
+        base_dir = _inbox_member_dir(team_dir, base=to_base)
+        unread_root = base_dir / _INBOX_UNREAD_DIR
+        overflow_root = base_dir / _INBOX_OVERFLOW_DIR
 
-    if overflow_root.is_dir():
-        for from_dir in sorted([p for p in overflow_root.glob("from-*") if p.is_dir()]):
-            from_base = from_dir.name[len("from-") :]
-            for n, stem, p in _inbox_list_msgs(from_dir):
-                kind, summary = parse_meta(p)
-                rows.append((n, stem, from_base, kind, summary, _INBOX_OVERFLOW_DIR))
+        if unread_root.is_dir():
+            for from_dir in sorted([p for p in unread_root.glob("from-*") if p.is_dir()]):
+                from_base = from_dir.name[len("from-") :]
+                for n, stem, p in _inbox_list_msgs(from_dir):
+                    if stem in seen:
+                        continue
+                    seen.add(stem)
+                    kind, summary = parse_meta(p)
+                    rows.append((n, stem, from_base, kind, summary, _INBOX_UNREAD_DIR))
+
+        if overflow_root.is_dir():
+            for from_dir in sorted([p for p in overflow_root.glob("from-*") if p.is_dir()]):
+                from_base = from_dir.name[len("from-") :]
+                for n, stem, p in _inbox_list_msgs(from_dir):
+                    if stem in seen:
+                        continue
+                    seen.add(stem)
+                    kind, summary = parse_meta(p)
+                    rows.append((n, stem, from_base, kind, summary, _INBOX_OVERFLOW_DIR))
 
     rows.sort(key=lambda r: r[0])
     if not rows:
@@ -7871,14 +7931,14 @@ def cmd_inbox(args: argparse.Namespace) -> int:
 
     if is_self:
         self_full = _tmux_self_full() or ""
-        if self_full and isinstance(m, dict):
-            base = _member_base(m) or self_full
-            role = _member_role(m)
-            unread, overflow, _ids = _inbox_unread_stats(team_dir, to_base=base)
+        if self_full:
+            base_for_state = primary_base or self_full
+            unread = sum(1 for r in rows if r[5] == _INBOX_UNREAD_DIR)
+            overflow = sum(1 for r in rows if r[5] == _INBOX_OVERFLOW_DIR)
             _update_agent_state(
                 team_dir,
                 full=self_full,
-                base=base,
+                base=base_for_state,
                 role=role,
                 updater=lambda s: (
                     s.__setitem__("last_inbox_check_at", _now()),
@@ -7899,22 +7959,29 @@ def cmd_inbox_open(args: argparse.Namespace) -> int:
         raise SystemExit("❌ msg_id is required")
 
     target = str(getattr(args, "target", "") or "").strip()
+    bases: list[str] = []
+    primary_base = ""
+    role = ""
     if target:
         full = _resolve_target_full(data, target)
         if not full:
             raise SystemExit(f"❌ target not found in registry: {target}")
         m = _resolve_member(data, full) or {}
-        to_base = _member_base(m) or full
+        bases = [_member_base(m) or full]
     else:
         self_full = _tmux_self_full()
         if not self_full:
             raise SystemExit("❌ inbox-open must run inside tmux (or use: inbox-open --target <full|base|role> <id>)")
-        m = _resolve_member(data, self_full)
-        if not m:
-            raise SystemExit(f"❌ current worker not found in registry: {self_full}")
-        to_base = _member_base(m) or self_full
+        bases, primary_base, role = _self_inbox_bases(team_dir, data, self_full=self_full)
 
-    hit = _find_inbox_message_file(team_dir, to_base=to_base, msg_id=msg_id)
+    hit = None
+    hit_base = ""
+    for b in bases:
+        found = _find_inbox_message_file(team_dir, to_base=b, msg_id=msg_id)
+        if found:
+            hit = found
+            hit_base = b
+            break
     if not hit:
         raise SystemExit(f"❌ message not found in inbox: {msg_id}")
     _state, _from_base, path = hit
@@ -7926,15 +7993,18 @@ def cmd_inbox_open(args: argparse.Namespace) -> int:
     # Self only: auto-mark the message read, and update agent state.
     if not target:
         self_full = _tmux_self_full() or ""
-        if self_full and isinstance(m, dict):
-            base = _member_base(m) or self_full
-            role = _member_role(m)
-            _mark_inbox_read(team_dir, to_base=base, msg_id=msg_id)
-            unread, overflow, _ids = _inbox_unread_stats(team_dir, to_base=base)
+        if self_full:
+            _mark_inbox_read(team_dir, to_base=hit_base or (primary_base or self_full), msg_id=msg_id)
+            unread = 0
+            overflow = 0
+            for b in bases:
+                u, o, _ids = _inbox_unread_stats(team_dir, to_base=b)
+                unread += u
+                overflow += o
             _update_agent_state(
                 team_dir,
                 full=self_full,
-                base=base,
+                base=primary_base or (hit_base or self_full),
                 role=role,
                 updater=lambda s: (
                     s.__setitem__("last_inbox_check_at", _now()),
@@ -7957,22 +8027,31 @@ def cmd_inbox_ack(args: argparse.Namespace) -> int:
     self_full = _tmux_self_full()
     if not self_full:
         raise SystemExit("❌ inbox-ack must run inside tmux")
-    m = _resolve_member(data, self_full)
-    if not m:
-        raise SystemExit(f"❌ current worker not found in registry: {self_full}")
-    to_base = _member_base(m) or self_full
 
-    moved = _mark_inbox_read(team_dir, to_base=to_base, msg_id=msg_id)
+    bases, primary_base, role = _self_inbox_bases(team_dir, data, self_full=self_full)
+
+    moved = None
+    hit_base = ""
+    for b in bases:
+        moved = _mark_inbox_read(team_dir, to_base=b, msg_id=msg_id)
+        if moved:
+            hit_base = b
+            break
     if not moved:
         raise SystemExit(f"❌ message not found: {msg_id}")
     print("OK")
 
-    unread, overflow, _ids = _inbox_unread_stats(team_dir, to_base=to_base)
+    unread = 0
+    overflow = 0
+    for b in bases:
+        u, o, _ids = _inbox_unread_stats(team_dir, to_base=b)
+        unread += u
+        overflow += o
     _update_agent_state(
         team_dir,
         full=self_full,
-        base=to_base,
-        role=_member_role(m),
+        base=primary_base or (hit_base or self_full),
+        role=role,
         updater=lambda s: (
             s.__setitem__("last_inbox_check_at", _now()),
             s.__setitem__("last_inbox_unread", unread),
