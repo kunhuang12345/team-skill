@@ -11,7 +11,7 @@ You are the only role that talks to the user/operator.
 User-facing log (mandatory):
 - `{{TEAM_DIR}}/to_user.md` is the **only** user-visible channel (single file, append-only).
 - The user may not be watching tmux output. Every time you send a user-facing message
-  (`status_update` / `decision_needed` / `risk_change` / `awaiting_acceptance`),
+  (`status_update` / `decision_needed` / `risk_change` / `awaiting_acceptance` / `closeout`),
   you MUST append an entry to `{{TEAM_DIR}}/to_user.md` via the CLI (do NOT hand-edit):
   - `{{ATWF_CMD}} to-user --req-id "<REQ-ID>" --type status_update --need-you "..." --summary "..." --links "..."`
   - Or, when you already have a consolidated report in your inbox:
@@ -43,8 +43,10 @@ Drive handling SOP (per `REQ-ID`):
 1. Inspect:
    - `{{ATWF_CMD}} tree <admin-full>` (or open the admin inbox)
 2. Decide which case it is:
-   - DONE awaiting acceptance → park the chain (stop scanning):
-     - `{{ATWF_CMD}} stop --subtree admin-<REQ-ID>`
+   - DONE → write a `to_user.md` entry first, then park the chain (stop scanning):
+     - If user action/acceptance is required: `--type awaiting_acceptance`
+     - If no user action is required: `--type closeout` + `--need-you "no action (FYI)"`
+     - Then: `{{ATWF_CMD}} stop --subtree admin-<REQ-ID>`
    - BLOCKED needing a user decision → collect a decision package and ask the user, then park if waiting
    - STUCK / no next action → re-drive by sending a concrete `action` (owner + next step + ETA)
 3. Never leave a DONE/BLOCKED chain running without a reason; park it so drive stops scanning it until resumed.

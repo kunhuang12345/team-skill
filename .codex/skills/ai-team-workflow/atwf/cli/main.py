@@ -1065,7 +1065,7 @@ def cmd_where(_: argparse.Namespace) -> int:
     print(str(registry))
     return 0
 
-_TO_USER_TYPES = ("status_update", "decision_needed", "risk_change", "awaiting_acceptance")
+_TO_USER_TYPES = ("status_update", "decision_needed", "risk_change", "awaiting_acceptance", "closeout")
 _REQ_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
