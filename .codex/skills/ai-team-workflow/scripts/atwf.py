@@ -4454,7 +4454,7 @@ def cmd_where(_: argparse.Namespace) -> int:
     return 0
 
 
-_TO_USER_TYPES = ("status_update", "decision_needed", "risk_change", "awaiting_acceptance")
+_TO_USER_TYPES = ("status_update", "decision_needed", "risk_change", "awaiting_acceptance", "closeout")
 
 
 def _to_user_path(team_dir: Path) -> Path:
