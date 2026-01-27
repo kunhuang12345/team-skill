@@ -9,6 +9,7 @@ DEFAULT_ROLE_SCOPES: dict[str, str] = {
     "pm": "overall delivery / milestone planning",
 }
 FULL_NAME_RE = re.compile(r"^.+-[0-9]{8}-[0-9]{6}-[0-9]+$")
+FULL_NAME_SPLIT_RE = re.compile(r"^(.+)-[0-9]{8}-[0-9]{6}-[0-9]+$")
 
 MSG_SEQ_FILE = "message_seq.json"
 MSG_ID_WIDTH = 6

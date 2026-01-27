@@ -294,8 +294,8 @@ team:
         - "3. No, and tell Codex what to do differently (esc)"
 
     # Minimal wake message injected into Codex TUI (no full body here).
-    wake_message: "INBOX wake: you have unread messages. Run: {{ATWF_CMD}} inbox"
-    reply_wake_message: "REPLY wake: you have pending reply-needed. Run: {{ATWF_CMD}} reply-needed"
+    wake_message: "INBOX wake: you have unread messages. Run: AITWF_DIR={{ATWF_TEAM_DIR_SHELL}} {{ATWF_CMD}} inbox"
+    reply_wake_message: "REPLY wake: you have pending reply-needed. Run: AITWF_DIR={{ATWF_TEAM_DIR_SHELL}} {{ATWF_CMD}} reply-needed"
 
     # Governance: if a worker is `working` but has pending inbox items older than N seconds,
     # the watcher writes an inbox-only alert to coord (no CLI injection).

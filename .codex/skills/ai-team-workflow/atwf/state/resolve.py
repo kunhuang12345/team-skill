@@ -8,6 +8,7 @@ from ..core import constants as C
 from ..infra import io as io_mod
 from ..core import policy as policy_mod
 from . import registry as registry_mod
+from . import inbox as inbox_mod
 from ..core import runtime
 from ..infra import tmux as tmux_mod
 
@@ -91,3 +92,43 @@ def _member_base(m: dict[str, Any] | None) -> str:
     base = str(m.get("base", "")).strip()
     full = str(m.get("full", "")).strip()
     return base or full
+
+
+def _base_from_full_name(full: str) -> str:
+    s = (full or "").strip()
+    if not s:
+        return ""
+    m = C.FULL_NAME_SPLIT_RE.match(s)
+    if m:
+        return (m.group(1) or "").strip() or s
+    return s
+
+
+def _self_inbox_bases(team_dir: Path, data: dict[str, Any], *, self_full: str) -> tuple[list[str], str, str]:
+    """
+    Return (bases_to_try, primary_base, role).
+
+    When registry is temporarily unavailable/mismatched, fall back to derive base from
+    tmux full name and also try the full name itself as inbox base.
+    """
+    m = registry_mod._resolve_member(data, self_full)
+    registry_base = _member_base(m) if m else ""
+    derived_base = _base_from_full_name(self_full)
+
+    bases: list[str] = []
+    for b in (registry_base, derived_base, self_full):
+        s = str(b or "").strip()
+        if not s or s in bases:
+            continue
+        bases.append(s)
+
+    # Prefer bases that already have an inbox dir, but keep fallbacks if none exist yet.
+    existing = [b for b in bases if inbox_mod._inbox_member_dir(team_dir, base=b).is_dir()]
+    bases_to_try = existing or bases
+
+    primary_base = bases_to_try[0] if bases_to_try else self_full
+    role = _member_role(m) if m else ""
+    if not role:
+        role = primary_base.split("-", 1)[0].strip() if primary_base else ""
+
+    return bases_to_try, primary_base, role

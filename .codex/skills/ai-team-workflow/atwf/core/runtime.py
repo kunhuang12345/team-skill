@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 from functools import lru_cache
 from pathlib import Path
@@ -108,8 +109,20 @@ def _atwf_cmd() -> str:
 
 def _substitute_atwf_paths(text: str) -> str:
     s = text or ""
-    s = s.replace("{{ATWF_CMD}}", _atwf_cmd())
-    s = s.replace("{{ATWF_CONFIG}}", str(_config_file()))
-    s = s.replace("bash .codex/skills/ai-team-workflow/scripts/atwf", _atwf_cmd())
-    s = s.replace(".codex/skills/ai-team-workflow/scripts/atwf_config.yaml", str(_config_file()))
+    atwf_cmd = _atwf_cmd()
+    cfg = str(_config_file())
+
+    # Legacy path replacements (do this first to avoid duplicating prefixes when the
+    # absolute config path contains the legacy substring, e.g. /.../.codex/...).
+    legacy_atwf = "bash .codex/skills/ai-team-workflow/scripts/atwf"
+    legacy_cfg = ".codex/skills/ai-team-workflow/scripts/atwf_config.yaml"
+    s = s.replace(legacy_atwf, atwf_cmd)
+    # Only replace the legacy cfg path when it appears as a standalone token-ish
+    # (avoid matching inside an already-absolute path like /root/.../.codex/...).
+    s = re.sub(rf"(?m)(^|[\\s'\"`]){re.escape(legacy_cfg)}", lambda m: m.group(1) + cfg, s)
+
+    # Placeholder replacements.
+    s = s.replace("{{ATWF_CMD}}", atwf_cmd)
+    s = s.replace("{{ATWF_CONFIG}}", cfg)
+    s = s.replace("{{ATWF_TEAM_DIR_SHELL}}", shlex.quote(str(_default_team_dir())))
     return s
